@@ -1,0 +1,5 @@
+mlx>=0.25.1
+pytest
+pytest-xdist
+setuptools
+pre-commit

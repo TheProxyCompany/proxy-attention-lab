@@ -1,0 +1,8 @@
+README.md
+pyproject.toml
+lab/proxy_attention_lab.egg-info/PKG-INFO
+lab/proxy_attention_lab.egg-info/SOURCES.txt
+lab/proxy_attention_lab.egg-info/dependency_links.txt
+lab/proxy_attention_lab.egg-info/requires.txt
+lab/proxy_attention_lab.egg-info/top_level.txt
+lab/tests/test_smoke.py

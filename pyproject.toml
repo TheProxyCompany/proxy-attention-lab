@@ -1,0 +1,22 @@
+[project]
+name = "proxy-attention-lab"
+version = "0.0.1"
+requires-python = ">=3.11"
+
+dependencies = [
+    "mlx>=0.25.1",
+    "pytest",
+    "pytest-xdist",
+    "setuptools",
+    "pre-commit",
+]
+
+[build-system]
+requires = ["pytest", "setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-data = { include = ["kernels/*.metal"] }
+
+[tool.setuptools.packages.find]
+where = ["lab"]

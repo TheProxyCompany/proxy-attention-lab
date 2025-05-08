@@ -1,0 +1,8 @@
+repos:
+  - repo: local
+    hooks:
+      - id: metallib
+        name: Rebuild Metal kernels
+        entry: ./scripts/build_metal.sh
+        language: system
+        files: \.metal$
