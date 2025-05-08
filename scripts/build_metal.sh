@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Define source, include, output directories and filenames
 SRC_DIR="src/cpp"
-SRC_METAL_FILE="${SRC_DIR}/paged_attention.metal"
+SRC_METAL_FILE="${SRC_DIR}/paged_attention/paged_attention.metal"
 INCLUDE_DIR="${SRC_DIR}" # Directory containing paged_attention.h
 BUILD_DIR="build"       # Intermediate build files directory
 LAB_DIR="src/python"    # Place the final .metallib next to Python code

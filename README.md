@@ -1,16 +1,16 @@
 # Proxy Attention Lab
 
-Playground for designing, profiling, and testing Metal attention kernels.
+Playground for designing, profiling, and testing Metal attention kernels with MLX integration.
 
-## What’s here
+## What's here
 
 | Folder | Purpose |
 |--------|---------|
-| `kernels/` | `.metal` source files (e.g. `paged_attention.metal`) |
-| `lab/` | Python harness that registers the kernels with **MLX** |
+| `src/cpp/` | C++ primitives and Metal kernel integration with MLX |
+| `src/python/` | Python API wrapping the C++ implementation |
 | `tests/` | `pytest` unit + perf checks |
 | `scripts/` | helper scripts (`build_metal.sh`, optional `watch.sh`) |
-| `build/` | Auto-generated `.air` + `.metallib` binaries |
+| `build/` | Auto-generated build artifacts (`.metallib`, `.so`, etc.) |
 
 ## Prerequisites
 
@@ -20,14 +20,29 @@ uv venv .venv && source .venv/bin/activate
 uv pip install -e -U "."        
 ```
 
-Quick start
+## Quick Start
+
+Build and test:
 ```bash
-./scripts/build_metal.sh
+# Build the C++ extension and Metal library
+CMAKE_BUILD_TYPE=Release pip install -e .
+
+# Run tests
 pytest -n auto
 ```
 
-Hot reload during dev:
+Hot reload during development:
 ```bash
 brew install fswatch
 ./scripts/watch.sh
 ```
+
+## Architecture
+
+The project implements paged attention using MLX primitives:
+
+1. Metal Kernel (`src/cpp/paged_attention.metal`): Implements the core computation
+2. C++ Primitive (`src/cpp/paged_attention_primitive.{hpp,cpp}`): MLX integration
+3. Python API (`src/python/ops.py`): High-level interface for Python users
+
+This approach allows for high-performance execution while maintaining a clean Python API.
