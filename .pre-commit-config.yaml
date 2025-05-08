@@ -1,8 +1,13 @@
 repos:
-  - repo: local
+-   repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0 # Use the latest stable tag
     hooks:
-      - id: metallib
-        name: Rebuild Metal kernels
-        entry: ./scripts/build_metal.sh
-        language: system
-        files: \.metal$
+    -   id: check-yaml
+    -   id: end-of-file-fixer
+    -   id: trailing-whitespace
+-   repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.4.8
+    hooks:
+    -   id: ruff # Linter
+        args: [--fix]
+    -   id: ruff-format # Formatter

@@ -1,16 +1,13 @@
-
-# src/python/ops.py
 import mlx.core as mx
-# Import the C++ binding module built by CMake/Nanobind
-# The name '_pal_cpp_binding' must match NB_MODULE in binding.cpp
-# and the target name in CMakeLists.txt
-from . import _pal_cpp_binding
+
+from proxy_attention_lab.pal_core import paged_attention as cpp_paged_attention_kernel
+
 
 def paged_attention(
     q: mx.array,
-    kv_cache: mx.array, # Full KV cache buffer
-    page_table: mx.array, # Logical block -> physical page mapping
-    stream: mx.Stream | mx.Device | None = None # Optional stream/device
+    kv_cache: mx.array,
+    page_table: mx.array,
+    stream: mx.Stream | None = None,
 ) -> mx.array:
     """
     Performs paged attention using the custom C++ primitive and Metal kernel.
@@ -31,22 +28,24 @@ def paged_attention(
     # --- Input Validation (Optional but Recommended) ---
     # Example checks (adapt based on actual kernel requirements)
     if q.dtype not in [mx.float16, mx.bfloat16, mx.float32]:
-         raise TypeError(f"Query dtype {q.dtype} not supported.")
+        raise TypeError(f"Query dtype {q.dtype} not supported.")
     if kv_cache.dtype != q.dtype:
-         raise TypeError(f"KV cache dtype {kv_cache.dtype} must match query dtype {q.dtype}.")
+        raise TypeError(
+            f"KV cache dtype {kv_cache.dtype} must match query dtype {q.dtype}."
+        )
     if page_table.dtype != mx.uint32:
-         raise TypeError(f"Page table dtype must be uint32, got {page_table.dtype}.")
+        raise TypeError(f"Page table dtype must be uint32, got {page_table.dtype}.")
     # Add shape checks as needed
 
     # --- Call the C++ Bound Operation ---
     # Pass arguments directly. Nanobind handles type conversions.
     # The C++ operation `pal::cpp::paged_attention` creates the primitive
     # and returns the output array object, adding it to the MLX graph.
-    output_array = _pal_cpp_binding.paged_attention(
+    output_array = cpp_paged_attention_kernel(
         q,
         kv_cache,
         page_table,
-        stream=stream # Pass the stream/device context
+        stream=stream,  # Pass the stream/device context
     )
 
     return output_array

@@ -176,3 +176,4 @@ cython_debug/
 # Metal
 build/
 *.metallib
+.py-build-cmake_cache/

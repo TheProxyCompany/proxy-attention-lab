@@ -1,17 +1,20 @@
 #include "paged_attention_primitive.hpp"
-#include <mlx/backend/metal/metal.h>
-#include "mlx/backend/metal/utils.h"
 #include <mlx/allocator.h>
 #include <mlx/device.h>
+#include <mlx/backend/metal/metal.h>
+#include <mlx/backend/metal/device.h>
+#include "mlx/backend/cpu/encoder.h"
+
 #include <stdexcept>
 #include <filesystem>
 #include <iostream>
+#include <optional>
 
 namespace pal::cpp {
 
 // --- Constructor ---
-PagedAttentionPrimitive::PagedAttentionPrimitive(mx::Stream stream)
-    : mx::UnaryPrimitive(stream) {
+PagedAttentionPrimitive::PagedAttentionPrimitive(mx::StreamOrDevice stream)
+    : mx::UnaryPrimitive(to_stream(stream)) {
     // Initialize any member variables here if needed
     std::cerr << "[Debug] PagedAttentionPrimitive constructed" << std::endl;
 }

@@ -1,5 +1,5 @@
 #include "ops.hpp"
-#include "paged_attention_primitive.hpp"
+#include "paged_attention/paged_attention_primitive.hpp"
 #include <mlx/ops.h>
 #include <mlx/utils.h>
 #include <stdexcept>

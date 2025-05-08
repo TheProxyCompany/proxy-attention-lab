@@ -1,24 +1,24 @@
 #pragma once
 
-#include <mlx/primitives.h> // Base class for Primitive/UnaryPrimitive
+#include <mlx/primitives.h>
 #include <mlx/stream.h>
 #include <mlx/array.h>
 #include <vector>
 #include <string>
+#include <optional>
+#include "mlx/utils.h"
+#include "mlx/backend/common/utils.h"
+
 
 namespace mx = mlx::core;
 
-namespace pal::cpp { // Create a namespace for the PAL C++ code
+namespace pal::cpp {
 
 // Define the custom primitive class inheriting from UnaryPrimitive
-// (Assuming paged attention produces a single output tensor)
 class PagedAttentionPrimitive : public mx::UnaryPrimitive {
 public:
-    // Constructor: Takes the stream and potentially kernel-specific parameters
     // For now, only the stream is needed by the base class.
-    explicit PagedAttentionPrimitive(mx::Stream stream);
-
-    // Override required virtual methods from Primitive/UnaryPrimitive
+    explicit PagedAttentionPrimitive(mx::StreamOrDevice stream);
 
     // Evaluation on CPU (can be stubbed for now)
     void eval_cpu(const std::vector<mx::array>& inputs, mx::array& out) override;
