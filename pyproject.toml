@@ -11,11 +11,6 @@ requires-python = ">=3.11"
 
 dependencies = [
     "py-build-cmake",
-    "mlx"
-]
-
-[project.optional-dependencies]
-dev = [
     "pytest",
     "pytest-xdist",
     "pre-commit",
@@ -23,7 +18,7 @@ dev = [
     "isort",
     "ruff",
     "mypy",
-    "fswatch"
+    "ruff-pre-commit",
 ]
 
 [tool.setuptools]
