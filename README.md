@@ -1,6 +1,6 @@
 # Proxy Attention Lab
 
-Playground for designing, profiling, and testing Metal attention kernels before they ship to PIE.
+Playground for designing, profiling, and testing Metal attention kernels.
 
 ## What’s here
 
