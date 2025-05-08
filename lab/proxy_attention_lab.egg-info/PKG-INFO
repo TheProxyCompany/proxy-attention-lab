@@ -1,9 +1,0 @@
-Metadata-Version: 2.4
-Name: proxy-attention-lab
-Version: 0.0.1
-Requires-Python: >=3.11
-Requires-Dist: mlx>=0.25.1
-Requires-Dist: pytest
-Requires-Dist: pytest-xdist
-Requires-Dist: setuptools
-Requires-Dist: pre-commit

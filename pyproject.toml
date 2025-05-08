@@ -1,22 +1,54 @@
+[build-system]
+requires = ["py-build-cmake", "nanobind"]
+build-backend = "py_build_cmake.build"
+
 [project]
 name = "proxy-attention-lab"
 version = "0.0.1"
+description = "Development and testing lab for PIE Paged Attention Kernels."
+readme = "README.md"
 requires-python = ">=3.11"
 
 dependencies = [
     "mlx>=0.25.1",
-    "pytest",
-    "pytest-xdist",
-    "setuptools",
-    "pre-commit",
+    "nanobind>=1.9",
+    "py-build-cmake>=1.8"
 ]
 
-[build-system]
-requires = ["pytest", "setuptools", "wheel"]
-build-backend = "setuptools.build_meta"
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-xdist",
+    "pre-commit",
+    "black",
+    "isort",
+    "ruff",
+    "mypy",
+    "fswatch"
+]
 
 [tool.setuptools]
-package-data = { include = ["kernels/*.metal"] }
+package-dir = {"" = "src/python"}
+packages = ["pal"]
+include-package-data = true
 
-[tool.setuptools.packages.find]
-where = ["lab"]
+[tool.setuptools.package-data]
+"pal" = ["*.so", "*.dylib", "*.metallib"]
+
+[tool.py-build-cmake.cmake]
+source_path = "src/cpp"
+build_type = "RelWithDebInfo"
+find_python = true
+install_components = ["pal_python_module"]
+build_args = ["-j"]
+
+[tool.ruff.lint]
+extend-select = ["B", "I", "PGH", "RUF", "UP", "SLF", "F8"]
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.isort]
+profile = "black"
+line_length = 100

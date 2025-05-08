@@ -1,0 +1,6 @@
+[submodule "external/nanobind"]
+	path = external/nanobind
+	url = https://github.com/wjakob/nanobind
+[submodule "external/mlx"]
+	path = external/mlx
+	url = https://github.com/ml-explore/mlx.git

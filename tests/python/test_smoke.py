@@ -1,5 +1,5 @@
 import mlx.core as mx
-from lab.ops import paged_attention
+from src.python.ops import paged_attention
 
 
 def test_forward():
