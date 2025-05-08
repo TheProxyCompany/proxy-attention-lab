@@ -11,7 +11,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Python deps
-        run: pip install mlx pytest pytest-xdist
+        run: pip install -e -U "."
       - name: Build Metal
         run: ./scripts/build_metal.sh
       - name: Unit tests

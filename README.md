@@ -15,9 +15,9 @@ Playground for designing, profiling, and testing Metal attention kernels.
 ## Prerequisites
 
 ```bash
-xcode-select --install          # Metal toolchain
+xcode-select --install
 uv venv .venv && source .venv/bin/activate
-uv pip install -e -U "."         # installs mlx, pytest, xdist
+uv pip install -e -U "."        
 ```
 
 Quick start
