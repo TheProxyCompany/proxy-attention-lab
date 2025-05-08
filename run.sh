@@ -48,7 +48,7 @@ fi
 # Build/Install the package in editable mode
 # This invokes py-build-cmake and handles C++/Metal compilation
 log "Building/Installing PAL in editable mode..."
-"$UV_EXECUTABLE_PATH" pip install -e .
+"$UV_EXECUTABLE_PATH" pip install -U ".[dev]" --no-build-isolation --force-reinstall --no-cache-dir
 
 # Run Pytest
 log "Running tests..."
