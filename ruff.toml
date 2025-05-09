@@ -1,3 +1,0 @@
-[lint.isort]
-known-local-folder = ["proxy_attention_lab"]
-lines-between-types = 1
