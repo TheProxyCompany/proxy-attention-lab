@@ -18,8 +18,9 @@ NB_MODULE(pal_core, m) {
              const mlx::core::array& kv_cache,
              const mlx::core::array& page_table,
              std::optional<mlx::core::StreamOrDevice> stream_or_device) {
-            auto stream = stream_or_device.value_or(mx::StreamOrDevice{});
-            return pal::cpp::paged_attention(queries, kv_cache, page_table, stream);
+            // Resolve optional stream to default if None is passed from Python
+            auto resolved_stream_or_device = stream_or_device.value_or(mx::StreamOrDevice{});
+            return pal::cpp::paged_attention(queries, kv_cache, page_table, resolved_stream_or_device);
           },
           "queries"_a,
           "kv_cache"_a,

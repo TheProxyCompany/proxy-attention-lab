@@ -61,11 +61,16 @@ find_package(MLX CONFIG REQUIRED)
 # --- Metal Library Build (Generalized) ---
 set(METALLIB_TARGET pal_metallib)
 set(METALLIB_TITLE "pal")
+set(PAL_METALLIB_FILENAME "pal.metallib")
 
 # --- Core C++ Static Library ---
 file(GLOB_RECURSE CORE_LIB_SOURCES CONFIGURE_DEPENDS
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/ops.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/paged_attention_primitive.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/metal_loader_posix.cpp"
 )
+
+message(STATUS "Core library sources: ${CORE_LIB_SOURCES}")
 
 add_library(${CORE_LIB_NAME} STATIC ${CORE_LIB_SOURCES})
 
@@ -91,7 +96,10 @@ target_link_libraries(
         mlx
 )
 
-file(GLOB_RECURSE METAL_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/*.metal")
+file(
+    GLOB_RECURSE METAL_SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/*.metal"
+)
 message(STATUS "Configuring Metal library build for PAL with sources: ${METAL_SOURCES}")
 mlx_build_metallib(
     TARGET ${METALLIB_TARGET}
@@ -100,7 +108,9 @@ mlx_build_metallib(
     INCLUDE_DIRS
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${MLX_INCLUDE_DIRS}
+        ${metal_cpp_SOURCE_DIR}/include
     OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    OUTPUT_FILENAME ${PAL_METALLIB_FILENAME}
 )
 
 add_dependencies(${CORE_LIB_NAME} ${METALLIB_TARGET})
@@ -142,9 +152,9 @@ install(
     COMPONENT python_modules
 )
 
-if(MLX_BUILD_METAL AND TARGET ${METALLIB_TARGET})
+if(TARGET ${METALLIB_TARGET})
     install(
-        FILES ${CMAKE_CURRENT_BINARY_DIR}/${METALLIB_TITLE}.metallib
+        FILES "${CMAKE_CURRENT_BINARY_DIR}/${PAL_METALLIB_FILENAME}"
         DESTINATION ${PYTHON_MODULE_INSTALL_DESTINATION}
         COMPONENT python_modules
     )

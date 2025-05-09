@@ -1,38 +1,32 @@
 #include "paged_attention_primitive.hpp"
 #include <mlx/allocator.h>
-#include <mlx/device.h>
 #include <mlx/backend/metal/metal.h>
 #include <mlx/backend/metal/device.h>
-#include "mlx/backend/cpu/encoder.h"
+#include <mlx/backend/metal/utils.h>
+#include <mlx/backend/cpu/encoder.h>
 
 #include <stdexcept>
-#include <filesystem>
 #include <iostream>
 
 namespace pal::cpp {
 
 // --- Constructor ---
-PagedAttentionPrimitive::PagedAttentionPrimitive(mx::StreamOrDevice stream)
-    : mx::UnaryPrimitive(to_stream(stream)) {
-    // Initialize any member variables here if needed
-    std::cerr << "[Debug] PagedAttentionPrimitive constructed" << std::endl;
+PagedAttentionPrimitive::PagedAttentionPrimitive(mx::StreamOrDevice stream_or_device)
+    : mx::UnaryPrimitive(mx::to_stream(stream_or_device)) { // Correctly use the passed stream/device
+    std::cerr << "[PAL Primitive] PagedAttentionPrimitive constructed." << std::endl;
 }
 
 // --- CPU Evaluation (Stub) ---
 void PagedAttentionPrimitive::eval_cpu(const std::vector<mx::array>& inputs, mx::array& out) {
-    // Paged attention is GPU-specific
-    std::cerr << "[Debug] PagedAttentionPrimitive::eval_cpu called" << std::endl;
-    std::cerr << "[Debug] inputs: " << inputs.size() << std::endl;
-    std::cerr << "[Debug] out size: " << out.shape().size() << std::endl;
-    throw std::runtime_error("[PagedAttentionPrimitive] CPU evaluation is not supported.");
+    std::cerr << "[PAL Primitive] PagedAttentionPrimitive::eval_cpu called (not supported)." << std::endl;
+    throw std::runtime_error("[PagedAttentionPrimitive] CPU evaluation is not supported for paged attention.");
 }
 
 // --- GPU Evaluation (Kernel Launch Logic) ---
 void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx::array& out) {
-    std::cerr << "[Debug] PagedAttentionPrimitive::eval_gpu called" << std::endl;
+    std::cerr << "[PAL Primitive] PagedAttentionPrimitive::eval_gpu called." << std::endl;
 
-    // Basic input validation
-    // Expecting: Q, KV_cache_buffer, Page_table
+    // Input validation (as before)
     if (inputs.size() != 3) {
         throw std::invalid_argument(
             "[PagedAttentionPrimitive::eval_gpu] Expected 3 inputs (Q, KV_cache, Page_table), received " +
@@ -42,96 +36,76 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx:
     const auto& kv_cache = inputs[1];
     const auto& page_table = inputs[2];
 
-    // Validate dtypes (adjust as needed for kernel)
     if (q.dtype() != mx::float16 || kv_cache.dtype() != mx::float16) {
-         throw std::invalid_argument("[PagedAttentionPrimitive::eval_gpu] Stub kernel requires float16 Q and KV cache.");
+         throw std::invalid_argument("[PagedAttentionPrimitive::eval_gpu] Kernel requires float16 Q and KV cache.");
     }
-     if (page_table.dtype() != mx::uint32) {
+    if (page_table.dtype() != mx::uint32) {
          throw std::invalid_argument("[PagedAttentionPrimitive::eval_gpu] Page table must be uint32.");
-     }
+    }
 
-    // --- Allocate Output Buffer ---
+    // Allocate output buffer (MLX ensures `out` has correct shape/dtype from output_shapes())
     out.set_data(mx::allocator::malloc(out.nbytes()));
-    std::cerr << "[Debug] Allocated output buffer for PagedAttentionPrimitive" << std::endl;
+    std::cerr << "[PAL Primitive] Output buffer allocated." << std::endl;
 
-
-    // --- Metal Kernel Invocation Logic ---
+    // Metal Kernel Invocation Logic
     auto& s = stream();
-    auto& d = mx::metal::device(s.device);
+    auto& d = mlx::core::metal::device(mx::Device::gpu);
 
-    // Find and register the Metal library
-    std::string metallib_path;
-    std::string library_name = "pal";
+    const std::string library_name_for_mlx = "pal"; // Must match name used in MetalLibRegistrar
+    const std::string kernel_name = "paged_attn_kernel"; // Matches [[kernel]] name in .metal file
+
+    std::cerr << "[PAL Primitive] Attempting to get kernel '" << kernel_name
+              << "' from MLX library '" << library_name_for_mlx
+              << "' (must be pre-registered)." << std::endl;
+
+    MTL::ComputePipelineState* kernel = nullptr;
     try {
-        std::string module_file_path_str = "src/pal_core/src/paged_attention_primitive.cpp";
-        std::filesystem::path module_file_path(module_file_path_str);
-
-        std::filesystem::path lib_dir = module_file_path.parent_path();
-        std::filesystem::path potential_metallib_path = lib_dir / (library_name + ".metallib");
-
-
-        if (std::filesystem::exists(potential_metallib_path)) {
-            metallib_path = potential_metallib_path.string();
-        } else {
-             throw std::runtime_error("PagedAttentionPrimitive: Could not locate " +
-                                      (library_name + ".metallib") + " at " +
-                                      potential_metallib_path.string());
-        }
-    } catch (const std::exception& e) {
-        std::cerr << "[Warning] Error finding metallib: " << e.what() << std::endl;
-        metallib_path = library_name + ".metallib"; // Fallback
+        kernel = d.get_kernel(kernel_name, library_name_for_mlx);
+    } catch (const std::runtime_error& e) {
+        std::cerr << "[PAL Primitive] Error: " << e.what() << std::endl;
+        throw std::runtime_error("PagedAttentionPrimitive: Failed to get kernel '" + kernel_name +
+                                 "' from library '" + library_name_for_mlx +
+                                 "'. Ensure the 'pal.metallib' was registered successfully.");
     }
-
-    try {
-         std::cerr << "[Debug] Registering library '" << library_name << "' from path: " << metallib_path << std::endl;
-         d.register_library(library_name, metallib_path);
-         std::cerr << "[Debug] Registered metallib" << std::endl;
-    } catch (const std::exception& e) {
-        throw std::runtime_error("PagedAttentionPrimitive: Failed to register metallib '" + metallib_path + "': " + e.what());
-    }
-
-    // Get the kernel function
-    std::string kernel_name = "paged_attn_kernel"; // Matches [[kernel]] name
-    std::cerr << "[Debug] Getting kernel '" << kernel_name << "' from library '" << library_name << "'" << std::endl;
-    auto kernel = d.get_kernel(kernel_name, library_name);
     if (!kernel) {
-        throw std::runtime_error(
-            "PagedAttentionPrimitive: Failed to get kernel '" + kernel_name + "' from library '" + library_name + "'");
+         throw std::runtime_error("PagedAttentionPrimitive: Failed to get kernel '" + kernel_name +
+                                  "' from library '" + library_name_for_mlx +
+                                  "'. Ensure the 'pal.metallib' was registered successfully.");
     }
-    std::cerr << "[Debug] Got kernel object" << std::endl;
+    std::cerr << "[PAL Primitive] Metal kernel object retrieved." << std::endl;
 
-    // Get command encoder and set state
     auto& compute_encoder = d.get_command_encoder(s.index);
     compute_encoder.set_compute_pipeline_state(kernel);
-    std::cerr << "[Debug] Set pipeline state" << std::endl;
+    std::cerr << "[PAL Primitive] Compute pipeline state set." << std::endl;
 
-    // Set kernel arguments
-    compute_encoder.set_input_array(q, 0);          // q_in at buffer(0)
-    compute_encoder.set_input_array(kv_cache, 1);   // kv_in at buffer(1)
-    compute_encoder.set_input_array(page_table, 2); // tbl_in at buffer(2)
-    compute_encoder.set_output_array(out, 3);       // out_buf at buffer(3)
-    std::cerr << "[Debug] Set kernel buffers" << std::endl;
+    // Set kernel arguments (as before)
+    compute_encoder.set_input_array(q, 0);
+    compute_encoder.set_input_array(kv_cache, 1);
+    compute_encoder.set_input_array(page_table, 2);
+    compute_encoder.set_output_array(out, 3);
+    std::cerr << "[PAL Primitive] Kernel buffers set." << std::endl;
 
-    // Calculate grid/threadgroup dimensions (adjust based on actual kernel needs)
-    size_t grid_dim_x = q.size(); // Example: based on total elements in q for stub
+    // Calculate grid/threadgroup dimensions (as before)
+    size_t grid_dim_x = q.size();
     if (grid_dim_x == 0) {
-        std::cerr << "[Warning] PagedAttentionPrimitive: Input 'q' is empty, skipping dispatch." << std::endl;
-        // Ensure output is zeroed or handled if needed for empty input
-        // mx::fill(out, 0.0f, s); // Example if zeroing is desired
-        return; // No kernel dispatch needed
+        std::cerr << "[PAL Primitive Warning] Input 'q' is empty, skipping kernel dispatch." << std::endl;
+        return;
     }
     MTL::Size grid_dims = MTL::Size(grid_dim_x, 1, 1);
     size_t tgp_size = kernel->maxTotalThreadsPerThreadgroup();
-    if (tgp_size == 0 || tgp_size > grid_dim_x) {
-         tgp_size = std::min((size_t)256, grid_dim_x); // Fallback/cap
+    if (tgp_size == 0) { // Should not happen for a valid kernel
+        std::cerr << "[PAL Primitive Warning] Kernel maxTotalThreadsPerThreadgroup is 0. Defaulting to 1." << std::endl;
+        tgp_size = 1;
     }
-    if (tgp_size == 0) tgp_size = 1;
-    MTL::Size group_dims = MTL::Size(tgp_size, 1, 1);
-    std::cerr << "[Debug] Dispatching kernel: grid=" << grid_dim_x << ", group=" << tgp_size << std::endl;
+    tgp_size = std::min(tgp_size, grid_dim_x); // Cap at grid_dim_x if grid is smaller
+    if (grid_dim_x > 0 && tgp_size == 0) tgp_size = 1; // Ensure tgp_size is at least 1 if dispatching
 
-    // Dispatch the kernel
+    MTL::Size group_dims = MTL::Size(tgp_size, 1, 1);
+    std::cerr << "[PAL Primitive] Dispatching kernel: grid_dim_x=" << grid_dim_x
+              << ", threadgroup_size=" << tgp_size << std::endl;
+
     compute_encoder.dispatch_threads(grid_dims, group_dims);
-    std::cerr << "[Debug] Kernel dispatched" << std::endl;
+    std::cerr << "[PAL Primitive] Kernel dispatched." << std::endl;
 }
 
 // --- Print Method ---
