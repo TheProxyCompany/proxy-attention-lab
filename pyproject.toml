@@ -54,29 +54,8 @@ ignore = [
     "EXE", # flake8-executable
     "T10", # debugger
     "TID", # flake8-tidy-imports
+    "S101", # ignore S101
     #### specific rules
-    "D100",   # ignore missing docs
-    "D101",
-    "D102",
-    "D103",
-    "D104",
-    "D105",
-    "D106",
-    "D107",
-    "D200",
-    "D205",
-    "D211",
-    "D212",
-    "D400",
-    "D401",
-    "D415",
-    "E402",   # false positives for local imports
-    "E501",   # line too long
-    "TRY003", # external messages in exceptions are too verbose
-    "TD002",
-    "TD003",
-    "FIX002", # too verbose descriptions of todos
-    "S101",
 ]
 extend-select = ["B", "I", "PGH", "RUF", "UP", "SLF", "F8"]
 
