@@ -39,19 +39,18 @@ build_args = [ "-j" ]
 
 [tool.ruff]
 target-version = "py311"
-line-length = 100
+line-length = 88
 unsafe-fixes = true
-extend-select = ["I", "UP"]
 extend-exclude = ["build", "dist", ".venv"]
 
 [tool.ruff.lint]
 extend-select = ["B", "I", "PGH", "RUF", "UP", "SLF", "F8"]
 
 [tool.black]
-line-length = 100
+line-length = 88
 target-version = ["py311"]
 
 [tool.isort]
-src = ["src"]
 profile = "black"
-line_length = 100
+line_length = 88
+lines-between-types = 1
