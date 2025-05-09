@@ -38,10 +38,12 @@ if [ "$CLEAN_BUILD" = true ]; then
     log "Performing clean build: Removing $BUILD_DIR and dist info..."
     rm -rf "$BUILD_DIR"
     rm -rf ".py-build-cmake_cache"
-    rm -rf src/python/*.egg-info # Remove previous build metadata if any
+    rm -rf src/proxy_attention_lab/*.egg-info
 fi
 
-log "Building/Installing PAL in editable mode..."
+export MLX_DIR=$(python -m mlx --cmake-dir)
+export NANOBIND_DIR=$(python -m nanobind --cmake_dir)
+
 "$UV_EXECUTABLE_PATH" pip install "." --force-reinstall --no-cache-dir
 
 # Run Pytest

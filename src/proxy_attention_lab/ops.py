@@ -5,9 +5,9 @@ from proxy_attention_lab.pal_core import paged_attention as cpp_paged_attention_
 
 def paged_attention(
     queries: mx.array,
-    # kv_cache: mx.array,
-    # page_table: mx.array,
-    # stream: mx.Stream | mx.Device | None = None,
+    kv_cache: mx.array,
+    page_table: mx.array,
+    stream: mx.Stream | mx.Device | None = None,
 ) -> int:
     """
     Performs paged attention using the custom C++ primitive and Metal kernel.
@@ -29,13 +29,10 @@ def paged_attention(
     # Pass arguments directly. Nanobind handles type conversions.
     # The C++ operation `pal::cpp::paged_attention` creates the primitive
     # and returns the output array object, adding it to the MLX graph.
-    # output_array = cpp_paged_attention_kernel(
-    #     queries,
-    #     kv_cache,
-    #     page_table,
-    #     # stream=stream,
-    # )
-    breakpoint()
-    test = cpp_paged_attention_kernel(queries)
-    print(test)
-    return test
+    output_array = cpp_paged_attention_kernel(
+        queries,
+        kv_cache,
+        page_table,
+        stream=stream,
+    )
+    return output_array

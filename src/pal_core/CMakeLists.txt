@@ -21,19 +21,26 @@ set(Python_VIRTUALENV FIRST)
 find_package(Python COMPONENTS Interpreter Development.Module REQUIRED)
 message(STATUS "Using Python site-packages (Python_SITELIB): ${Python_SITELIB}")
 
-add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/external/nanobind)
+execute_process(
+  COMMAND "${Python_EXECUTABLE}" -m nanobind --cmake_dir
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+  OUTPUT_VARIABLE nanobind_ROOT)
+message(STATUS "Nanobind CMake directory: ${nanobind_ROOT}")
+find_package(nanobind CONFIG REQUIRED)
 
-set(MLX_BUILD_TESTS OFF "Build MLX tests")
-set(MLX_BUILD_PYTHON_BINDINGS ON "Build Python bindings for MLX from this source tree")
-set(MLX_BUILD_METAL ON "Build Metal library for MLX from this source tree")
-
-add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/external/mlx)
+# --- Find MLX (using its CMake package from the Python environment) ---
+execute_process(
+  COMMAND "${Python_EXECUTABLE}" -m mlx --cmake-dir
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+  OUTPUT_VARIABLE MLX_ROOT)
+message(STATUS "MLX CMake directory: ${MLX_ROOT}")
+find_package(MLX CONFIG REQUIRED)
 
 include_directories(
     SYSTEM
     ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/external/nanobind/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/external/mlx/mlx
+    ${nanobind_INCLUDE_DIRS}
+    ${MLX_INCLUDE_DIRS}
 )
 
 find_package(MLX CONFIG REQUIRED)
@@ -85,10 +92,15 @@ add_dependencies(${CORE_LIB_NAME} ${METALLIB_TARGET})
 # Define the Nanobind module
 nanobind_add_module(
     ${EXTENSION_NAME}
-    STABLE_ABI NOMINSIZE
+    NB_STATIC
     NB_DOMAIN mlx
+    STABLE_ABI NOMINSIZE
     ${CMAKE_CURRENT_SOURCE_DIR}/bindings.cpp
 )
+
+if(APPLE)
+  target_link_options(${EXTENSION_NAME} PRIVATE -Wl,-rpath,@loader_path)
+endif()
 
 target_link_libraries(${EXTENSION_NAME} PRIVATE ${CORE_LIB_NAME})
 
