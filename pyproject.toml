@@ -43,14 +43,37 @@ line-length = 120
 unsafe-fixes = true
 extend-exclude = ["build", "dist", ".venv"]
 
+[tool.ruff.lint]
+select = [
+    # pycodestyle
+    "E",
+    # Pyflakes
+    "F",
+    # pyupgrade
+    "UP",
+    # flake8-bugbear
+    "B",
+    # flake8-simplify
+    "SIM",
+    # isort
+    "I",
+]
+
+extend-select = ["B", "I", "PGH", "RUF", "UP", "SLF", "F8"]
+
 [tool.ruff.format]
 quote-style = "double"
 skip-magic-trailing-comma = false
-line-ending = "auto"
 
-[tool.ruff.lint]
-extend-select = ["B", "I", "PGH", "RUF", "UP", "SLF", "F8"]
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["E402"]
+"**/{tests,docs,tools}/*" = ["E402"]
+
 
 [tool.black]
 line-length = 120
 target-version = ["py312"]
+
+[tool.isort]
+profile = "black"
+line-length = 120
