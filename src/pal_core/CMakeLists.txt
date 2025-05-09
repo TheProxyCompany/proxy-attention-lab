@@ -144,7 +144,13 @@ target_include_directories(${EXTENSION_NAME}
         ${nanobind_INCLUDE_DIRS}
 )
 
-target_link_libraries(${EXTENSION_NAME} PRIVATE ${CORE_LIB_NAME})
+target_link_libraries(
+    ${EXTENSION_NAME}
+    PUBLIC
+        mlx
+    PRIVATE
+        ${CORE_LIB_NAME}
+)
 
 target_compile_definitions(
     ${EXTENSION_NAME}
