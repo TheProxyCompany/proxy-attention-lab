@@ -13,17 +13,14 @@ def paged_attention(
     Performs paged attention using the custom C++ primitive and Metal kernel.
 
     Args:
-        queries (mlx.core.array): Queries array. Shape depends on batching,
-                                 e.g., [batch_size, num_heads, seq_len, head_dim] or flattened.
-        kv_cache (mlx.core.array): The entire KV cache buffer allocated by the PageAllocator.
-                                 Shape e.g., [num_pages, tokens_per_page, 2, num_kv_heads, head_dim].
+        queries (mlx.core.array): Queries array.
+        kv_cache (mlx.core.array): The entire KV cache buffer.
         page_table (mlx.core.array): Page table mapping logical blocks for each sequence
-                                   to physical pages in kv_cache. Shape depends on kernel design.
-        stream (mlx.core.Stream | mx.core.Device | None, optional): Stream or device to evaluate on.
-                                                                    Defaults to None (MLX default).
+                                   to physical pages in kv_cache.
+        stream (mlx.core.Stream | mx.core.Device | None): Stream or device.
 
     Returns:
-        mlx.core.array: The attention output array. Shape likely matches 'q' or a derivative.
+        mlx.core.array: The attention output array.
     """
     # --- Call the C++ Bound Operation ---
     # Pass arguments directly. Nanobind handles type conversions.
