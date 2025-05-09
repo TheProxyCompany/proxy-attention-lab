@@ -8,7 +8,7 @@ def paged_attention(
     kv_cache: mx.array,
     page_table: mx.array,
     stream: mx.Stream | mx.Device | None = None,
-) -> int:
+) -> mx.array:
     """
     Performs paged attention using the custom C++ primitive and Metal kernel.
 
