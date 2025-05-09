@@ -1,6 +1,7 @@
+#include <mlx/mlx.h>
+#include <mlx/array.h>
 #include <nanobind/nanobind.h>
-#include <nanobind/stl/variant.h>
-
+#include <mlx/core.h>
 #include "ops/ops.hpp"
 
 namespace nb = nanobind;

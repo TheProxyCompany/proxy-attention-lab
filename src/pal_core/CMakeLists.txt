@@ -19,59 +19,43 @@ endif()
 # --- Python ---
 set(Python_VIRTUALENV FIRST)
 find_package(Python COMPONENTS Interpreter Development.Module REQUIRED)
+message(STATUS "Using Python site-packages (Python_SITELIB): ${Python_SITELIB}")
 
-set(PROJECT_ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../..")
+option(MLX_BUILD_TESTS "Build MLX tests" OFF)
+option(MLX_BUILD_METAL "Build Metal library" ON)
+option(MLX_BUILD_PYTHON_BINDINGS "Build Python bindings" ON)
 
 include_directories(
     SYSTEM
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/external/nanobind/include
     ${CMAKE_CURRENT_SOURCE_DIR}/external/mlx/mlx
-    ${CMAKE_CURRENT_SOURCE_DIR}/external/tokenizers/include
 )
 
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/external/nanobind)
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/external/mlx)
 
-# --- Nanobind ---
-add_subdirectory(${PROJECT_ROOT_DIR}/external/nanobind ${CMAKE_CURRENT_BINARY_DIR}/nanobind)
-message(STATUS "Added nanobind subdirectory")
-
-# --- MLX ---
-option(MLX_BUILD_TESTS "Build MLX tests" OFF)
-option(MLX_BUILD_METAL "Build Metal library" ON)
-option(MLX_BUILD_PYTHON_BINDINGS "Build Python bindings" ON)
-add_subdirectory(${PROJECT_ROOT_DIR}/external/mlx ${CMAKE_CURRENT_BINARY_DIR}/mlx)
 find_package(MLX CONFIG REQUIRED)
 
 # --- Metal Library Build (Generalized) ---
 set(METALLIB_TARGET pal_metallib)
 set(METALLIB_TITLE "pal")
-set(METAL_HEADERS "")
-set(METAL_INCLUDE_DIRS "")
-
-foreach(metal_file ${METAL_SOURCES})
-    message(STATUS "Found metal file: ${metal_file}")
-    cmake_path(GET metal_file PARENT_PATH dir)
-    cmake_path(GET metal_file STEM name)
-    set(header_file "${dir}/${name}.h")
-    if(EXISTS "${header_file}")
-        list(APPEND METAL_HEADERS "${header_file}")
-        message(STATUS "Added metal header: ${header_file}")
-    endif()
-    list(APPEND METAL_INCLUDE_DIRS "${dir}")
-    message(STATUS "Added metal include directory: ${dir}")
-endforeach()
-list(REMOVE_DUPLICATES METAL_INCLUDE_DIRS)
 
 # --- Core C++ Static Library ---
-file(GLOB_RECURSE CORE_LIB_HEADERS CONFIGURE_DEPENDS
-    "${CMAKE_CURRENT_SOURCE_DIR}/*/*.hpp"
+file(GLOB_RECURSE CORE_LIB_SOURCES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
 )
 
-file(
-    GLOB_RECURSE CORE_LIB_SOURCES CONFIGURE_DEPENDS
-    "${CMAKE_CURRENT_SOURCE_DIR}/*/*.cpp"
-)
 add_library(${CORE_LIB_NAME} STATIC ${CORE_LIB_SOURCES})
+
+target_include_directories(${CORE_LIB_NAME}
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
 target_link_libraries(${CORE_LIB_NAME} PUBLIC mlx)
 
 target_include_directories(
@@ -80,18 +64,19 @@ target_include_directories(
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
     PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
-file(GLOB_RECURSE METAL_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/*/*.metal")
+file(GLOB_RECURSE METAL_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/*.metal")
 message(STATUS "Configuring Metal library build for PAL with sources: ${METAL_SOURCES}")
 mlx_build_metallib(
     TARGET ${METALLIB_TARGET}
     TITLE ${METALLIB_TITLE}
     SOURCES ${METAL_SOURCES}
-    INCLUDE_DIRS ${PROJECT_SOURCE_DIR} ${MLX_INCLUDE_DIRS}
+    INCLUDE_DIRS
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${MLX_INCLUDE_DIRS}
     OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-    DEPENDS ${METAL_HEADERS}
 )
 
 add_dependencies(${CORE_LIB_NAME} ${METALLIB_TARGET})
@@ -99,27 +84,26 @@ add_dependencies(${CORE_LIB_NAME} ${METALLIB_TARGET})
 # Define the Nanobind module
 nanobind_add_module(
     ${EXTENSION_NAME}
-    NB_STATIC STABLE_ABI LTO NOMINSIZE
+    NB_SHARED STABLE_ABI LTO NOMINSIZE
     NB_DOMAIN mlx
-    ${CMAKE_CURRENT_SOURCE_DIR}/binding.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/bindings.cpp
 )
 
-target_link_libraries(
+target_link_libraries(${EXTENSION_NAME} PRIVATE ${CORE_LIB_NAME})
+
+target_compile_definitions(
     ${EXTENSION_NAME}
     PRIVATE
-        ${CORE_LIB_NAME}
-        mlx
+        MODULE_NAME=$<TARGET_FILE_BASE_NAME:${EXTENSION_NAME}>
+        VERSION_INFO="${PY_FULL_VERSION}"
+        $<$<CONFIG:Debug>:ENABLE_ASSERTIONS>
 )
+
 if(BUILD_SHARED_LIBS)
     message(STATUS "Building shared library")
     target_link_options(${EXTENSION_NAME} PRIVATE -Wl,-rpath,@loader_path)
 endif()
 
-target_include_directories(
-    ${EXTENSION_NAME}
-    PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}
-)
 
 # Ensure the Metal library is built before the binding module
 if(MLX_BUILD_METAL AND TARGET ${METALLIB_TARGET})
