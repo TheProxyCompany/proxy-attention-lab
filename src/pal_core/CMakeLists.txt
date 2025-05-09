@@ -107,7 +107,6 @@ target_link_libraries(
         "-framework Foundation"
         "-framework QuartzCore"
         "-framework MetalKit"
-    PRIVATE
         mlx
 )
 
@@ -138,7 +137,8 @@ nanobind_add_module(
     ${CMAKE_CURRENT_SOURCE_DIR}/bindings.cpp
 )
 
-target_include_directories(${EXTENSION_NAME}
+target_include_directories(
+    ${EXTENSION_NAME}
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${MLX_INCLUDE_DIRS}
