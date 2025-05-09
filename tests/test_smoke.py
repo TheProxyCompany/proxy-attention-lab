@@ -2,6 +2,7 @@ import logging
 import time
 
 import mlx.core as mx
+
 from proxy_attention_lab import paged_attention
 
 logger = logging.getLogger(__name__)
