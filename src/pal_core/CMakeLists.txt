@@ -21,9 +21,13 @@ set(Python_VIRTUALENV FIRST)
 find_package(Python COMPONENTS Interpreter Development.Module REQUIRED)
 message(STATUS "Using Python site-packages (Python_SITELIB): ${Python_SITELIB}")
 
-option(MLX_BUILD_TESTS "Build MLX tests" OFF)
-option(MLX_BUILD_METAL "Build Metal library" ON)
-option(MLX_BUILD_PYTHON_BINDINGS "Build Python bindings" ON)
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/external/nanobind)
+
+set(MLX_BUILD_TESTS OFF "Build MLX tests")
+set(MLX_BUILD_PYTHON_BINDINGS ON "Build Python bindings for MLX from this source tree")
+set(MLX_BUILD_METAL ON "Build Metal library for MLX from this source tree")
+
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/external/mlx)
 
 include_directories(
     SYSTEM
@@ -31,9 +35,6 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/external/nanobind/include
     ${CMAKE_CURRENT_SOURCE_DIR}/external/mlx/mlx
 )
-
-add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/external/nanobind)
-add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/external/mlx)
 
 find_package(MLX CONFIG REQUIRED)
 
@@ -84,7 +85,7 @@ add_dependencies(${CORE_LIB_NAME} ${METALLIB_TARGET})
 # Define the Nanobind module
 nanobind_add_module(
     ${EXTENSION_NAME}
-    NB_SHARED STABLE_ABI LTO NOMINSIZE
+    STABLE_ABI NOMINSIZE
     NB_DOMAIN mlx
     ${CMAKE_CURRENT_SOURCE_DIR}/bindings.cpp
 )
@@ -98,11 +99,6 @@ target_compile_definitions(
         VERSION_INFO="${PY_FULL_VERSION}"
         $<$<CONFIG:Debug>:ENABLE_ASSERTIONS>
 )
-
-if(BUILD_SHARED_LIBS)
-    message(STATUS "Building shared library")
-    target_link_options(${EXTENSION_NAME} PRIVATE -Wl,-rpath,@loader_path)
-endif()
 
 
 # Ensure the Metal library is built before the binding module

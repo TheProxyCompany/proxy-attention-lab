@@ -1,8 +1,8 @@
 #include <mlx/mlx.h>
 #include <mlx/array.h>
 #include <nanobind/nanobind.h>
-#include <mlx/core.h>
-#include "ops/ops.hpp"
+#include <nanobind/stl/variant.h>
+#include "ops.hpp"
 
 namespace nb = nanobind;
 using namespace nb::literals;
@@ -15,20 +15,14 @@ NB_MODULE(pal_core, m) {
     m.def("paged_attention",
           &pal::cpp::paged_attention,
           "queries"_a,
-          "kv_cache"_a,
-          "page_table"_a,
-        //   nb::kw_only(),
-        //   "stream"_a = nb::none(),
-          nb::sig("def paged_attention(queries: mlx.core.array, kv_cache: mlx.core.array, page_table: mlx.core.array) -> mlx.core.array"),
+          nb::sig("def paged_attention(queries: mlx.core.array) -> int"),
           R"doc(
             Performs paged attention using a custom primitive.
 
             Args:
                 queries (mlx.core.array): Queries array.
-                kv_cache (mlx.core.array): KV cache buffer array.
-                page_table (mlx.core.array): Page table mapping logical to physical blocks.
             Returns:
-                mlx.core.array: The attention output array.
+                int: The size of the queries array.
           )doc"
     );
 

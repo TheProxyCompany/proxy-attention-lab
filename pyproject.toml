@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 
 dependencies = [
+    "mlx",
     "pytest",
     "pytest-xdist",
     "pre-commit",
@@ -28,11 +29,10 @@ packages = ["proxy_attention_lab"]
 "proxy_attention_lab" = ["*.so", "*.dylib", "*.metallib"]
 
 [tool.py-build-cmake.cmake]
-source_path = "src/pal_core"
+source_path = "."
 build_type = "RelWithDebInfo"
 find_python = true
 install_components = ["python_modules"]
-options = { "BUILD_SHARED_LIBS" = "ON" }
 build_args = [ "-j" ]
 
 [tool.ruff.lint]
