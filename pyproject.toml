@@ -58,7 +58,9 @@ select = [
     # isort
     "I",
 ]
-
+ignore = [
+    "E501", # line too long
+]
 extend-select = ["B", "I", "PGH", "RUF", "UP", "SLF", "F8"]
 
 [tool.ruff.format]
