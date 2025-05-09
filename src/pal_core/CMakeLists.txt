@@ -67,13 +67,6 @@ execute_process(
 message(STATUS "MLX CMake directory: ${MLX_ROOT}")
 find_package(MLX CONFIG REQUIRED)
 
-include_directories(
-    SYSTEM
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${nanobind_INCLUDE_DIRS}
-    ${MLX_INCLUDE_DIRS}
-)
-
 # --- Metal Library Build (Generalized) ---
 set(METALLIB_TARGET pal_metallib)
 set(METALLIB_TITLE "pal")
@@ -87,18 +80,21 @@ file(GLOB_RECURSE CORE_LIB_SOURCES CONFIGURE_DEPENDS
 )
 
 message(STATUS "Core library sources: ${CORE_LIB_SOURCES}")
-
 add_library(${CORE_LIB_NAME} STATIC ${CORE_LIB_SOURCES})
 
 target_include_directories(
     ${CORE_LIB_NAME}
     PUBLIC
-        $<BUILD_INTERFACE:${metal_cpp_SOURCE_DIR}>
+        # PAL's own headers
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
+        # Headers from dependencies that might be exposed through PAL's headers
+        $<BUILD_INTERFACE:${metal_cpp_SOURCE_DIR}>
         $<INSTALL_INTERFACE:include/metal_cpp>
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${MLX_INCLUDE_DIRS}
+        ${nanobind_INCLUDE_DIRS}
 )
 
 target_link_libraries(
@@ -138,6 +134,13 @@ nanobind_add_module(
     NB_DOMAIN mlx
     STABLE_ABI NOMINSIZE
     ${CMAKE_CURRENT_SOURCE_DIR}/bindings.cpp
+)
+
+target_include_directories(${EXTENSION_NAME}
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${MLX_INCLUDE_DIRS}
+        ${nanobind_INCLUDE_DIRS}
 )
 
 target_link_libraries(${EXTENSION_NAME} PRIVATE ${CORE_LIB_NAME})
