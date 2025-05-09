@@ -60,12 +60,15 @@ else()
 endif()
 
 # --- Find MLX ---
-execute_process(
-  COMMAND "${Python_EXECUTABLE}" -m mlx --cmake-dir
-  OUTPUT_STRIP_TRAILING_WHITESPACE
-  OUTPUT_VARIABLE MLX_ROOT)
-message(STATUS "MLX CMake directory: ${MLX_ROOT}")
-find_package(MLX CONFIG REQUIRED)
+find_package(MLX CONFIG QUIET)
+if(NOT MLX_FOUND)
+    execute_process(
+        COMMAND "${Python_EXECUTABLE}" -m mlx --cmake-dir
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        OUTPUT_VARIABLE MLX_ROOT)
+    message(STATUS "MLX CMake directory: ${MLX_ROOT}")
+    find_package(MLX CONFIG REQUIRED)
+endif()
 
 # --- Metal Library Build (Generalized) ---
 set(METALLIB_TARGET pal_metallib)
