@@ -130,7 +130,6 @@ add_dependencies(${CORE_LIB_NAME} ${METALLIB_TARGET})
 # Define the Nanobind module
 nanobind_add_module(
     ${EXTENSION_NAME}
-    NB_STATIC
     NB_DOMAIN mlx
     STABLE_ABI NOMINSIZE
     ${CMAKE_CURRENT_SOURCE_DIR}/bindings.cpp
