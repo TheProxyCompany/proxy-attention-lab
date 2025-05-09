@@ -17,12 +17,9 @@ NB_MODULE(pal_core, m) {
           [](const mlx::core::array& queries,
              const mlx::core::array& kv_cache,
              const mlx::core::array& page_table,
-             std::optional<mlx::core::StreamOrDevice> stream) {
-              if (!stream) {
-                  return pal::cpp::paged_attention(queries, kv_cache, page_table, {});
-              } else {
-                  return pal::cpp::paged_attention(queries, kv_cache, page_table, *stream);
-              }
+             std::optional<mlx::core::StreamOrDevice> stream_or_device) {
+            auto stream = stream_or_device.value_or(mx::StreamOrDevice{});
+            return pal::cpp::paged_attention(queries, kv_cache, page_table, stream);
           },
           "queries"_a,
           "kv_cache"_a,

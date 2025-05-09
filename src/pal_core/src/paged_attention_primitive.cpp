@@ -51,48 +51,36 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx:
      }
 
     // --- Allocate Output Buffer ---
-    // The output shape is determined by output_shapes() before eval_gpu is called.
-    // MLX ensures `out` has the correct shape and dtype. We just need to allocate memory.
-    // Using set_data ensures MLX manages the allocation lifecycle.
     out.set_data(mx::allocator::malloc(out.nbytes()));
     std::cerr << "[Debug] Allocated output buffer for PagedAttentionPrimitive" << std::endl;
 
 
-    // --- Metal Kernel Invocation Logic (from previous binding.cpp) ---
-    auto& s = stream(); // Get the stream associated with this primitive
+    // --- Metal Kernel Invocation Logic ---
+    auto& s = stream();
     auto& d = mx::metal::device(s.device);
 
     // Find and register the Metal library
-    // First try to find it relative to the current module
     std::string metallib_path;
+    std::string library_name = "pal";
     try {
-        // Try to find it in the installed package
-        // This relies on nanobind's nb::module_ context which isn't available here
-        // So we use a simple heuristic approach
-        auto module_path = std::filesystem::path(__FILE__).parent_path();
-        auto potential_paths = {
-            // In development mode, it's in the build dir
-            std::filesystem::path(module_path) / ".." / "build" / "pal.metallib",
-            // In installed mode, it's alongside the .so/.dylib
-            std::filesystem::path(module_path) / "pal.metallib",
-        };
+        std::string module_file_path_str = "src/pal_core/src/paged_attention_primitive.cpp";
+        std::filesystem::path module_file_path(module_file_path_str);
 
-        for (const auto& path : potential_paths) {
-            if (std::filesystem::exists(path)) {
-                metallib_path = path.string();
-                break;
-            }
-        }
+        std::filesystem::path lib_dir = module_file_path.parent_path();
+        std::filesystem::path potential_metallib_path = lib_dir / (library_name + ".metallib");
 
-        if (metallib_path.empty()) {
-            // Fallback to a hardcoded path as last resort
-            metallib_path = "src/python/pie_paged_attn_lab.metallib";
+
+        if (std::filesystem::exists(potential_metallib_path)) {
+            metallib_path = potential_metallib_path.string();
+        } else {
+             throw std::runtime_error("PagedAttentionPrimitive: Could not locate " +
+                                      (library_name + ".metallib") + " at " +
+                                      potential_metallib_path.string());
         }
     } catch (const std::exception& e) {
         std::cerr << "[Warning] Error finding metallib: " << e.what() << std::endl;
-        metallib_path = "src/python/pie_paged_attn_lab.metallib"; // Fallback
+        metallib_path = library_name + ".metallib"; // Fallback
     }
-    std::string library_name = "pal"; // Must match TITLE in mlx_build_metallib
 
     try {
          std::cerr << "[Debug] Registering library '" << library_name << "' from path: " << metallib_path << std::endl;
@@ -104,10 +92,11 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx:
 
     // Get the kernel function
     std::string kernel_name = "paged_attn_kernel"; // Matches [[kernel]] name
-     std::cerr << "[Debug] Getting kernel '" << kernel_name << "' from library '" << library_name << "'" << std::endl;
+    std::cerr << "[Debug] Getting kernel '" << kernel_name << "' from library '" << library_name << "'" << std::endl;
     auto kernel = d.get_kernel(kernel_name, library_name);
     if (!kernel) {
-         throw std::runtime_error("PagedAttentionPrimitive: Failed to get kernel '" + kernel_name + "' from library '" + library_name + "'");
+        throw std::runtime_error(
+            "PagedAttentionPrimitive: Failed to get kernel '" + kernel_name + "' from library '" + library_name + "'");
     }
     std::cerr << "[Debug] Got kernel object" << std::endl;
 

@@ -13,7 +13,7 @@ def test_forward():
     Robust smoke test for paged_attention forward pass with various shapes and dtypes.
     """
     # --- Mock Inputs ---
-    mock_queries = mx.arange(mx.prod(mx.array((4, 4))), dtype=mx.float16).reshape((4, 4))
+    mock_queries = mx.arange(0, 16, dtype=mx.float16).reshape((4, 4))
     mock_kv_cache = mx.ones_like(mock_queries)
     mock_page_table = mx.zeros((4,), dtype=mx.uint32)
 

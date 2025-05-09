@@ -112,12 +112,6 @@ target_compile_definitions(
         $<$<CONFIG:Debug>:ENABLE_ASSERTIONS>
 )
 
-
-# Ensure the Metal library is built before the binding module
-if(MLX_BUILD_METAL AND TARGET ${METALLIB_TARGET})
-    add_dependencies(${EXTENSION_NAME} ${METALLIB_TARGET})
-endif()
-
 # --- Installation ---
 set(PYTHON_MODULE_INSTALL_DESTINATION "${PROJECT_NAME}")
 
