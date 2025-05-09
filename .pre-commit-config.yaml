@@ -13,3 +13,12 @@ repos:
       args: ["--fix", "--unsafe-fixes"]
     - id: ruff-format
       name: ruff format
+-   repo: local
+    hooks:
+    -   id: pytest-pal
+        name: Run Python Tests (pytest)
+        entry: pytest tests
+        language: system
+        types: [python]
+        pass_filenames: false
+        always_run: true

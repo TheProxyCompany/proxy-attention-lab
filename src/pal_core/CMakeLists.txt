@@ -41,6 +41,24 @@ else()
   message(FATAL_ERROR "Metal is not supported on this platform - Only macOS is supported for now.")
 endif()
 
+find_package(fmt QUIET)
+if(NOT fmt_FOUND)
+    message(STATUS "PAL: fmt not found via find_package. Attempting FetchContent.")
+    include(FetchContent)
+    FetchContent_Declare(
+        fmt_for_pal
+        GIT_REPOSITORY https://github.com/fmtlib/fmt.git
+        GIT_TAG "11.2.0"
+    )
+    FetchContent_MakeAvailable(fmt_for_pal)
+    FetchContent_GetProperties(fmt_for_pal)
+    if(NOT fmt_for_pal_POPULATED)
+      FetchContent_Populate(fmt_for_pal)
+    endif()
+else()
+    message(STATUS "PAL: Found fmt via find_package. Version: ${fmt_VERSION}")
+endif()
+
 # --- Find MLX ---
 execute_process(
   COMMAND "${Python_EXECUTABLE}" -m mlx --cmake-dir
