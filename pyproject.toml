@@ -37,6 +37,13 @@ find_python = true
 install_components = ["python_modules"]
 build_args = [ "-j" ]
 
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+unsafe-fixes = true
+extend-select = ["I", "UP"]
+extend-exclude = ["build", "dist", ".venv"]
+
 [tool.ruff.lint]
 extend-select = ["B", "I", "PGH", "RUF", "UP", "SLF", "F8"]
 
@@ -45,5 +52,6 @@ line-length = 100
 target-version = ["py311"]
 
 [tool.isort]
+src = ["src"]
 profile = "black"
 line_length = 100
