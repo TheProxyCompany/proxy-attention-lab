@@ -1,24 +1,17 @@
-#pragma once // Use pragma once for header guards
+#pragma once
 
 #include <metal_stdlib>
 
 using namespace metal;
 
-// Kernel function definition is now in the header file.
-// It will be included by paged_attention.metal
 [[kernel]] void paged_attn_kernel(
-    // Input Buffers
-    device const half* q_in    [[buffer(0)]], // Queries for the current step
-    device const half* kv_in   [[buffer(1)]], // Pointer to the start of the entire KV cache buffer
-    device const uint* tbl_in  [[buffer(2)]], // Pointer to the consolidated block table
-    // TODO: Add other necessary inputs like sequence lengths, scales, etc. as buffers or constants
+    device const half* q_in    [[buffer(0)]],
+    device const half* kv_in   [[buffer(1)]],
+    device const uint* tbl_in  [[buffer(2)]],
 
     // Output Buffer
     device       half* out_buf [[buffer(3)]], // Output attention results
-
-    // Thread/Grid Identifiers
-    uint tid                   [[thread_position_in_grid]] // Example: Linear thread ID
-    // TODO: Consider using threadgroup/simdgroup IDs for more complex kernels
+    uint tid                   [[thread_position_in_grid]]
 ) {
     // --- Placeholder Logic ---
     // This is just a stub to ensure compilation and basic execution.

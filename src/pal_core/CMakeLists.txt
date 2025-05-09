@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 project(pal_cpp LANGUAGES CXX)
+cmake_policy(SET CMP0135 NEW)
 
 set(PROJECT_NAME proxy_attention_lab)  # Top-level project name
 set(EXTENSION_NAME pal_core)           # Python module name
@@ -21,6 +22,7 @@ set(Python_VIRTUALENV FIRST)
 find_package(Python COMPONENTS Interpreter Development.Module REQUIRED)
 message(STATUS "Using Python site-packages (Python_SITELIB): ${Python_SITELIB}")
 
+# --- Find Nanobind ---
 execute_process(
   COMMAND "${Python_EXECUTABLE}" -m nanobind --cmake_dir
   OUTPUT_STRIP_TRAILING_WHITESPACE
@@ -28,7 +30,18 @@ execute_process(
 message(STATUS "Nanobind CMake directory: ${nanobind_ROOT}")
 find_package(nanobind CONFIG REQUIRED)
 
-# --- Find MLX (using its CMake package from the Python environment) ---
+# --- Download Metal-CPP library ---
+if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+  include(FetchContent)
+  set(METAL_CPP_URL https://developer.apple.com/metal/cpp/files/metal-cpp_macOS15_iOS18.zip)
+  FetchContent_Declare(metal_cpp URL ${METAL_CPP_URL})
+  FetchContent_MakeAvailable(metal_cpp)
+  message(STATUS "Metal-CPP library found in: ${metal_cpp_SOURCE_DIR}")
+else()
+  message(FATAL_ERROR "Metal is not supported on this platform - Only macOS is supported for now.")
+endif()
+
+# --- Find MLX ---
 execute_process(
   COMMAND "${Python_EXECUTABLE}" -m mlx --cmake-dir
   OUTPUT_STRIP_TRAILING_WHITESPACE
@@ -56,23 +69,26 @@ file(GLOB_RECURSE CORE_LIB_SOURCES CONFIGURE_DEPENDS
 
 add_library(${CORE_LIB_NAME} STATIC ${CORE_LIB_SOURCES})
 
-target_include_directories(${CORE_LIB_NAME}
+target_include_directories(
+    ${CORE_LIB_NAME}
     PUBLIC
+        $<BUILD_INTERFACE:${metal_cpp_SOURCE_DIR}>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
+        $<INSTALL_INTERFACE:include/metal_cpp>
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
-target_link_libraries(${CORE_LIB_NAME} PUBLIC mlx)
-
-target_include_directories(
+target_link_libraries(
     ${CORE_LIB_NAME}
     PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-        $<INSTALL_INTERFACE:include>
+        "-framework Metal"
+        "-framework Foundation"
+        "-framework QuartzCore"
+        "-framework MetalKit"
     PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        mlx
 )
 
 file(GLOB_RECURSE METAL_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/*.metal")
@@ -110,6 +126,11 @@ target_compile_definitions(
         MODULE_NAME=$<TARGET_FILE_BASE_NAME:${EXTENSION_NAME}>
         VERSION_INFO="${PY_FULL_VERSION}"
         $<$<CONFIG:Debug>:ENABLE_ASSERTIONS>
+)
+
+install(
+  DIRECTORY ${metal_cpp_SOURCE_DIR}/
+  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/metal_cpp
 )
 
 # --- Installation ---
