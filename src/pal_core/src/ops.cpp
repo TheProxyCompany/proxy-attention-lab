@@ -9,7 +9,7 @@ namespace pal::cpp {
 
 // Define the user-facing C++ operation function
 int paged_attention(
-    mx::array queries
+    const mx::array& queries
     // const mx::array& queries,
     // const mx::array& kv_cache,
     // const mx::array& page_table
