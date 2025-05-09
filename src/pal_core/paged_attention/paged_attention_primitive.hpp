@@ -7,7 +7,6 @@
 #include <string>
 #include <optional>
 #include "mlx/utils.h"
-#include "mlx/backend/common/utils.h"
 
 
 namespace mx = mlx::core;

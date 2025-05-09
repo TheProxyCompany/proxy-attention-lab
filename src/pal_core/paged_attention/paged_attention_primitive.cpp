@@ -8,7 +8,6 @@
 #include <stdexcept>
 #include <filesystem>
 #include <iostream>
-#include <optional>
 
 namespace pal::cpp {
 

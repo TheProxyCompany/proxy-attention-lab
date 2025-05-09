@@ -7,8 +7,7 @@ trap 'echo "ERROR: Script failed at line $LINENO"' ERR
 # --- Configuration ---
 VENV_DIR=".venv" # Assumes virtualenv is in project root
 BUILD_DIR="build" # CMake build directory (relative to project root)
-CLEAN_BUILD=${CLEAN_BUILD:-false} # Set to true to force clean build: CLEAN_BUILD=true ./scripts/run.sh
-PYTHON_EXE="${VENV_DIR}/bin/python"
+CLEAN_BUILD=${CLEAN_BUILD:-true} # Set to true to force clean build: CLEAN_BUILD=true ./scripts/run.sh
 UV_EXECUTABLE_PATH="$(which uv)" # Store the path to uv executable
 PYTEST_EXE="${VENV_DIR}/bin/pytest"
 
@@ -18,7 +17,7 @@ log() {
 }
 
 require_venv() {
-    if [ ! -d "$VENV_DIR" ] || [ ! -f "$PYTHON_EXE" ]; then
+    if [ ! -d "$VENV_DIR" ]; then
         log "ERROR: Python virtual environment not found or not activated at $VENV_DIR"
         log "Please create and activate it first (e.g., python -m venv .venv && source .venv/bin/activate)"
         exit 1
@@ -27,10 +26,6 @@ require_venv() {
     if [ "${VIRTUAL_ENV:-}" != "$(pwd)/${VENV_DIR}" ]; then
          log "WARNING: Not running within the expected activated virtual environment ($VENV_DIR)."
          log "         Attempting to use executables directly from $VENV_DIR/bin/..."
-    fi
-    if ! command -v "$PYTEST_EXE" &>/dev/null; then
-        log "ERROR: pytest not found in virtual environment. Please install dev dependencies (pip install -e '.[dev]')"
-        exit 1
     fi
 }
 
@@ -42,13 +37,12 @@ require_venv
 if [ "$CLEAN_BUILD" = true ]; then
     log "Performing clean build: Removing $BUILD_DIR and dist info..."
     rm -rf "$BUILD_DIR"
+    rm -rf ".py-build-cmake_cache"
     rm -rf src/python/*.egg-info # Remove previous build metadata if any
 fi
 
-# Build/Install the package in editable mode
-# This invokes py-build-cmake and handles C++/Metal compilation
 log "Building/Installing PAL in editable mode..."
-"$UV_EXECUTABLE_PATH" pip install -U ".[dev]" --no-build-isolation --force-reinstall --no-cache-dir
+"$UV_EXECUTABLE_PATH" pip install "." --force-reinstall --no-cache-dir
 
 # Run Pytest
 log "Running tests..."
