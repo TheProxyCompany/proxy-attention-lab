@@ -44,9 +44,8 @@ unsafe-fixes = true
 extend-exclude = ["build", "dist", ".venv"]
 
 [tool.ruff.lint]
+extend-select = ["B", "I", "PGH", "RUF", "UP", "SLF", "F8"]
 select = [
-    # pycodestyle
-    "E",
     # Pyflakes
     "F",
     # pyupgrade
@@ -58,10 +57,6 @@ select = [
     # isort
     "I",
 ]
-ignore = [
-    "E501", # line too long
-]
-extend-select = ["B", "I", "PGH", "RUF", "UP", "SLF", "F8"]
 
 [tool.ruff.format]
 quote-style = "double"
