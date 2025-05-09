@@ -130,8 +130,6 @@ mlx_build_metallib(
 
 add_dependencies(${CORE_LIB_NAME} ${METALLIB_TARGET})
 
-target_link_options(${CORE_LIB_NAME} PRIVATE -Wl,-rpath,@loader_path)
-
 # Define the Nanobind module
 nanobind_add_module(
     ${EXTENSION_NAME}
