@@ -124,10 +124,6 @@ nanobind_add_module(
     ${CMAKE_CURRENT_SOURCE_DIR}/bindings.cpp
 )
 
-if(APPLE)
-  target_link_options(${EXTENSION_NAME} PRIVATE -Wl,-rpath,@loader_path)
-endif()
-
 target_link_libraries(${EXTENSION_NAME} PRIVATE ${CORE_LIB_NAME})
 
 target_compile_definitions(
