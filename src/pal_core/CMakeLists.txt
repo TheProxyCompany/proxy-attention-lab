@@ -46,14 +46,14 @@ if(NOT fmt_FOUND)
     message(STATUS "PAL: fmt not found via find_package. Attempting FetchContent.")
     include(FetchContent)
     FetchContent_Declare(
-        fmt_for_pal
+        fmt
         GIT_REPOSITORY https://github.com/fmtlib/fmt.git
         GIT_TAG "11.2.0"
     )
-    FetchContent_MakeAvailable(fmt_for_pal)
-    FetchContent_GetProperties(fmt_for_pal)
-    if(NOT fmt_for_pal_POPULATED)
-      FetchContent_Populate(fmt_for_pal)
+    FetchContent_MakeAvailable(fmt)
+    FetchContent_GetProperties(fmt)
+    if(NOT fmt_POPULATED)
+      FetchContent_Populate(fmt)
     endif()
 else()
     message(STATUS "PAL: Found fmt via find_package. Version: ${fmt_VERSION}")
