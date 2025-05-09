@@ -41,12 +41,6 @@ if [ "$CLEAN_BUILD" = true ]; then
     rm -rf src/proxy_attention_lab/*.egg-info
 fi
 
-#  temp install mlx from local submodule
-#  current mlx is bugged (v0.25.1) but is fixed in main
-#  normally we want mlx installed from pip
-#  TODO: remove this once mlx is fixed in a future release
-"$UV_EXECUTABLE_PATH" pip install "/Users/jckwind/Documents/TheProxyCompany/proxy-inference-engine/src/pie_core/external/mlx"
-
 export MLX_DIR=$(python -m mlx --cmake-dir)
 export NANOBIND_DIR=$(python -m nanobind --cmake_dir)
 
