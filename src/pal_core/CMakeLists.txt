@@ -74,8 +74,6 @@ include_directories(
     ${MLX_INCLUDE_DIRS}
 )
 
-find_package(MLX CONFIG REQUIRED)
-
 # --- Metal Library Build (Generalized) ---
 set(METALLIB_TARGET pal_metallib)
 set(METALLIB_TITLE "pal")
