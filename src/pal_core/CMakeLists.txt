@@ -164,8 +164,6 @@ target_compile_definitions(
         $<$<CONFIG:Debug>:ENABLE_ASSERTIONS>
 )
 
-target_link_options(${EXTENSION_NAME} PRIVATE -Wl,-rpath,@loader_path)
-
 install(
   DIRECTORY ${metal_cpp_SOURCE_DIR}/
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/metal_cpp
