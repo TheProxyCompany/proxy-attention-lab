@@ -60,14 +60,13 @@ else()
 endif()
 
 # --- Find MLX ---
-execute_process(
-    COMMAND "${Python_EXECUTABLE}" -m mlx --cmake-dir
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-    OUTPUT_VARIABLE MLX_ROOT)
-message(STATUS "MLX CMake directory: ${MLX_ROOT}")
-find_package(MLX CONFIG REQUIRED)
-
-message(STATUS "MLX include dirs: ${MLX_INCLUDE_DIRS}")
+if(NOT TARGET mlx)
+    set(CMAKE_FIND_PACKAGE_PREFER_CONFIG TRUE)
+    find_package(MLX CONFIG REQUIRED PATHS ${Python_SITELIB} NO_DEFAULT_PATH)
+    message(STATUS "PAL: Found MLX. Include Dirs: ${MLX_INCLUDE_DIRS}. Libraries: ${MLX_LIBRARIES}")
+else()
+    message(STATUS "PAL: MLX already found as a target")
+endif()
 
 include_directories(
     SYSTEM
@@ -137,8 +136,8 @@ add_dependencies(${CORE_LIB_NAME} ${METALLIB_TARGET})
 # Define the Nanobind module
 nanobind_add_module(
     ${EXTENSION_NAME}
-    NB_DOMAIN mlx
     STABLE_ABI NOMINSIZE
+    NB_DOMAIN mlx
     ${CMAKE_CURRENT_SOURCE_DIR}/bindings.cpp
 )
 
@@ -146,8 +145,7 @@ target_include_directories(
     ${EXTENSION_NAME}
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
-        ${MLX_ROOT}/mlx
-        ${nanobind_INCLUDE_DIRS}
+        ${MLX_INCLUDE_DIRS}
 )
 
 target_link_libraries(

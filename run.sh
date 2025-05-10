@@ -41,10 +41,9 @@ if [ "$CLEAN_BUILD" = true ]; then
     rm -rf src/proxy_attention_lab/*.egg-info
 fi
 
-export MLX_DIR=$(python -m mlx --cmake-dir)
-export NANOBIND_DIR=$(python -m nanobind --cmake_dir)
-
-"$UV_EXECUTABLE_PATH" pip install "." --force-reinstall --no-cache-dir
+log "Installing/Updating PAL dependencies (including MLX, Nanobind from pyproject.toml)..."
+"$UV_EXECUTABLE_PATH" pip install --no-deps "mlx>=0.25.2" "nanobind==2.5.0"
+"$UV_EXECUTABLE_PATH" pip install -e ".[dev]" --force-reinstall --no-build-isolation --no-cache-dir
 
 # Run Pytest
 log "Running tests..."
