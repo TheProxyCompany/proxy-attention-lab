@@ -60,15 +60,18 @@ else()
 endif()
 
 # --- Find MLX ---
-find_package(MLX CONFIG QUIET)
-if(NOT MLX_FOUND)
-    execute_process(
-        COMMAND "${Python_EXECUTABLE}" -m mlx --cmake-dir
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-        OUTPUT_VARIABLE MLX_ROOT)
-    message(STATUS "MLX CMake directory: ${MLX_ROOT}")
-    find_package(MLX CONFIG REQUIRED)
-endif()
+execute_process(
+    COMMAND "${Python_EXECUTABLE}" -m mlx --cmake-dir
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    OUTPUT_VARIABLE MLX_ROOT)
+message(STATUS "MLX CMake directory: ${MLX_ROOT}")
+find_package(MLX CONFIG REQUIRED)
+
+include_directories(
+    SYSTEM
+    ${MLX_ROOT}/mlx
+    ${nanobind_INCLUDE_DIRS}
+)
 
 # --- Metal Library Build (Generalized) ---
 set(METALLIB_TARGET pal_metallib)
@@ -96,7 +99,7 @@ target_include_directories(
         $<INSTALL_INTERFACE:include/metal_cpp>
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
-        ${MLX_INCLUDE_DIRS}
+        ${MLX_ROOT}/mlx
         ${nanobind_INCLUDE_DIRS}
 )
 
@@ -121,8 +124,8 @@ mlx_build_metallib(
     SOURCES ${METAL_SOURCES}
     INCLUDE_DIRS
         ${CMAKE_CURRENT_SOURCE_DIR}/include
-        ${MLX_INCLUDE_DIRS}
         ${metal_cpp_SOURCE_DIR}/include
+        ${MLX_ROOT}/mlx
     OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     OUTPUT_FILENAME ${PAL_METALLIB_FILENAME}
 )
@@ -147,8 +150,6 @@ target_include_directories(
 
 target_link_libraries(
     ${EXTENSION_NAME}
-    PUBLIC
-        mlx
     PRIVATE
         ${CORE_LIB_NAME}
 )

@@ -1,5 +1,3 @@
-// src/pal_core/include/metal_loader.hpp
-
 #pragma once
 
 #include <string>

@@ -1,6 +1,5 @@
 #include <metal_stdlib>
 #include "paged_attention.h"
-#include "mlx/backend/metal/kernels/utils.h"
 
 using namespace metal;
 
