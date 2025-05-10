@@ -146,7 +146,7 @@ target_include_directories(
     ${EXTENSION_NAME}
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
-        ${MLX_INCLUDE_DIRS}
+        ${MLX_ROOT}/mlx
         ${nanobind_INCLUDE_DIRS}
 )
 

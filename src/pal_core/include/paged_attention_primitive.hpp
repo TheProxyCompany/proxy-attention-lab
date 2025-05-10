@@ -49,13 +49,8 @@ public:
         const std::vector<mx::array>& inputs,
         const std::vector<int>& axes) override;
 
-    // Optional: Output shape calculation (can be useful)
-    // If not overridden, MLX might try to infer it, which could fail.
-    // Let's define it based on the query input shape for now.
     std::vector<mx::Shape> output_shapes(const std::vector<mx::array>& inputs) override;
 
-    // Add any member variables needed to configure the primitive/kernel if necessary
-    // Example: int block_size_;
 };
 
 } // namespace pal::cpp

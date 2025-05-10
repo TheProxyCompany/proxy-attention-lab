@@ -19,7 +19,7 @@
 #include <mlx/backend/metal/metal.h>
 #include <mlx/backend/metal/device.h>
 #include <mlx/backend/metal/utils.h>
-#include <mlx/backend/cpu/encoder.h>
+// #include <mlx/backend/>
 
 #include <stdexcept>
 #include <iostream>
