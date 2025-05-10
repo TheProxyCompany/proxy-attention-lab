@@ -67,9 +67,11 @@ execute_process(
 message(STATUS "MLX CMake directory: ${MLX_ROOT}")
 find_package(MLX CONFIG REQUIRED)
 
+message(STATUS "MLX include dirs: ${MLX_INCLUDE_DIRS}")
+
 include_directories(
     SYSTEM
-    ${MLX_ROOT}/mlx
+    ${MLX_INCLUDE_DIRS}
     ${nanobind_INCLUDE_DIRS}
 )
 
@@ -99,7 +101,7 @@ target_include_directories(
         $<INSTALL_INTERFACE:include/metal_cpp>
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
-        ${MLX_ROOT}/mlx
+        ${MLX_INCLUDE_DIRS}
         ${nanobind_INCLUDE_DIRS}
 )
 
@@ -125,7 +127,7 @@ mlx_build_metallib(
     INCLUDE_DIRS
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${metal_cpp_SOURCE_DIR}/include
-        ${MLX_ROOT}/mlx
+        ${MLX_INCLUDE_DIRS}
     OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     OUTPUT_FILENAME ${PAL_METALLIB_FILENAME}
 )
