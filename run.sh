@@ -43,7 +43,7 @@ fi
 
 log "Installing/Updating PAL dependencies (including MLX, Nanobind from pyproject.toml)..."
 "$UV_EXECUTABLE_PATH" pip install --no-deps "mlx>=0.25.2" "nanobind==2.5.0"
-"$UV_EXECUTABLE_PATH" pip install -e ".[dev]" --force-reinstall --no-build-isolation --no-cache-dir
+"$UV_EXECUTABLE_PATH" pip install "." --force-reinstall --no-build-isolation --no-cache-dir
 
 # Run Pytest
 log "Running tests..."
