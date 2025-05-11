@@ -41,32 +41,14 @@ else()
   message(FATAL_ERROR "Metal is not supported on this platform - Only macOS is supported for now.")
 endif()
 
-find_package(fmt QUIET)
-if(NOT fmt_FOUND)
-    message(STATUS "PAL: fmt not found via find_package. Attempting FetchContent.")
-    include(FetchContent)
-    FetchContent_Declare(
-        fmt
-        GIT_REPOSITORY https://github.com/fmtlib/fmt.git
-        GIT_TAG "11.2.0"
-    )
-    FetchContent_MakeAvailable(fmt)
-    FetchContent_GetProperties(fmt)
-    if(NOT fmt_POPULATED)
-      FetchContent_Populate(fmt)
-    endif()
-else()
-    message(STATUS "PAL: Found fmt via find_package. Version: ${fmt_VERSION}")
-endif()
-
 # --- Find MLX ---
 if(NOT TARGET mlx)
     set(CMAKE_FIND_PACKAGE_PREFER_CONFIG TRUE)
     find_package(MLX CONFIG REQUIRED PATHS ${Python_SITELIB} NO_DEFAULT_PATH)
-    message(STATUS "PAL: Found MLX. Include Dirs: ${MLX_INCLUDE_DIRS}. Libraries: ${MLX_LIBRARIES}")
 else()
     message(STATUS "PAL: MLX already found as a target")
 endif()
+message(STATUS "PAL: Found MLX. Include Dirs: ${MLX_INCLUDE_DIRS}. Libraries: ${MLX_LIBRARIES}")
 
 include_directories(
     SYSTEM
@@ -86,7 +68,6 @@ file(GLOB_RECURSE CORE_LIB_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/metal_loader_posix.cpp"
 )
 
-message(STATUS "Core library sources: ${CORE_LIB_SOURCES}")
 add_library(${CORE_LIB_NAME} STATIC ${CORE_LIB_SOURCES})
 
 target_include_directories(
