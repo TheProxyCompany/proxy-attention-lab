@@ -1,6 +1,6 @@
-#include "ops.hpp"
-#include "paged_attention_primitive.hpp"
-#include "metal_loader.hpp"
+#include "pal_core/ops.hpp"
+#include "pal_core/paged_attention_primitive.hpp"
+#include "pal_core/metal_loader.hpp"
 #include <iostream>
 #include "mlx/backend/common/utils.h"
 #include "mlx/utils.h"
@@ -9,8 +9,12 @@ namespace pal::cpp {
 
 mx::array paged_attention(
     const mx::array& queries,
-    const mx::array& kv_cache,
+    const mx::array& k_cache_pool,
+    const mx::array& v_cache_pool,
     const mx::array& page_table,
+    const mx::array& sequence_lengths,
+    const mx::array& query_to_seq_map,
+    const mx::array& query_token_offset,
     mx::StreamOrDevice stream_or_device
 ) {
     std::cerr << "[PAL Ops] pal::cpp::paged_attention C++ operation called." << std::endl;
@@ -30,7 +34,13 @@ mx::array paged_attention(
         out_shape,
         out_dtype,
         primitive,
-        {queries, kv_cache, page_table}
+        {queries,
+         k_cache_pool,
+         v_cache_pool,
+         page_table,
+         sequence_lengths,
+         query_to_seq_map,
+         query_token_offset}
     );
 }
 

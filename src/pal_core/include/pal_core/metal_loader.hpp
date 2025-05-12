@@ -19,14 +19,12 @@
 #include <mlx/backend/metal/metal.h>
 #include <mlx/backend/metal/device.h>
 #include <mlx/backend/metal/utils.h>
-// #include <mlx/backend/>
 
 #include <stdexcept>
 #include <iostream>
 
 namespace mx = mlx::core;
 
-// Forward declaration
 std::string find_own_shared_library_path_for_pal();
 
 namespace pal::core::detail {

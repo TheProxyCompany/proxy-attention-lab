@@ -1,6 +1,0 @@
-[submodule "src/pal_core/external/mlx"]
-	path = src/pal_core/external/mlx
-	url = https://github.com/ml-explore/mlx.git
-[submodule "src/pal_core/external/nanobind"]
-	path = src/pal_core/external/nanobind
-	url = https://github.com/wjakob/nanobind

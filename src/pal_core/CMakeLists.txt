@@ -74,8 +74,8 @@ target_include_directories(
     ${CORE_LIB_NAME}
     PUBLIC
         # PAL's own headers
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-        $<INSTALL_INTERFACE:include>
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/>
+        $<INSTALL_INTERFACE:include/>
         # Headers from dependencies that might be exposed through PAL's headers
         $<BUILD_INTERFACE:${metal_cpp_SOURCE_DIR}>
         $<INSTALL_INTERFACE:include/metal_cpp>
@@ -91,13 +91,13 @@ target_link_libraries(
         "-framework Metal"
         "-framework Foundation"
         "-framework QuartzCore"
-        "-framework MetalKit"
         mlx
 )
 
+
 file(
     GLOB_RECURSE METAL_SOURCES
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/*.metal"
+    "${CMAKE_CURRENT_SOURCE_DIR}/kernels/*.metal"
 )
 message(STATUS "Configuring Metal library build for PAL with sources: ${METAL_SOURCES}")
 mlx_build_metallib(
@@ -105,8 +105,8 @@ mlx_build_metallib(
     TITLE ${METALLIB_TITLE}
     SOURCES ${METAL_SOURCES}
     INCLUDE_DIRS
-        ${CMAKE_CURRENT_SOURCE_DIR}/include
-        ${metal_cpp_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/shaders
+        ${metal_cpp_SOURCE_DIR}/
         ${MLX_INCLUDE_DIRS}
     OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     OUTPUT_FILENAME ${PAL_METALLIB_FILENAME}
@@ -125,7 +125,7 @@ nanobind_add_module(
 target_include_directories(
     ${EXTENSION_NAME}
     PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/
         ${MLX_INCLUDE_DIRS}
 )
 
@@ -141,11 +141,6 @@ target_compile_definitions(
         MODULE_NAME=$<TARGET_FILE_BASE_NAME:${EXTENSION_NAME}>
         VERSION_INFO="${PY_FULL_VERSION}"
         $<$<CONFIG:Debug>:ENABLE_ASSERTIONS>
-)
-
-install(
-  DIRECTORY ${metal_cpp_SOURCE_DIR}/
-  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/metal_cpp
 )
 
 # --- Installation ---

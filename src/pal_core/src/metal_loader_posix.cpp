@@ -1,4 +1,4 @@
-#include "metal_loader.hpp"
+#include "pal_core/metal_loader.hpp"
 #include <dlfcn.h>
 #include <string>
 #include <iostream>

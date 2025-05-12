@@ -10,6 +10,9 @@ BUILD_DIR="build" # CMake build directory (relative to project root)
 CLEAN_BUILD=${CLEAN_BUILD:-true} # Set to true to force clean build: CLEAN_BUILD=true ./scripts/run.sh
 UV_EXECUTABLE_PATH="$(which uv)" # Store the path to uv executable
 PYTEST_EXE="${VENV_DIR}/bin/pytest"
+DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
+
+export DEVELOPER_DIR
 
 # --- Helper Functions ---
 log() {
