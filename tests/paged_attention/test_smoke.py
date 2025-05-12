@@ -55,6 +55,7 @@ def test_paged_attention_smoke():
         assert out.dtype == mock_queries.dtype, (
             f"Output dtype {out.dtype} does not match query dtype {mock_queries.dtype}"
         )
+        assert mx.isfinite(out).all(), "Output contains NaN or Inf values"
         logger.info(f"Paged attention smoke test passed. Output shape: {out.shape}, dtype: {out.dtype}")
 
     except Exception as e:

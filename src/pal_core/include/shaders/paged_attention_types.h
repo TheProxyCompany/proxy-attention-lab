@@ -5,4 +5,6 @@ struct PagedAttentionParams {
     uint32_t tokens_per_page;
     float    scale;
     uint32_t max_logical_blocks_per_seq;
+    uint32_t num_physical_pages_in_pool;
+    uint32_t num_sequences_in_batch;
 };

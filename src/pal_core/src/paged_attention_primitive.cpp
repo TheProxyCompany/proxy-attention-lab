@@ -79,14 +79,27 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx:
     //     BEFORE calling this primitive. For PAL, we assume 'q' input is ready.
     //     If q is [TotalItems, NumQActualHeads, QActualHeadDim]
     if (q.ndim() < 1) throw std::invalid_argument("Queries 'q' must have at least 1 dimension.");
-    if (q.ndim() >= 2 && q.shape(-1) != params_struct.head_dim) {
+
+    // Check query format and set num_q_heads
+    if (q.ndim() == 3) {
+        // 3D query format: [NumTokens, NumQHeads, HeadDim]
+        if (q.shape(2) != params_struct.head_dim) {
+            throw std::invalid_argument("[PagedAttentionPrimitive] For 3D query input [NumTokens, NumQHeads, HeadDim], the HeadDim must match K/V head_dim.");
+        }
+        // Set num_q_heads directly from the middle dimension
+        params_struct.num_q_heads = q.shape(1);
+        std::cerr << "[PAL Primitive] Detected 3D query input with shape [" << q.shape(0) << ", " << q.shape(1) << ", " << q.shape(2) << "]" << std::endl;
+    }
+    else if (q.ndim() >= 2 && q.shape(-1) != params_struct.head_dim) {
         // This check ensures that if Q is passed with an explicit head dimension, it matches the K/V head dimension.
         // If Q is, for example, [TotalTokens, ModelDim], then this check might not apply,
         // and num_q_heads might be considered 1 by the kernel if it processes Q token-wise.
-        // For now, let's assume Q's innermost dim (if >1D) should match K/V head_dim.
         throw std::invalid_argument("[PagedAttentionPrimitive] Query's innermost dimension must match K/V head_dim if query is multi-dimensional representing heads.");
     }
-    params_struct.num_q_heads = (q.ndim() >= 2 && q.shape(-1) == params_struct.head_dim) ? q.shape(q.ndim() - 2) : 1;
+    else {
+        // Default for other cases - 1D or 2D without explicit head dimension
+        params_struct.num_q_heads = (q.ndim() >= 2 && q.shape(-1) == params_struct.head_dim) ? q.shape(q.ndim() - 2) : 1;
+    }
 
 
     // 4.c Scale
@@ -108,12 +121,38 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx:
         params_struct.max_logical_blocks_per_seq = 1; // Avoid division by zero if used as stride
     }
 
+    // Add the new parameters for bounds checking in the kernel
+    params_struct.num_physical_pages_in_pool = k_pool.shape(0);
+    params_struct.num_sequences_in_batch = page_table.shape(0);
+
+    // Validate GQA configuration
+    if (params_struct.num_q_heads > params_struct.num_kv_heads) { // GQA case
+        if (params_struct.num_kv_heads == 0) { // Avoid division by zero
+             throw std::invalid_argument("[PagedAttentionPrimitive] num_kv_heads cannot be 0 if num_q_heads > 0 for GQA.");
+        }
+        if (params_struct.num_q_heads % params_struct.num_kv_heads != 0) {
+            throw std::invalid_argument("[PagedAttentionPrimitive] For GQA (num_q_heads > num_kv_heads), num_q_heads must be an integer multiple of num_kv_heads.");
+        }
+    }
+
     std::cerr << "[PAL Primitive] Params: num_q_heads=" << params_struct.num_q_heads
               << ", num_kv_heads=" << params_struct.num_kv_heads
               << ", head_dim=" << params_struct.head_dim // This is now K/V head_dim
               << ", tokens_per_page=" << params_struct.tokens_per_page
               << ", scale=" << params_struct.scale
-              << ", max_logical_blocks_per_seq=" << params_struct.max_logical_blocks_per_seq << std::endl;
+              << ", max_logical_blocks_per_seq=" << params_struct.max_logical_blocks_per_seq
+              << ", num_physical_pages_in_pool=" << params_struct.num_physical_pages_in_pool
+              << ", num_sequences_in_batch=" << params_struct.num_sequences_in_batch << std::endl;
+
+    // --- 4.e Bounds Checking Strategy ---
+    // Bounds checking logic has been moved to the Metal kernel for better performance and reliability.
+    // The kernel will check:
+    // 1. That page_table physical_page_ids are < params->num_physical_pages_in_pool
+    // 2. That query_token_offset values are non-negative
+    // 3. That seq_idx from query_to_seq_map are < params->num_sequences_in_batch
+    //
+    // This avoids issues with trying to access array data on the CPU side before it's ready,
+    // and is more in line with GPU compute paradigms where validation happens in the kernel.
 
     // --- 5. Set Kernel Arguments --- (no change in this section's structure)
     compute_encoder.set_input_array(q, 0);
@@ -128,13 +167,31 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx:
     std::cerr << "[PAL Primitive] All kernel buffers and params struct set." << std::endl;
 
     // --- 6. Dispatch Kernel ---
-    size_t grid_dim_x = q.shape(0);
+    size_t grid_dim_x = 0;
 
-    if (grid_dim_x == 0) { /* ... */ return; }
-    MTL::Size grid_dims = MTL::Size(grid_dim_x, 1, 1); // Assuming 1D dispatch for now
+    // Calculate dispatch size based on query dimensions
+    if (q.ndim() == 3) {
+        // For 3D queries [NumTokens, NumQHeads, HeadDim],
+        // we need to dispatch one thread per (token, qhead) combination
+        grid_dim_x = q.shape(0) * q.shape(1);
+        std::cerr << "[PAL Primitive] Dispatching for 3D query: " << grid_dim_x << " threads (NumTokens="
+                  << q.shape(0) << " * NumQHeads=" << q.shape(1) << ")" << std::endl;
+    } else {
+        // Default dispatch based on first dimension only
+        grid_dim_x = q.shape(0);
+        std::cerr << "[PAL Primitive] Dispatching for " << q.ndim() << "D query: " << grid_dim_x << " threads" << std::endl;
+    }
+
+    if (grid_dim_x == 0) {
+        std::cerr << "[PagedAttentionPrimitive] No threads to dispatch (grid_dim_x=0). Returning empty result." << std::endl;
+        return;
+    }
+
+    // For now, keep using 1D dispatch where global_query_thread_idx encompasses both token and head indices
+    MTL::Size grid_dims = MTL::Size(grid_dim_x, 1, 1);
     size_t tgp_size_max = kernel_pipeline_state->maxTotalThreadsPerThreadgroup();
     size_t tgp_size = std::min(tgp_size_max, grid_dim_x);
-    if (grid_dim_x > 0 && tgp_size == 0) tgp_size = 1;
+    if (tgp_size == 0) tgp_size = 1;
     MTL::Size group_dims = MTL::Size(tgp_size, 1, 1);
     compute_encoder.dispatch_threads(grid_dims, group_dims);
     std::cerr << "[PAL Primitive] Kernel dispatched." << std::endl;

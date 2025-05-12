@@ -178,3 +178,6 @@ build/
 *.metallib
 .py-build-cmake_cache/
 .venv/
+
+**/.claude/settings.local.json
+.claude/
