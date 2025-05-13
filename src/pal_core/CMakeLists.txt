@@ -17,6 +17,13 @@ else()
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -DNDEBUG")
 endif()
 
+# --- PAL Debug Logging ---
+option(PAL_ENABLE_DEBUG_LOGGING "Enable PAL debug std::cerr logging" OFF)
+if(PAL_ENABLE_DEBUG_LOGGING)
+    add_compile_definitions(PAL_DEBUG)
+    message(STATUS "PAL Debug logging enabled via -DPAL_DEBUG")
+endif()
+
 # --- Python ---
 set(Python_VIRTUALENV FIRST)
 find_package(Python COMPONENTS Interpreter Development.Module REQUIRED)
