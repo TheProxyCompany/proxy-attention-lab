@@ -270,11 +270,6 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx:
     MTL::Size group_dims = MTL::Size(tgp_size, 1, 1);
     compute_encoder.dispatch_threads(grid_dims, group_dims);
     std::cerr << "[PAL Primitive] Kernel dispatched." << std::endl;
-
-    // Note on encoder completion:
-    // MLX's metal::CommandEncoder doesn't have an explicit end_encoding() method.
-    // Instead, the encoder completion appears to be managed implicitly when operations are done.
-    // This follows the MLX pattern seen in their own primitives.
 #ifdef PAL_DEBUG
     std::cerr << "[PAL Primitive] Compute encoder operation completed." << std::endl;
 #endif
