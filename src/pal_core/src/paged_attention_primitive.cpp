@@ -90,15 +90,34 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx:
         params_struct.num_q_heads = q.shape(1);
         std::cerr << "[PAL Primitive] Detected 3D query input with shape [" << q.shape(0) << ", " << q.shape(1) << ", " << q.shape(2) << "]" << std::endl;
     }
-    else if (q.ndim() >= 2 && q.shape(-1) != params_struct.head_dim) {
-        // This check ensures that if Q is passed with an explicit head dimension, it matches the K/V head dimension.
-        // If Q is, for example, [TotalTokens, ModelDim], then this check might not apply,
-        // and num_q_heads might be considered 1 by the kernel if it processes Q token-wise.
-        throw std::invalid_argument("[PagedAttentionPrimitive] Query's innermost dimension must match K/V head_dim if query is multi-dimensional representing heads.");
+    else if (q.ndim() == 2) {
+        // 2D query format: [NumDispatchThreads, HeadDim]
+        if (q.shape(1) != params_struct.head_dim) {
+            throw std::invalid_argument("[PagedAttentionPrimitive] For 2D query input [NumDispatchThreads, HeadDim], the HeadDim must match K/V head_dim.");
+        }
+        // CORRECTED: For 2D input [N,D], num_q_heads is 1
+        // Each thread is one query item, effectively 1 Q-head per item
+        params_struct.num_q_heads = 1;
+        std::cerr << "[PAL Primitive] Detected 2D query input with shape [" << q.shape(0) << ", " << q.shape(1) << "]" << std::endl;
+    }
+    else if (q.ndim() == 1) {
+        // 1D query format: [NumDispatchThreads]
+        // Each thread is one query item, effectively 1 Q-head, and Q_HeadDim is 1 for this item.
+        // This case implies params_struct.head_dim (from K/V) might be different from Q's effective head_dim (1).
+        // For now, assume if Q is 1D, it's for tests where its elements are used as scalars.
+        params_struct.num_q_heads = 1;
+        std::cerr << "[PAL Primitive] Detected 1D query input with shape [" << q.shape(0) << "]" << std::endl;
+
+        if (params_struct.head_dim != 1 && q.size() > 0) {
+            // This configuration is tricky for a generic dot product kernel if Q is truly scalar
+            // and K is a vector. The current kernel fetches a full Q vector based on params_struct.head_dim.
+            // For tests using 1D Q, ensure the test setup and kernel logic for Q fetching are compatible.
+            std::cerr << "[PAL Primitive] Warning: 1D query with K/V head_dim = " << params_struct.head_dim
+                      << " may lead to incompatible dot product calculation." << std::endl;
+        }
     }
     else {
-        // Default for other cases - 1D or 2D without explicit head dimension
-        params_struct.num_q_heads = (q.ndim() >= 2 && q.shape(-1) == params_struct.head_dim) ? q.shape(q.ndim() - 2) : 1;
+        throw std::invalid_argument("[PagedAttentionPrimitive] Query 'q' ndim not supported.");
     }
 
 
@@ -244,13 +263,25 @@ std::pair<std::vector<mx::array>, std::vector<int>> PagedAttentionPrimitive::vma
 
 // --- Output Shape Calculation ---
 std::vector<mx::Shape> PagedAttentionPrimitive::output_shapes(const std::vector<mx::array>& inputs) {
-    // Assuming the output shape is the same as the query shape (Q)
-    // This might need adjustment based on the final kernel logic (e.g., if it concatenates heads)
     if (inputs.empty()) {
-         throw std::invalid_argument("[PagedAttentionPrimitive::output_shapes] Requires at least one input (query).");
+        throw std::invalid_argument("[PagedAttentionPrimitive::output_shapes] Requires at least one input (query).");
     }
-    // For the stub, output shape matches query shape
-    return {inputs[0].shape()};
+
+    const auto& q = inputs[0];
+
+    if (q.ndim() == 3) {
+        // Q is [NumTokens, NumQHeads, HeadDim], output scores are [NumTokens, NumQHeads]
+        return {{q.shape(0), q.shape(1)}};
+    } else if (q.ndim() == 2) {
+        // Q is [NumDispatchThreads, HeadDim], output scores are [NumDispatchThreads]
+        return {{q.shape(0)}};
+    } else if (q.ndim() == 1) {
+        // Q is [NumDispatchThreads], output scores are [NumDispatchThreads] (each thread produces one scalar)
+        // This supports the existing tests.
+        return {q.shape()};
+    } else {
+        throw std::invalid_argument("[PagedAttentionPrimitive::output_shapes] Query input 'q' must be 1D, 2D, or 3D.");
+    }
 }
 
 } // namespace pal::cpp

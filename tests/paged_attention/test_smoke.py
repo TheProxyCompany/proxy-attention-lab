@@ -49,8 +49,11 @@ def test_paged_attention_smoke():
         )
         mx.eval(out)
 
-        assert out.shape == mock_queries.shape, (
-            f"Output shape {out.shape} does not match query shape {mock_queries.shape}"
+        # For 3D queries [NumTokens, NumQHeads, HeadDim], output should be [NumTokens, NumQHeads]
+        expected_output_shape = (num_queries, num_q_heads)
+
+        assert out.shape == expected_output_shape, (
+            f"Output shape {out.shape} does not match expected shape {expected_output_shape}"
         )
         assert out.dtype == mock_queries.dtype, (
             f"Output dtype {out.dtype} does not match query dtype {mock_queries.dtype}"

@@ -21,13 +21,25 @@ mx::array paged_attention(
 
     pal::core::detail::MetalLibRegistrar::ensure_pal_metallib_registered(stream_or_device);
 
-    // Determine output shape and dtype based on inputs (example: matches queries)
-    auto out_shape = queries.shape();
-    auto out_dtype = queries.dtype();
-
     // Create the primitive instance, passing the specific stream/device for this operation
     auto primitive = std::make_shared<PagedAttentionPrimitive>(stream_or_device);
     std::cerr << "[PAL Ops] PagedAttentionPrimitive instance created." << std::endl;
+
+    // Use the primitive's output_shapes method to determine the correct output shape
+    auto output_shapes = primitive->output_shapes({queries, k_cache_pool, v_cache_pool, page_table,
+                                                 sequence_lengths, query_to_seq_map, query_token_offset});
+    if (output_shapes.empty()) {
+        throw std::runtime_error("[PAL Ops] PagedAttentionPrimitive returned empty output_shapes");
+    }
+    auto out_shape = output_shapes[0];
+    auto out_dtype = queries.dtype();
+
+    std::cerr << "[PAL Ops] Output shape determined from primitive: [";
+    for (size_t i = 0; i < out_shape.size(); ++i) {
+        std::cerr << out_shape[i];
+        if (i < out_shape.size() - 1) std::cerr << ", ";
+    }
+    std::cerr << "]" << std::endl;
 
     // Construct the output MLX array, adding the operation in the graph
     return mx::array(
