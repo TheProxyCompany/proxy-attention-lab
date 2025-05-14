@@ -9,11 +9,9 @@
 #include "shaders/paged_attention_types.h"
 #include <stdexcept>
 #include <iostream>
-#include <iostream>
 #include <sstream>
 
 #include "mlx/backend/common/utils.h"
-#include "mlx/backend/cpu/encoder.h"
 #include "mlx/utils.h"
 
 namespace mx = mlx::core;
@@ -194,7 +192,7 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx:
     compute_encoder.set_input_array(sequence_lengths, 4);
     compute_encoder.set_input_array(query_to_seq_map, 5);
     compute_encoder.set_input_array(query_token_offset, 6);
-    compute_encoder.set_bytes(&params_struct, sizeof(PagedAttentionParams), 7);
+    // Don't set bytes here, we'll set them once after all params are populated
     compute_encoder.set_output_array(out, 8);
 
     // --- 6. Dispatch Kernel ---
@@ -266,11 +264,43 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx:
     // NOW upload the complete struct
     compute_encoder.set_bytes(&params_struct, sizeof(PagedAttentionParams), 7);
 
-    MTL::Size group_dims = MTL::Size(num_items_to_process, 1, 1);
-    MTL::Size grid_dims = MTL::Size(threads_per_item_group, 1, 1);
+    // Use correctly named variables: threadgroups_per_grid for group_dims, threads_per_threadgroup for grid_dims
+    MTL::Size threadgroups_per_grid = MTL::Size(num_items_to_process, 1, 1);
+    MTL::Size threads_per_threadgroup = MTL::Size(threads_per_item_group, 1, 1);
 
-    compute_encoder.dispatch_threadgroups(group_dims, grid_dims);
-    // mx::synchronize(s);
+    // Calculate the size of threadgroup memory needed
+    constexpr uint32_t MAX_SIMD_GROUPS_PER_TG = 8;
+    const uint32_t head_dim = params_struct.head_dim;
+
+    // Memory layout:
+    // 1. q_shmem: head_dim floats
+    // 2. G_partial_max_scores: threads_per_item_group floats
+    // 3. G_simd_reduced_maxes: MAX_SIMD_GROUPS_PER_TG floats
+    // 4. G_simd_reduced_adjusted_sum_exps: MAX_SIMD_GROUPS_PER_TG floats
+    // 5. G_final_max_for_item: 1 float
+    size_t tg_memory_bytes = sizeof(float) * (
+        head_dim +                    // q_shmem
+        threads_per_item_group +      // G_partial_max_scores
+        MAX_SIMD_GROUPS_PER_TG +      // G_simd_reduced_maxes
+        MAX_SIMD_GROUPS_PER_TG +      // G_simd_reduced_adjusted_sum_exps
+        1                             // G_final_max_for_item
+    );
+
+    // Check against device's maxThreadgroupMemoryLength
+    MTL::Device* device = d.mtl_device();
+    size_t max_tg_memory = device->maxThreadgroupMemoryLength();
+    if (tg_memory_bytes > max_tg_memory) {
+        throw std::invalid_argument(
+            "[PagedAttentionPrimitive] Required threadgroup memory (" + std::to_string(tg_memory_bytes) +
+            " bytes) exceeds device maximum (" + std::to_string(max_tg_memory) +
+            " bytes). Try reducing head_dim or threads_per_item_group."
+        );
+    }
+
+    // Set the threadgroup memory length at index 0 (matches [[threadgroup(0)]] in kernel)
+    compute_encoder.set_threadgroup_memory_length(tg_memory_bytes, 0);
+
+    compute_encoder.dispatch_threadgroups(threadgroups_per_grid, threads_per_threadgroup);
 }
 
 // --- Print Method ---

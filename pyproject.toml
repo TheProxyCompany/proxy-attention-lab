@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 
 dependencies = [
-    "mlx>=0.25.2",
+    # "mlx>=0.25.2",
     "nanobind==2.5.0",
     "py-build-cmake",
     "pytest",

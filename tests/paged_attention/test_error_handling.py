@@ -210,3 +210,69 @@ def test_invalid_seq_idx_in_query_map():
 
     # Check the sum_exp scores
     assert mx.allclose(sum_exp_scores, expected_zeros, atol=1e-3)
+
+
+def test_large_head_dimension():
+    """
+    Tests paged attention with a head dimension larger than 128.
+
+    With the dynamic threadgroup memory allocation, head dimensions
+    larger than the previous hard-coded limit of 128 should now work.
+    """
+    # Use head_dim = 192, which exceeds the previous limit of 128
+    # Also ensure it's a multiple of 4 as required by the vectorized kernel
+    cfg_head_dim = 192
+    cfg_tokens_per_page = 64
+    cfg_num_kv_heads = 1
+
+    # Create 2D queries with shape [num_q_threads, cfg_head_dim]
+    num_queries = 4
+    py_queries = mx.random.normal((num_queries, cfg_head_dim), dtype=mx.float16)
+
+    num_physical_pages = 2
+    k_cache_shape = (num_physical_pages, cfg_tokens_per_page, cfg_num_kv_heads, cfg_head_dim)
+    py_k_cache_pool = mx.random.normal(k_cache_shape, dtype=mx.float16)
+    py_v_cache_pool = mx.random.normal(k_cache_shape, dtype=mx.float16)
+
+    # Simple page table with two sequences
+    py_page_table = mx.array(
+        [
+            [0],  # Sequence 0 uses physical page 0
+            [1],  # Sequence 1 uses physical page 1
+        ],
+        dtype=mx.uint32,
+    )
+    py_sequence_lengths = mx.array([32, 32], dtype=mx.int32)
+
+    # Map queries to sequences
+    py_query_to_seq_map = mx.array([0, 0, 1, 1], dtype=mx.int32)
+    py_query_token_offset = mx.array([0, 1, 0, 1], dtype=mx.int32)
+
+    output_arr = paged_attention(
+        py_queries,
+        py_k_cache_pool,
+        py_v_cache_pool,
+        py_page_table,
+        py_sequence_lengths,
+        py_query_to_seq_map,
+        py_query_token_offset,
+    )
+    mx.eval(output_arr)
+
+    # Verify output shape and data types
+    total_items = num_queries
+    expected_output_shape = (total_items * 2,)  # [items * 2] for planar layout
+
+    assert output_arr.shape == expected_output_shape
+    assert output_arr.dtype == mx.float16
+
+    # Extract the max scores and sum_exp scores
+    max_scores = output_arr[:total_items]
+    sum_exp_scores = output_arr[total_items:]
+
+    # Verify scores are finite and sum_exp scores are non-negative
+    assert mx.isfinite(max_scores).all(), "Max scores should be finite"
+    assert mx.isfinite(sum_exp_scores).all(), "Sum-exp scores should be finite"
+    assert (sum_exp_scores >= 0).all(), "Sum-exp scores should be non-negative"
+
+    logger.info(f"Large head dimension test passed with head_dim={cfg_head_dim}")

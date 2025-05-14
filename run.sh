@@ -45,7 +45,8 @@ if [ "$CLEAN_BUILD" = true ]; then
 fi
 
 log "Installing/Updating PAL dependencies (including MLX, Nanobind from pyproject.toml)..."
-"$UV_EXECUTABLE_PATH" pip install --no-deps "mlx>=0.25.2" "nanobind==2.5.0"
+export CMAKE_BUILD_PARALLEL_LEVEL=8 # Set parallel build level to 8
+"$UV_EXECUTABLE_PATH" pip install --no-deps "git+https://github.com/TheProxyCompany/mlx.git" "nanobind==2.5.0"
 "$UV_EXECUTABLE_PATH" pip install "." --force-reinstall --no-build-isolation --no-cache-dir
 
 # Run Pytest

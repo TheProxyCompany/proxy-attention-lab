@@ -9,7 +9,6 @@
 using namespace metal;
 
 // Compile-time constants for kernel configuration
-constant static const uint MAX_HEAD_DIM_FOR_SHARED_MEM = 128; // Max head_dim supported by q_shmem
 constant static const uint MAX_SIMD_GROUPS_PER_TG = 8; // Max possible SIMD groups (256/32 = 8)
 
 
@@ -45,6 +44,7 @@ constant static const uint MAX_SIMD_GROUPS_PER_TG = 8; // Max possible SIMD grou
     device      const int* query_token_offset_in    [[buffer(6)]],
     constant    const PagedAttentionParams& params  [[buffer(7)]],
     device      half* output_buffer                 [[buffer(8)]],
+    threadgroup float* tg_mem                       [[threadgroup(0)]],
     uint3       tg_pos_in_grid                      [[threadgroup_position_in_grid]],
     uint3       tg_dim                              [[threads_per_threadgroup]],
     uint        local_idx_in_tg                     [[thread_index_in_threadgroup]],
@@ -59,12 +59,12 @@ constant static const uint MAX_SIMD_GROUPS_PER_TG = 8; // Max possible SIMD grou
     uint local_thread_idx = local_idx_in_tg;    // Thread ID within this group (0 to THREADS_PER_ITEM_GROUP_CONST - 1)
 
 
-    // --- Declare Threadgroup Shared Memory for Q-vector and Reduction ---
-    threadgroup float q_shmem[MAX_HEAD_DIM_FOR_SHARED_MEM];
-    threadgroup float G_partial_max_scores[256]; // Use maximum possible threads (assuming 256 is max)
-    threadgroup float G_simd_reduced_maxes[MAX_SIMD_GROUPS_PER_TG];
-    threadgroup float G_simd_reduced_adjusted_sum_exps[MAX_SIMD_GROUPS_PER_TG];
-    threadgroup float G_final_max_for_item = 0.0f; // For broadcasting the final max, initialize to avoid warnings
+    // --- Carve the dynamic threadgroup buffer into logical sub-arrays ---
+    threadgroup float* q_shmem                           = tg_mem;                    // head_dim floats
+    threadgroup float* G_partial_max_scores              = q_shmem + params.head_dim; // threads_per_tg floats
+    threadgroup float* G_simd_reduced_maxes              = G_partial_max_scores + tg_dim.x;
+    threadgroup float* G_simd_reduced_adjusted_sum_exps  = G_simd_reduced_maxes + MAX_SIMD_GROUPS_PER_TG;
+    threadgroup float* G_final_max_for_item              = G_simd_reduced_adjusted_sum_exps + MAX_SIMD_GROUPS_PER_TG;
 
     // --- Determine Q-vector pointer for this item ---
     // This logic is adapted from the original single-thread-per-item kernel.
@@ -83,16 +83,8 @@ constant static const uint MAX_SIMD_GROUPS_PER_TG = 8; // Max possible SIMD grou
 
     // --- Stage Q-vector into Shared Memory ---
     // Each thread in the group cooperatively loads a portion.
-    // A C++ side validation should ensure params.head_dim <= MAX_HEAD_DIM_FOR_SHARED_MEM.
-    // If params were dynamic, we'd add a runtime check here.
-    if (params.head_dim > MAX_HEAD_DIM_FOR_SHARED_MEM) {
-        // Error condition: head_dim too large for statically sized shared memory.
-        // Write an error marker if possible, or this will lead to issues.
-        if (local_thread_idx == 0) {
-            output_buffer[global_item_idx] = -999.0h; // Error indicator
-        }
-        return; // Or trigger_debug_trap();
-    }
+    // Since we're using dynamic threadgroup memory allocation, no need to check against a fixed limit.
+    // The C++ side will ensure the requested memory size is within device limits.
 
     for (uint i = local_thread_idx; i < params.head_dim; i += tg_dim.x) {
         q_shmem[i] = (float)q_vector_item_ptr[i];
@@ -275,12 +267,12 @@ constant static const uint MAX_SIMD_GROUPS_PER_TG = 8; // Max possible SIMD grou
         }
 
         // Store for broadcasting to all threads
-        G_final_max_for_item = final_global_max_score;
+        *G_final_max_for_item = final_global_max_score;
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
     // All threads read the global max score
-    float final_max_score_for_item_from_shared = G_final_max_for_item;
+    float final_max_score_for_item_from_shared = *G_final_max_for_item;
 
     // --- Adjust and Reduce sum_exp_score ---
     float adjusted_thread_local_sum_exp = 0.0f;
