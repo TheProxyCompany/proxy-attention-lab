@@ -21,7 +21,6 @@ identical inputs produce bit-for-bit identical outputs.
 import logging
 
 import mlx.core as mx
-import numpy as np
 
 from proxy_attention_lab import paged_attention
 
@@ -49,7 +48,7 @@ def test_paged_attention_determinism() -> None:
     max_logical_blocks_per_seq = (tokens_per_page * 2) // tokens_per_page  # e.g., 2 blocks
 
     # Seed for reproducibility of input data generation
-    mx.random.seed(42)
+    mx.random.seed(11)
 
     # --- Setup Test Inputs (Identical for both calls) ---
     # 1. Queries: 3D [NumQueryTokens, NumQHeads, HeadDim]
@@ -57,48 +56,55 @@ def test_paged_attention_determinism() -> None:
     # Total items dispatched will be num_queries_tokens * num_q_heads
     queries_shape = (num_queries_tokens, num_q_heads, head_dim)
     # Explicitly create numpy array first, then convert, to ensure identical initial data
-    np_queries = np.random.normal(size=queries_shape).astype(np.float16)
-    py_queries = mx.array(np_queries)
+    py_queries = mx.random.normal(queries_shape, dtype=mx.float16)
 
     # 2. K/V Cache Pools
     kv_cache_shape = (num_total_pages, tokens_per_page, num_kv_heads, head_dim)
-    np_k_cache_pool = np.random.normal(size=kv_cache_shape).astype(np.float16)
-    np_v_cache_pool = np.random.normal(size=kv_cache_shape).astype(np.float16)
-    py_k_cache_pool = mx.array(np_k_cache_pool)
-    py_v_cache_pool = mx.array(np_v_cache_pool)
+    py_k_cache_pool = mx.random.normal(kv_cache_shape, dtype=mx.float16)
+    py_v_cache_pool = mx.random.normal(kv_cache_shape, dtype=mx.float16)
 
     # 3. Page Table: [NumSequencesInBatch, MaxLogicalBlocksPerSeq]
     # Ensure page IDs are valid (0 to num_total_pages - 1)
-    np_page_table = np.random.randint(
-        0, num_total_pages, size=(num_sequences_in_batch, max_logical_blocks_per_seq)
-    ).astype(np.uint32)
-    py_page_table = mx.array(np_page_table)
+    py_page_table = mx.random.randint(
+        0, num_total_pages, [num_sequences_in_batch, max_logical_blocks_per_seq], dtype=mx.uint32
+    )
 
     # 4. Sequence Lengths: [NumSequencesInBatch]
     # Ensure lengths are within reasonable bounds (e.g., up to max_logical_blocks_per_seq * tokens_per_page)
     max_seq_len_possible = max_logical_blocks_per_seq * tokens_per_page
-    np_sequence_lengths = np.random.randint(1, max_seq_len_possible + 1, size=(num_sequences_in_batch,)).astype(
-        np.int32
-    )
-    py_sequence_lengths = mx.array(np_sequence_lengths)
+    py_sequence_lengths = mx.random.randint(1, max_seq_len_possible + 1, [num_sequences_in_batch], dtype=mx.int32)
 
     # 5. Query to Sequence Map: [NumQueryTokens] (mapping each of the first dim of Q to a sequence)
     # Values from 0 to num_sequences_in_batch - 1
-    np_query_to_seq_map = np.random.randint(
+    py_query_to_seq_map = mx.random.randint(
         0,
         num_sequences_in_batch,
-        size=(num_queries_tokens,),  # Matches the first dimension of 3D queries
-    ).astype(np.int32)
-    py_query_to_seq_map = mx.array(np_query_to_seq_map)
+        [num_queries_tokens],  # Matches the first dimension of 3D queries
+        dtype=mx.int32,
+    )
 
     # 6. Query Token Offset: [NumQueryTokens]
     # Offset for each query token within its sequence
     # Ensure offsets are less than the corresponding sequence_lengths
-    np_query_token_offset = np.zeros((num_queries_tokens,), dtype=np.int32)
+    # For generating query_token_offset, it's easier to use Python's random for conditional logic
+    # then convert to mx.array, as direct element-wise assignment based on another array's values
+    # is less straightforward with MLX's immutable arrays compared to NumPy.
+    # We'll build a Python list first.
+    _query_token_offset_list = [0] * num_queries_tokens
     for i in range(num_queries_tokens):
-        seq_idx = np_query_to_seq_map[i]
-        np_query_token_offset[i] = np.random.randint(0, np_sequence_lengths[seq_idx])
-    py_query_token_offset = mx.array(np_query_token_offset)
+        # Need to access scalar values from mx.array for Python's random.randint
+        seq_idx = py_query_to_seq_map[i].item()
+        max_offset = py_sequence_lengths[seq_idx].item()
+        # Ensure max_offset is at least 1 for randint(0, max_offset-1) if max_offset is 1
+        # or use randint(0, N) where N is exclusive if max_offset is 0 (empty sequence, offset 0)
+        # However, sequence_lengths are generated from 1 up, so max_offset >= 1.
+        # np.random.randint(low, high) -> low is inclusive, high is exclusive
+        # We want offset to be 0 to length-1. So randint(0, length)
+        if max_offset > 0:
+            _query_token_offset_list[i] = mx.random.randint(0, max_offset, []).item()
+        else:  # Should not happen based on sequence_lengths generation, but defensive
+            _query_token_offset_list[i] = 0
+    py_query_token_offset = mx.array(_query_token_offset_list, dtype=mx.int32)
 
     # --- Call paged_attention the first time ---
     logger.info("Determinism Test: First call to paged_attention.")
@@ -116,23 +122,15 @@ def test_paged_attention_determinism() -> None:
     # --- Call paged_attention the second time with identical inputs ---
     # Re-create from numpy arrays to ensure no aliasing or in-place modification issues
     # (though MLX arrays are usually immutable, this is an extra safeguard for test setup)
-    py_queries_2 = mx.array(np_queries)
-    py_k_cache_pool_2 = mx.array(np_k_cache_pool)
-    py_v_cache_pool_2 = mx.array(np_v_cache_pool)
-    py_page_table_2 = mx.array(np_page_table)
-    py_sequence_lengths_2 = mx.array(np_sequence_lengths)
-    py_query_to_seq_map_2 = mx.array(np_query_to_seq_map)
-    py_query_token_offset_2 = mx.array(np_query_token_offset)
-
     logger.info("Determinism Test: Second call to paged_attention with identical inputs.")
     output2 = paged_attention(
-        py_queries_2,
-        py_k_cache_pool_2,
-        py_v_cache_pool_2,
-        py_page_table_2,
-        py_sequence_lengths_2,
-        py_query_to_seq_map_2,
-        py_query_token_offset_2,
+        py_queries,  # MLX arrays are immutable, can reuse
+        py_k_cache_pool,
+        py_v_cache_pool,
+        py_page_table,
+        py_sequence_lengths,
+        py_query_to_seq_map,
+        py_query_token_offset,
     )
     mx.eval(output2)  # Ensure computation is done
 

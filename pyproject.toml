@@ -19,8 +19,7 @@ dependencies = [
     "black",
     "isort",
     "ruff",
-    "mypy",
-    "numpy",
+    "mypy"
 ]
 
 [tool.setuptools]
