@@ -112,14 +112,26 @@ def test_max_score_over_history_in_one_block():
     logger.info(f"Expected max score: {expected_max_score}")
 
     # The expected max score should be from hist_pos=1 (score1 = 10.0)
+    expected_max_score = max(scores)
     expected_output = mx.array([expected_max_score], dtype=mx.float16)
 
-    logger.info(f"Test: Expected output: {expected_output}")
-    logger.info(f"Test: Actual output: {output_arr}")
+    # Output is now in planar format [num_q_threads * 2] where:
+    # - First half contains max scores: output_arr[:num_q_threads]
+    # - Second half contains sum_exp scores: output_arr[num_q_threads:]
+    expected_output_shape = (num_q_threads * 2,)
 
-    assert output_arr.shape == (num_q_threads,)
+    # Extract max scores from the first plane
+    max_scores = output_arr[:num_q_threads]
+
+    logger.info(f"Test: Expected output shape: {expected_output_shape}")
+    logger.info(f"Test: Actual output shape: {output_arr.shape}")
+    logger.info(f"Test: Expected max score: {expected_output}")
+    logger.info(f"Test: Actual max scores: {max_scores}")
+    logger.info(f"Test: Actual sum_exp scores: {output_arr[num_q_threads:]}")
+
+    assert output_arr.shape == expected_output_shape
     assert output_arr.dtype == mx.float16
-    assert mx.allclose(output_arr, expected_output, atol=1e-2, rtol=1e-2)
+    assert mx.allclose(max_scores, expected_output, atol=1e-2, rtol=1e-2)
 
     logger.info("test_max_score_over_history_in_one_block PASSED")
 
@@ -253,12 +265,23 @@ def test_max_score_over_multi_block_history():
     # The expected max score should be from hist_pos=3 (score3 = 15.0)
     expected_output = mx.array([expected_max_score], dtype=mx.float16)
 
-    logger.info(f"Test: Expected output: {expected_output}")
-    logger.info(f"Test: Actual output: {output_arr}")
+    # Output is now in planar format [num_q_threads * 2] where:
+    # - First half contains max scores: output_arr[:num_q_threads]
+    # - Second half contains sum_exp scores: output_arr[num_q_threads:]
+    expected_output_shape = (num_q_threads * 2,)
 
-    assert output_arr.shape == (num_q_threads,)
+    # Extract max scores from the first plane
+    max_scores = output_arr[:num_q_threads]
+
+    logger.info(f"Test: Expected output shape: {expected_output_shape}")
+    logger.info(f"Test: Actual output shape: {output_arr.shape}")
+    logger.info(f"Test: Expected max score: {expected_output}")
+    logger.info(f"Test: Actual max scores: {max_scores}")
+    logger.info(f"Test: Actual sum_exp scores: {output_arr[num_q_threads:]}")
+
+    assert output_arr.shape == expected_output_shape
     assert output_arr.dtype == mx.float16
-    assert mx.allclose(output_arr, expected_output, atol=1e-2, rtol=1e-2)
+    assert mx.allclose(max_scores, expected_output, atol=1e-2, rtol=1e-2)
 
     logger.info("test_max_score_over_multi_block_history PASSED")
 
@@ -323,18 +346,36 @@ def test_zero_history_returns_zero_score():
 
     # --- Expected output ---
     # For zero history, the kernel should return 0.0 for all threads
-    expected_output = mx.zeros(num_q_threads, dtype=mx.float16)
+    # Both max scores and sum_exp scores should be 0
+    expected_max_scores = mx.zeros(num_q_threads, dtype=mx.float16)
+    expected_sum_exp_scores = mx.zeros(num_q_threads, dtype=mx.float16)
+
+    # Output is now in planar format [num_q_threads * 2] where:
+    # - First half contains max scores: output_arr[:num_q_threads]
+    # - Second half contains sum_exp scores: output_arr[num_q_threads:]
+    expected_output_shape = (num_q_threads * 2,)
+
+    # Extract max scores and sum_exp scores from the planes
+    max_scores = output_arr[:num_q_threads]
+    sum_exp_scores = output_arr[num_q_threads:]
 
     logger.info(f"Test Zero History: Query token offsets = {py_query_token_offset}")
-    logger.info(f"Test Zero History: Expected output = {expected_output}")
-    logger.info(f"Test Zero History: Actual output = {output_arr}")
+    logger.info(f"Test Zero History: Expected output shape = {expected_output_shape}")
+    logger.info(f"Test Zero History: Actual output shape = {output_arr.shape}")
+    logger.info(f"Test Zero History: Expected max scores = {expected_max_scores}")
+    logger.info(f"Test Zero History: Actual max scores = {max_scores}")
+    logger.info(f"Test Zero History: Expected sum_exp scores = {expected_sum_exp_scores}")
+    logger.info(f"Test Zero History: Actual sum_exp scores = {sum_exp_scores}")
 
     # Verify output shape and type
-    assert output_arr.shape == (num_q_threads,)
+    assert output_arr.shape == expected_output_shape
     assert output_arr.dtype == mx.float16
 
-    # Verify all outputs are 0.0
-    assert mx.allclose(output_arr, expected_output, atol=1e-3)
+    # Verify max scores are 0.0
+    assert mx.allclose(max_scores, expected_max_scores, atol=1e-3)
+
+    # Also verify that sum_exp scores are 0.0
+    assert mx.allclose(sum_exp_scores, expected_sum_exp_scores, atol=1e-3)
 
     logger.info("test_zero_history_returns_zero_score PASSED")
 
@@ -425,21 +466,31 @@ def test_history_limited_by_sequence_length():
     expected_max_score = score1
     expected_output = mx.array([expected_max_score], dtype=mx.float16)
 
+    # Output is now in planar format [num_q_threads * 2] where:
+    # - First half contains max scores: output_arr[:num_q_threads]
+    # - Second half contains sum_exp scores: output_arr[num_q_threads:]
+    num_q_threads = 1  # For this test
+    expected_output_shape = (num_q_threads * 2,)
+
+    # Extract max scores from the first plane
+    max_scores = output_arr[:num_q_threads]
+
     logger.info(f"Test History Limit: actual_sequence_length = {actual_sequence_length}")
     logger.info(f"Test History Limit: query_token_offset = {query_token_offset}")
     logger.info(f"Test History Limit: Score for position 0 = {score0}")
     logger.info(f"Test History Limit: Score for position 1 = {score1} (max)")
     logger.info(f"Test History Limit: Score for position 2 = {score2}")
     logger.info(f"Test History Limit: Expected max score = {expected_max_score}")
-    logger.info(f"Test History Limit: Actual output = {output_arr}")
+    logger.info(f"Test History Limit: Actual max scores = {max_scores}")
+    logger.info(f"Test History Limit: Actual sum_exp scores = {output_arr[num_q_threads:]}")
 
     # Verify output shape and type
-    assert output_arr.shape == (1,)
+    assert output_arr.shape == expected_output_shape
     assert output_arr.dtype == mx.float16
 
     # Verify the max score is from position 1, not from positions 3 or 4
     # which should not be accessed due to sequence length limit
-    assert mx.allclose(output_arr, expected_output, atol=1e-2, rtol=1e-2)
+    assert mx.allclose(max_scores, expected_output, atol=1e-2, rtol=1e-2)
 
     logger.info("test_history_limited_by_sequence_length PASSED")
 
@@ -539,6 +590,15 @@ def test_history_scan_stops_at_page_table_limit():
     expected_max_score = score2
     expected_output = mx.array([expected_max_score], dtype=mx.float16)
 
+    # Output is now in planar format [num_q_threads * 2] where:
+    # - First half contains max scores: output_arr[:num_q_threads]
+    # - Second half contains sum_exp scores: output_arr[num_q_threads:]
+    num_q_threads = 1  # For this test
+    expected_output_shape = (num_q_threads * 2,)
+
+    # Extract max scores from the first plane
+    max_scores = output_arr[:num_q_threads]
+
     logger.info(f"Test Page Table Limit: max_logical_blocks_per_seq = {max_logical_blocks_per_seq_in_pagetable}")
     logger.info(f"Test Page Table Limit: query_token_offset = {query_token_offset}")
     logger.info("Test Page Table Limit: Scores for positions in valid blocks:")
@@ -547,13 +607,14 @@ def test_history_scan_stops_at_page_table_limit():
     logger.info(f"  Position 2 (block 1, slot 0): {score2} (max)")
     logger.info(f"  Position 3 (block 1, slot 1): {score3}")
     logger.info(f"Test Page Table Limit: Expected max score = {expected_max_score}")
-    logger.info(f"Test Page Table Limit: Actual output = {output_arr}")
+    logger.info(f"Test Page Table Limit: Actual max scores = {max_scores}")
+    logger.info(f"Test Page Table Limit: Actual sum_exp scores = {output_arr[num_q_threads:]}")
 
     # Verify output shape and type
-    assert output_arr.shape == (1,)
+    assert output_arr.shape == expected_output_shape
     assert output_arr.dtype == mx.float16
 
     # Verify the max score is from position 2, which is within the valid page table range
-    assert mx.allclose(output_arr, expected_output, atol=1e-2, rtol=1e-2)
+    assert mx.allclose(max_scores, expected_output, atol=1e-2, rtol=1e-2)
 
     logger.info("test_history_scan_stops_at_page_table_limit PASSED")

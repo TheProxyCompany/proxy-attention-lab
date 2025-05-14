@@ -61,17 +61,37 @@ def test_fetch_k_vector_element_for_first_token_of_sequence():
 
     # Debug the actual output shape
     logger.info(f"DEBUG: output_arr shape = {output_arr.shape}, type = {type(output_arr)}")
-    # For 2D queries, the output is [num_q_threads] (scalar per thread)
-    expected_output_value = mx.array([550.0, 2200.0], dtype=mx.float16)
-    expected_output_shape = (num_q_threads,)
 
-    logger.info(f"Test: Expected output values: {expected_output_value}")
-    logger.info(f"Test: Actual output  : {output_arr}")
+    # For 2D queries, the output is now [num_q_threads * 2] (planar layout)
+    # First half contains max scores, second half contains sum_exp scores
+    expected_output_shape = (num_q_threads * 2,)
+
+    # Original mathematically correct expected values
+    expected_max_scores = mx.array([550.0, 2200.0], dtype=mx.float16)
+
+    # Expected sum_exp scores: For max scores of 550.0 and 1100.0,
+    # the sum_exp should be 1.0 as exp(0) = 1.0 (only one item in history)
+    expected_sum_exp_scores = mx.array([1.0, 1.0], dtype=mx.float16)
+
+    logger.info(f"Test: Expected output shape: {expected_output_shape}")
+    logger.info(f"Test: Actual output shape: {output_arr.shape}")
+    logger.info(f"Test: Expected max scores: {expected_max_scores}")
+    logger.info(f"Test: Actual max scores (first plane): {output_arr[:num_q_threads]}")
+    logger.info(f"Test: Expected sum_exp scores: {expected_sum_exp_scores}")
+    logger.info(f"Test: Actual sum_exp scores (second plane): {output_arr[num_q_threads:]}")
+
     assert output_arr.shape == expected_output_shape
     assert output_arr.dtype == mx.float16
 
-    # Check each scalar output value
-    assert mx.allclose(output_arr, expected_output_value, atol=1e-3)
+    # Extract the max scores (first plane)
+    max_scores = output_arr[:num_q_threads]
+    sum_exp_scores = output_arr[num_q_threads:]
+
+    # Check that max scores match the expected values
+    assert mx.allclose(max_scores, expected_max_scores, atol=1e-3)
+
+    # Check that sum_exp scores match the expected values (with higher tolerance for float16 precision)
+    assert mx.allclose(sum_exp_scores, expected_sum_exp_scores, atol=1e-2)
 
 
 def test_fetch_entire_k_vector_for_specific_token_slot():
@@ -121,17 +141,30 @@ def test_fetch_entire_k_vector_for_specific_token_slot():
     )
     mx.eval(output_arr)
 
-    # For 2D queries, the output is [num_q_threads] (scalar per thread)
-    expected_output_value = mx.array([500.0, 2600.0], dtype=mx.float16)
-    expected_output_shape = (num_q_threads,)
+    # For 2D queries, the output is now [num_q_threads * 2] (planar layout)
+    # First half contains max scores, second half contains sum_exp scores
+    expected_output_shape = (num_q_threads * 2,)
 
-    logger.info(f"Test: Expected output values: {expected_output_value}")
-    logger.info(f"Test: Actual output  : {output_arr}")
+    # Original mathematically correct expected values
+    # 100.0 * (1+2+3+4) * 0.5 = 100.0 * 10 * 0.5 = 500.0
+    # 200.0 * (5+6+7+8) * 0.5 = 200.0 * 26 * 0.5 = 2600.0
+    expected_max_scores = mx.array([500.0, 2600.0], dtype=mx.float16)
+
+    logger.info(f"Test: Expected output shape: {expected_output_shape}")
+    logger.info(f"Test: Actual output shape: {output_arr.shape}")
+    logger.info(f"Test: Expected max scores: {expected_max_scores}")
+    logger.info(f"Test: Actual max scores (first plane): {output_arr[:num_q_threads]}")
+    logger.info(f"Test: Actual sum_exp scores (second plane): {output_arr[num_q_threads:]}")
+
     assert output_arr.shape == expected_output_shape
     assert output_arr.dtype == mx.float16
 
-    # Check each scalar output value
-    assert mx.allclose(output_arr, expected_output_value, atol=1e-3)
+    # Extract the max scores (first plane)
+    max_scores = output_arr[:num_q_threads]
+    output_arr[num_q_threads:]
+
+    # Check that max scores match the expected values
+    assert mx.allclose(max_scores, expected_max_scores, atol=1e-3)
 
 
 def test_fetch_k_vector_from_variable_token_slot_in_first_logical_block():
@@ -186,21 +219,38 @@ def test_fetch_k_vector_from_variable_token_slot_in_first_logical_block():
     )
     mx.eval(output_arr)
 
-    # Scale = 1 / sqrt(cfg_head_dim)
-    numerator = mx.array(float(cfg_head_dim)).item()
-    assert isinstance(numerator, float)
+    # For 2D queries, the output is now [num_q_threads * 2] (planar layout)
+    # First half contains max scores, second half contains sum_exp scores
+    expected_output_shape = (num_q_threads * 2,)
 
-    # For 2D queries, the output is [num_q_threads] (scalar per thread)
-    expected_output_value = mx.array([500.0, 2600.0], dtype=mx.float16)
-    expected_output_shape = (num_q_threads,)
+    # Original mathematically correct expected values
+    # 100.0 * (1+2+3+4) * 0.5 = 100.0 * 10 * 0.5 = 500.0
+    # 200.0 * (5+6+7+8) * 0.5 = 200.0 * 26 * 0.5 = 2600.0
+    expected_max_scores = mx.array([500.0, 2600.0], dtype=mx.float16)
 
-    logger.info(f"Test: Expected output values: {expected_output_value}")
-    logger.info(f"Test: Actual output  : {output_arr}")
+    # For the sum_exp_scores, since we have single token histories with scalar max scores,
+    # the sum_exp will be exp(0) = 1.0 for each query
+    expected_sum_exp_scores = mx.array([1.0, 1.0], dtype=mx.float16)
+
+    logger.info(f"Test: Expected output shape: {expected_output_shape}")
+    logger.info(f"Test: Actual output shape: {output_arr.shape}")
+    logger.info(f"Test: Expected max scores: {expected_max_scores}")
+    logger.info(f"Test: Actual max scores (first plane): {output_arr[:num_q_threads]}")
+    logger.info(f"Test: Expected sum_exp scores: {expected_sum_exp_scores}")
+    logger.info(f"Test: Actual sum_exp scores (second plane): {output_arr[num_q_threads:]}")
+
     assert output_arr.shape == expected_output_shape
     assert output_arr.dtype == mx.float16
 
-    # Check each scalar output value
-    assert mx.allclose(output_arr, expected_output_value, atol=1e-3)
+    # Extract the max scores (first plane)
+    max_scores = output_arr[:num_q_threads]
+    sum_exp_scores = output_arr[num_q_threads:]
+
+    # Check that max scores match the expected values
+    assert mx.allclose(max_scores, expected_max_scores, atol=1e-3)
+
+    # Check that sum_exp scores match the expected values (with higher tolerance for float16 precision)
+    assert mx.allclose(sum_exp_scores, expected_sum_exp_scores, atol=1e-2)
 
 
 def test_correct_token_processing_for_2d_queries_variable_offsets():
@@ -256,21 +306,130 @@ def test_correct_token_processing_for_2d_queries_variable_offsets():
     )
     mx.eval(output_arr)
 
-    denominator = mx.sqrt(mx.array(float(cfg_head_dim))).item()
-    assert isinstance(denominator, float)
-    py_scale = 1.0 / denominator
-    score0 = (1 * 1 + 2 * 1 + 1 * 1 + 2 * 1) * py_scale  # = 6 * 0.5 = 3.0
-    score1 = (3 * 2 + 4 * 2 + 3 * 2 + 4 * 2) * py_scale  # = 28 * 0.5 = 14.0
-
-    expected_output = mx.array([score0, score1], dtype=mx.float16)  # Output is 1D [num_q_threads]
+    # Original mathematically correct expected values
+    expected_output = mx.array([3.0, 14.0], dtype=mx.float16)
 
     logger.info(f"DEBUG 2D regression test: output_arr shape = {output_arr.shape}, values = {output_arr}")
     logger.info(f"DEBUG 2D regression test: expected shape = {expected_output.shape}, values = {expected_output}")
 
-    assert output_arr.shape == expected_output.shape
-    assert mx.allclose(output_arr, expected_output, atol=1e-2, rtol=1e-2)
+    # For 2D queries, the output is now [num_q_threads * 2] (planar layout)
+    expected_output_shape = (num_q_threads * 2,)
+    assert output_arr.shape == expected_output_shape
+
+    # Extract max scores (first plane)
+    max_scores = output_arr[:num_q_threads]
+
+    # Check that max scores match the expected values
+    assert mx.allclose(max_scores, expected_output, atol=1e-2, rtol=1e-2)
 
     logger.info("test_correct_token_processing_for_2d_queries_variable_offsets PASSED")
+
+
+def test_parallel_online_max_and_sum_exp():
+    """Test the parallel online max and sum-exp computation."""
+    num_q_threads = 1  # Just one query thread for this test
+    cfg_tokens_per_page = 64
+    cfg_num_kv_heads = 1
+    cfg_head_dim = 4
+
+    # Current token position is 5, so we'll attend to history positions 0, 1, 2, 3, 4
+    current_position = 5
+
+    # --- Inputs ---
+    # 1. Q-vector: Shape [num_q_threads, cfg_head_dim]
+    py_queries = mx.array([[1.0, 1.0, 1.0, 1.0]], dtype=mx.float16)
+
+    # 2. K-Cache Pool: [NumPhysPages, TokensPerPage, NumKVHeads, HeadDim]
+    num_physical_pages = 1
+    k_cache_shape = (num_physical_pages, cfg_tokens_per_page, cfg_num_kv_heads, cfg_head_dim)
+    py_k_cache_pool = mx.zeros(k_cache_shape, dtype=mx.float16)
+
+    # Historical K-vectors with different values to produce different scores
+    # K-vector at position 0: small score
+    py_k_cache_pool[0, 0, 0, :] = mx.array([0.2, 0.2, 0.2, 0.2], dtype=mx.float16)
+    # K-vector at position 1: medium score
+    py_k_cache_pool[0, 1, 0, :] = mx.array([0.5, 0.5, 0.5, 0.5], dtype=mx.float16)
+    # K-vector at position 2: highest score
+    py_k_cache_pool[0, 2, 0, :] = mx.array([1.0, 1.0, 1.0, 1.0], dtype=mx.float16)
+    # K-vector at position 3: medium score
+    py_k_cache_pool[0, 3, 0, :] = mx.array([0.5, 0.5, 0.5, 0.5], dtype=mx.float16)
+    # K-vector at position 4: small score
+    py_k_cache_pool[0, 4, 0, :] = mx.array([0.2, 0.2, 0.2, 0.2], dtype=mx.float16)
+
+    # 3. V-Cache Pool (not used for this test)
+    py_v_cache_pool = mx.zeros_like(py_k_cache_pool)
+
+    # 4. Page Table: Maps logical block 0 to physical page 0
+    py_page_table = mx.array([[0]], dtype=mx.uint32)  # Shape (1, 1)
+
+    # 5. Sequence Lengths: One sequence with enough tokens
+    py_sequence_lengths = mx.array([cfg_tokens_per_page], dtype=mx.int32)
+
+    # 6. Query to Sequence Map: Maps our single query to sequence 0
+    py_query_to_seq_map = mx.zeros(num_q_threads, dtype=mx.int32)
+
+    # 7. Query Token Offset: Current position
+    py_query_token_offset = mx.array([current_position], dtype=mx.int32)
+
+    # --- Call the kernel ---
+    output_arr = paged_attention(
+        py_queries,
+        py_k_cache_pool,
+        py_v_cache_pool,
+        py_page_table,
+        py_sequence_lengths,
+        py_query_to_seq_map,
+        py_query_token_offset,
+    )
+    mx.eval(output_arr)
+
+    # --- Calculate expected outputs ---
+    # Scale factor for dot product
+    denominator = mx.sqrt(mx.array(float(cfg_head_dim))).item()
+    assert isinstance(denominator, float)
+    scale = 1.0 / denominator
+
+    # The scores for each position (with scaling)
+    pos0_score = 4 * 0.2 * scale  # 0.2 * 1.0 * 4
+    pos1_score = 4 * 0.5 * scale  # 0.5 * 1.0 * 4
+    pos2_score = 4 * 1.0 * scale  # 1.0 * 1.0 * 4
+    pos3_score = 4 * 0.5 * scale  # 0.5 * 1.0 * 4
+    pos4_score = 4 * 0.2 * scale  # 0.2 * 1.0 * 4
+
+    # Expected max score (from position 2)
+    expected_max_score = pos2_score
+
+    # Expected sum_exp score (sum of exp(score - max_score) for all positions)
+    # For numerical stability, expf(max(score - max_score, -16.0f))
+    expected_sum_exp = (
+        mx.exp(mx.array(pos0_score - expected_max_score))
+        + mx.exp(mx.array(pos1_score - expected_max_score))
+        + mx.exp(mx.array(pos2_score - expected_max_score))  # This will be 1.0
+        + mx.exp(mx.array(pos3_score - expected_max_score))
+        + mx.exp(mx.array(pos4_score - expected_max_score))
+    ).item()
+
+    logger.info(f"Test online Log-Sum-Exp: Expected max score: {expected_max_score}")
+    logger.info(f"Test online Log-Sum-Exp: Expected sum-exp score: {expected_sum_exp}")
+
+    # For 2D queries, the output is now [num_q_threads * 2] (planar layout)
+    expected_output_shape = (num_q_threads * 2,)
+    assert output_arr.shape == expected_output_shape
+
+    # Extract max scores and sum_exp scores
+    max_scores = output_arr[:num_q_threads]
+    sum_exp_scores = output_arr[num_q_threads:]
+
+    logger.info(f"Test online Log-Sum-Exp: Actual max score: {max_scores[0]}")
+    logger.info(f"Test online Log-Sum-Exp: Actual sum-exp score: {sum_exp_scores[0]}")
+
+    # Check max score matches expected value
+    assert mx.allclose(max_scores[0], mx.array(expected_max_score, dtype=mx.float16), atol=1e-3)
+
+    # Check sum_exp score matches expected value (with higher tolerance due to float16 precision)
+    assert mx.allclose(sum_exp_scores[0], mx.array(expected_sum_exp, dtype=mx.float16), atol=1e-2)
+
+    logger.info("test_parallel_online_max_and_sum_exp PASSED")
 
 
 def test_dot_product_q_with_single_k_vector():
@@ -320,15 +479,14 @@ def test_dot_product_q_with_single_k_vector():
     # 5. sequence_lengths: [NumBatchSequences]
     py_sequence_lengths = mx.array([cfg_tokens_per_page], dtype=mx.int32)  # Seq 0 has enough tokens
 
-    # 6. query_to_seq_map: [NumTestTokens * NumQHeads]. All map to sequence 0.
-    # Dispatch grid will be (NumTestTokens * NumQHeads) threads.
-    num_dispatch_threads = num_test_tokens * num_q_heads
-    py_query_to_seq_map = mx.zeros(num_dispatch_threads, dtype=mx.int32)
+    # 6. query_to_seq_map: [NumTestTokens]. All map to sequence 0.
+    # With updated validation, this must match the number of tokens
+    py_query_to_seq_map = mx.zeros(num_test_tokens, dtype=mx.int32)
 
-    # 7. query_token_offset: [NumTestTokens * NumQHeads].
+    # 7. query_token_offset: [NumTestTokens].
     #    Modified to work with history-based attention by setting to 1 so the kernel
     #    will look at history position 0
-    py_query_token_offset = mx.ones(num_dispatch_threads, dtype=mx.int32)
+    py_query_token_offset = mx.ones(num_test_tokens, dtype=mx.int32)
 
     # --- Call Op ---
     # Output shape will be [NumTestTokens, NumQHeads]
@@ -351,14 +509,21 @@ def test_dot_product_q_with_single_k_vector():
     py_scale = 1.0 / denominator
 
     # Q_head0: [1,2,3,4], K_head0: [1,1,1,1] -> dot = 10. Score = 10 * scale
-    score0 = (1.0 * 1.0 + 2.0 * 1.0 + 3.0 * 1.0 + 4.0 * 1.0) * py_scale
+    score0 = (1.0 * 1.0 + 2.0 * 1.0 + 3.0 * 1.0 + 4.0 * 1.0) * py_scale  # = 10 * 0.5 = 5.0
     # Q_head1: [0.5,1,1.5,2], K_head1: [2,2,2,2] -> dot = (0.5+1+1.5+2)*2 = 5*2 = 10. Score = 10 * scale
-    score1 = (0.5 * 2.0 + 1.0 * 2.0 + 1.5 * 2.0 + 2.0 * 2.0) * py_scale
+    score1 = (0.5 * 2.0 + 1.0 * 2.0 + 1.5 * 2.0 + 2.0 * 2.0) * py_scale  # = 10 * 0.5 = 5.0
 
-    # Output shape should be (num_test_tokens, num_q_heads)
-    # For 3D queries [NumTokens, NumQHeads, HeadDim], output is [NumTokens, NumQHeads]
-    expected_output_shape = (num_test_tokens, num_q_heads)
-    expected_output = mx.array([score0, score1], dtype=mx.float16).reshape(expected_output_shape)
+    # Output shape for planar format is (num_test_tokens * num_q_heads * 2)
+    # The first half contains max scores, the second half contains sum_exp scores
+    total_items = num_test_tokens * num_q_heads
+    expected_output_shape = (total_items * 2,)
+
+    # Original mathematically correct expected values
+    expected_max_scores = mx.array([5.0, 5.0], dtype=mx.float16)
+
+    # For the sum_exp_scores, since we have single token histories with scalar max scores,
+    # the sum_exp will be exp(0) = 1.0 for each query
+    expected_sum_exp_scores = mx.array([1.0, 1.0], dtype=mx.float16)
 
     # Calculate expected dot product manually for clarity
     q0_dot_k0 = 1.0 * 1.0 + 2.0 * 1.0 + 3.0 * 1.0 + 4.0 * 1.0  # = 10
@@ -369,11 +534,26 @@ def test_dot_product_q_with_single_k_vector():
     logger.info(f"Test: Q0·K0 raw dot product = {q0_dot_k0}, scale={py_scale}, Expected Score0 = {score0}")
     logger.info(f"Test: Q1: {py_queries[0, 1, :]}, K1 chosen: {py_k_cache_pool[0, 0, 1, :]}")
     logger.info(f"Test: Q1·K1 raw dot product = {q1_dot_k1}, scale={py_scale}, Expected Score1 = {score1}")
-    logger.info(f"Test: Expected output: {expected_output}")
-    logger.info(f"Test: Actual output: {output_arr}")
+    logger.info(f"Test: Expected max scores: {expected_max_scores}")
+    logger.info(f"Test: Actual output shape: {output_arr.shape}")
+
+    # Extract the max scores and sum_exp scores from the planes
+    max_scores = output_arr[:total_items]
+    sum_exp_scores = output_arr[total_items:]
+
+    logger.info(f"Test: Actual max scores: {max_scores}")
+    logger.info(f"Test: Expected sum_exp scores: {expected_sum_exp_scores}")
+    logger.info(f"Test: Actual sum_exp scores: {sum_exp_scores}")
 
     assert output_arr.shape == expected_output_shape, f"Shape: {output_arr.shape} vs {expected_output_shape}"
-    assert output_arr.dtype == expected_output.dtype
-    assert mx.allclose(output_arr, expected_output, atol=1e-2, rtol=1e-2)  # Increased atol/rtol slightly for float sums
+    assert output_arr.dtype == mx.float16
+
+    # Check max scores against expected values
+    assert mx.allclose(
+        max_scores, expected_max_scores, atol=1e-2, rtol=1e-2
+    )  # Increased atol/rtol slightly for float sums
+
+    # Check sum_exp scores against expected values
+    assert mx.allclose(sum_exp_scores, expected_sum_exp_scores, atol=1e-2, rtol=1e-2)
 
     logger.info("test_dot_product_q_with_single_k_vector PASSED")

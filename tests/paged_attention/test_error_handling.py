@@ -53,18 +53,25 @@ def test_invalid_physical_page_id_in_page_table():
     )
     mx.eval(output_arr)
 
-    expected_thread0_output = 0.0  # Dot product with all zeros in K
-    expected_thread1_output = 0.0  # Early exit, zero output
-    expected_output_value = mx.array([expected_thread0_output, expected_thread1_output], dtype=mx.float16)
-    expected_output_shape = (2,)  # For 2D queries, output is 1D (scalar per thread)
+    total_items = 2  # Two threads in this test
+    expected_output_shape = (total_items * 2,)  # With the new format, we have [items * 2]
 
-    logger.info(f"Test: Expected output values: {expected_output_value}")
-    logger.info(f"Test: Actual output  : {output_arr}")
+    # Extract the max scores from the first plane of the output
+    max_scores = output_arr[:total_items]
+
+    # Expect all zeros for max scores
+    expected_max_scores = mx.zeros(total_items, dtype=mx.float16)
+
+    logger.info(f"Test: Expected output shape: {expected_output_shape}")
+    logger.info(f"Test: Actual output shape: {output_arr.shape}")
+    logger.info(f"Test: Expected max scores: {expected_max_scores}")
+    logger.info(f"Test: Actual max scores: {max_scores}")
+
     assert output_arr.shape == expected_output_shape
     assert output_arr.dtype == mx.float16
 
-    # Check each scalar output value
-    assert mx.allclose(output_arr, expected_output_value, atol=1e-3)
+    # Check just the max scores
+    assert mx.allclose(max_scores, expected_max_scores, atol=1e-3)
 
 
 def test_negative_query_token_offset():
@@ -111,18 +118,25 @@ def test_negative_query_token_offset():
     )
     mx.eval(output_arr)
 
-    expected_thread0_output = 0.0  # Early exit due to negative offset, zero output
-    expected_thread1_output = 0.0  # Dot product with all zeros in K
-    expected_output_value = mx.array([expected_thread0_output, expected_thread1_output], dtype=mx.float16)
-    expected_output_shape = (2,)  # For 2D queries, output is 1D (scalar per thread)
+    total_items = 2  # Two threads in this test
+    expected_output_shape = (total_items * 2,)  # With the new format, we have [items * 2]
 
-    logger.info(f"Test: Expected output values: {expected_output_value}")
-    logger.info(f"Test: Actual output  : {output_arr}")
+    # Extract the max scores from the first plane of the output
+    max_scores = output_arr[:total_items]
+
+    # Expect all zeros for max scores
+    expected_max_scores = mx.zeros(total_items, dtype=mx.float16)
+
+    logger.info(f"Test: Expected output shape: {expected_output_shape}")
+    logger.info(f"Test: Actual output shape: {output_arr.shape}")
+    logger.info(f"Test: Expected max scores: {expected_max_scores}")
+    logger.info(f"Test: Actual max scores: {max_scores}")
+
     assert output_arr.shape == expected_output_shape
     assert output_arr.dtype == mx.float16
 
-    # Check each scalar output value
-    assert mx.allclose(output_arr, expected_output_value, atol=1e-3)
+    # Check just the max scores
+    assert mx.allclose(max_scores, expected_max_scores, atol=1e-3)
 
 
 def test_invalid_seq_idx_in_query_map():
@@ -171,15 +185,28 @@ def test_invalid_seq_idx_in_query_map():
     )
     mx.eval(output_arr)
 
-    expected_thread0_output = 0.0  # Dot product with all zeros in K
-    expected_thread1_output = 0.0  # Early exit due to invalid sequence index, zero output
-    expected_output_value = mx.array([expected_thread0_output, expected_thread1_output], dtype=mx.float16)
-    expected_output_shape = (2,)  # For 2D queries, output is 1D (scalar per thread)
+    total_items = 2  # Two threads in this test
+    expected_output_shape = (total_items * 2,)  # With the new format, we have [items * 2]
 
-    logger.info(f"Test: Expected output values: {expected_output_value}")
-    logger.info(f"Test: Actual output  : {output_arr}")
+    # Extract the max scores and sum_exp scores
+    max_scores = output_arr[:total_items]
+    sum_exp_scores = output_arr[total_items:]
+
+    # Expect all zeros for both max scores and sum_exp scores
+    expected_zeros = mx.zeros(total_items, dtype=mx.float16)
+
+    logger.info(f"Test: Expected output shape: {expected_output_shape}")
+    logger.info(f"Test: Actual output shape: {output_arr.shape}")
+    logger.info(f"Test: Expected max scores: {expected_zeros}")
+    logger.info(f"Test: Actual max scores: {max_scores}")
+    logger.info(f"Test: Expected sum_exp scores: {expected_zeros}")
+    logger.info(f"Test: Actual sum_exp scores: {sum_exp_scores}")
+
     assert output_arr.shape == expected_output_shape
     assert output_arr.dtype == mx.float16
 
-    # Check each scalar output value
-    assert mx.allclose(output_arr, expected_output_value, atol=1e-3)
+    # Check the max scores
+    assert mx.allclose(max_scores, expected_zeros, atol=1e-3)
+
+    # Check the sum_exp scores
+    assert mx.allclose(sum_exp_scores, expected_zeros, atol=1e-3)

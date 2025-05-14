@@ -49,8 +49,9 @@ def test_paged_attention_smoke():
         )
         mx.eval(out)
 
-        # For 3D queries [NumTokens, NumQHeads, HeadDim], output should be [NumTokens, NumQHeads]
-        expected_output_shape = (num_queries, num_q_heads)
+        # For 3D queries [NumTokens, NumQHeads, HeadDim], output should now be [NumTokens * NumQHeads * 2] (planar layout)
+        total_items = num_queries * num_q_heads
+        expected_output_shape = (total_items * 2,)
 
         assert out.shape == expected_output_shape, (
             f"Output shape {out.shape} does not match expected shape {expected_output_shape}"
@@ -58,7 +59,15 @@ def test_paged_attention_smoke():
         assert out.dtype == mock_queries.dtype, (
             f"Output dtype {out.dtype} does not match query dtype {mock_queries.dtype}"
         )
-        assert mx.isfinite(out).all(), "Output contains NaN or Inf values"
+
+        # Extract the max scores (first plane) and sum_exp scores (second plane)
+        max_scores = out[:total_items]
+        sum_exp_scores = out[total_items:]
+
+        assert mx.isfinite(max_scores).all(), "Max scores contain NaN or Inf values"
+        assert mx.isfinite(sum_exp_scores).all(), "Sum-exp scores contain NaN or Inf values"
+        assert (sum_exp_scores >= 0).all(), "Sum-exp scores must be non-negative"
+
         logger.info(f"Paged attention smoke test passed. Output shape: {out.shape}, dtype: {out.dtype}")
 
     except Exception as e:
