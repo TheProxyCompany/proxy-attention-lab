@@ -394,7 +394,7 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
   // 4. G_simd_reduced_adjusted_sum_exps: kMaxSimdGroupsPerThreadgroup floats
   // 5. G_final_max_for_item: 1 float
   // 6. G_final_sum_exp_for_item: 1 float
-  // 7. G_V_reduction_scratch: kMaxSimdGroupsPerThreadgroup floats
+  // 7. G_simd_group_v_sums: kMaxSimdGroupsPerThreadgroup float4s (4 * kMaxSimdGroupsPerThreadgroup floats)
   size_t tg_memory_bytes = sizeof(float) * (
       head_dim +                           // 1. q_shmem
       threads_per_item_group +             // 2. G_partial_max_scores
@@ -402,7 +402,7 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
       kMaxSimdGroupsPerThreadgroup +       // 4. G_simd_reduced_adjusted_sum_exps
       1 +                                  // 5. G_final_max_for_item
       1 +                                  // 6. G_final_sum_exp_for_item
-      kMaxSimdGroupsPerThreadgroup         // 7. G_V_reduction_scratch
+      (kMaxSimdGroupsPerThreadgroup * 4)   // 7. G_simd_group_v_sums (float4 per SIMD group)
   );
 
   // Validate against device's maximum threadgroup memory limit

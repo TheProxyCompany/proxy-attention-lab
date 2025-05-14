@@ -104,7 +104,7 @@ constant static const uint kMaxAccumulationTile = 64;         // Size of the fix
     threadgroup float* G_final_max_for_item =
         G_simd_reduced_adjusted_sum_exps + kMaxSimdGroupsPerThreadgroup;
     threadgroup float* G_final_sum_exp_for_item = G_final_max_for_item + 1;
-    threadgroup float* G_V_reduction_scratch = G_final_sum_exp_for_item + 1;
+    threadgroup float4* G_simd_group_v_sums = (threadgroup float4*)(G_final_sum_exp_for_item + 1);
 
     // --- Determine Q-vector pointer for this item ---
     device const half* q_vector_item_ptr;
@@ -552,119 +552,63 @@ constant static const uint kMaxAccumulationTile = 64;         // Size of the fix
             }  // End of history token loop
         }  // End of effective history check
 
-        // --- Threadgroup Reduction for the CURRENT TILE (v_accum_tile) ---
-        uint num_simd_groups_tile = (tg_dim.x + 31) / 32;  // Ceiling division by 32
-
-        // Process current_tile_len in chunks of 4 (for float4 processing)
-        for (uint h_chunk_idx = 0; h_chunk_idx < (current_tile_len / 4); ++h_chunk_idx) {
-            uint base_h_idx_in_tile = h_chunk_idx * 4;
-
-            // Load this thread's float4 chunk from v_accum_tile
-            float4 my_v_chunk_tile = {
-                v_accum_tile[base_h_idx_in_tile + 0],
-                v_accum_tile[base_h_idx_in_tile + 1],
-                v_accum_tile[base_h_idx_in_tile + 2],
-                v_accum_tile[base_h_idx_in_tile + 3]
-            };
-
-            // --- Reduce X component ---
-            float simd_sum_x = simd_sum(my_v_chunk_tile.x);
-            if (simd_lane_id == 0) {
-                G_V_reduction_scratch[simd_group_id] = simd_sum_x;
-            }
-            threadgroup_barrier(mem_flags::mem_threadgroup);
-
-            if (local_thread_idx == 0) {
-                float final_comp_sum_x = 0.0f;
-                for (uint i = 0; i < num_simd_groups_tile; ++i) {
-                    final_comp_sum_x += G_V_reduction_scratch[i];
-                }
-                // Write to the correct global output position
-                output_buffer[global_item_idx * params.head_dim +
-                              base_dim_offset + base_h_idx_in_tile + 0] = (half)final_comp_sum_x;
-            }
-            threadgroup_barrier(mem_flags::mem_threadgroup);
-
-            // --- Reduce Y component ---
-            float simd_sum_y = simd_sum(my_v_chunk_tile.y);
-            if (simd_lane_id == 0) {
-                G_V_reduction_scratch[simd_group_id] = simd_sum_y;
-            }
-            threadgroup_barrier(mem_flags::mem_threadgroup);
-
-            if (local_thread_idx == 0) {
-                float final_comp_sum_y = 0.0f;
-                for (uint i = 0; i < num_simd_groups_tile; ++i) {
-                    final_comp_sum_y += G_V_reduction_scratch[i];
-                }
-                output_buffer[global_item_idx * params.head_dim +
-                              base_dim_offset + base_h_idx_in_tile + 1] = (half)final_comp_sum_y;
-            }
-            threadgroup_barrier(mem_flags::mem_threadgroup);
-
-            // --- Reduce Z component ---
-            float simd_sum_z = simd_sum(my_v_chunk_tile.z);
-            if (simd_lane_id == 0) {
-                G_V_reduction_scratch[simd_group_id] = simd_sum_z;
-            }
-            threadgroup_barrier(mem_flags::mem_threadgroup);
-
-            if (local_thread_idx == 0) {
-                float final_comp_sum_z = 0.0f;
-                for (uint i = 0; i < num_simd_groups_tile; ++i) {
-                    final_comp_sum_z += G_V_reduction_scratch[i];
-                }
-                output_buffer[global_item_idx * params.head_dim +
-                              base_dim_offset + base_h_idx_in_tile + 2] = (half)final_comp_sum_z;
-            }
-            threadgroup_barrier(mem_flags::mem_threadgroup);
-
-            // --- Reduce W component ---
-            float simd_sum_w = simd_sum(my_v_chunk_tile.w);
-            if (simd_lane_id == 0) {
-                G_V_reduction_scratch[simd_group_id] = simd_sum_w;
-            }
-            threadgroup_barrier(mem_flags::mem_threadgroup);
-
-            if (local_thread_idx == 0) {
-                float final_comp_sum_w = 0.0f;
-                for (uint i = 0; i < num_simd_groups_tile; ++i) {
-                    final_comp_sum_w += G_V_reduction_scratch[i];
-                }
-                output_buffer[global_item_idx * params.head_dim +
-                              base_dim_offset + base_h_idx_in_tile + 3] = (half)final_comp_sum_w;
-            }
-            threadgroup_barrier(mem_flags::mem_threadgroup);
-        }
-
-        // Handle remaining components if current_tile_len is not a multiple of 4
-        uint remaining_tile = current_tile_len % 4;
-        if (remaining_tile > 0) {
-            uint base_h_idx_rem_tile = (current_tile_len / 4) * 4;
-
-            for (uint offset = 0; offset < remaining_tile; ++offset) {
-                float my_v_comp_tile = v_accum_tile[base_h_idx_rem_tile + offset];
-                float simd_sum_comp = simd_sum(my_v_comp_tile);
-
-                if (simd_lane_id == 0) {
-                    G_V_reduction_scratch[simd_group_id] = simd_sum_comp;
-                }
-                threadgroup_barrier(mem_flags::mem_threadgroup);
-
-                if (local_thread_idx == 0) {
-                    float final_comp_sum = 0.0f;
-                    for (uint i = 0; i < num_simd_groups_tile; ++i) {
-                        final_comp_sum += G_V_reduction_scratch[i];
-                    }
-                    output_buffer[global_item_idx * params.head_dim +
-                                  base_dim_offset + base_h_idx_rem_tile + offset] =
-                                      (half)final_comp_sum;
-                }
-                threadgroup_barrier(mem_flags::mem_threadgroup);
-            }
-        }
-
-        // Final barrier before the next tile iteration
+        // --- NEW SIMD-Group V-Component Reduction for the CURRENT TILE (v_accum_tile) ---
+        // This barrier ensures all threads have finished accumulating into their v_accum_tile
+        // before reduction and output writes begin. This is the *only* barrier needed for this tile's V-reduction.
         threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // Process v_accum_tile in float4 chunks
+        // Loop 'i' iterates over the starting index of each float4 chunk within the current tile.
+        for (uint i = 0; i < current_tile_len; i += 4) {
+            float4 partial_v_chunk = float4(0.0f); // Initialize to zero
+
+            // Safely load into partial_v_chunk, respecting current_tile_len
+            // This ensures we don't read past the valid data in v_accum_tile for the last, possibly partial, chunk.
+            if (i < current_tile_len)     partial_v_chunk.x = v_accum_tile[i+0];
+            if (i+1 < current_tile_len)   partial_v_chunk.y = v_accum_tile[i+1];
+            if (i+2 < current_tile_len)   partial_v_chunk.z = v_accum_tile[i+2];
+            if (i+3 < current_tile_len)   partial_v_chunk.w = v_accum_tile[i+3];
+
+            // Perform SIMD-group reduction for each component of the float4.
+            // The result (reduced_v_chunk) will be identical for all threads within the same SIMD-group.
+            float4 reduced_simd_group_sum_chunk;
+            reduced_simd_group_sum_chunk.x = simd_sum(partial_v_chunk.x);
+            reduced_simd_group_sum_chunk.y = simd_sum(partial_v_chunk.y);
+            reduced_simd_group_sum_chunk.z = simd_sum(partial_v_chunk.z);
+            reduced_simd_group_sum_chunk.w = simd_sum(partial_v_chunk.w);
+
+            // Lane 0 of each SIMD group writes its SIMD group's sum to the shared G_simd_group_v_sums array.
+            if (simd_lane_id == 0) {
+                G_simd_group_v_sums[simd_group_id] = reduced_simd_group_sum_chunk;
+            }
+
+            // Barrier to ensure all SIMD groups have written their sums to G_simd_group_v_sums
+            // before thread 0 proceeds with the final summation.
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+
+            // Thread 0 of the entire threadgroup performs the final sum across SIMD group results.
+            if (local_thread_idx == 0) {
+                float4 final_sum_for_chunk = float4(0.0f);
+                uint num_simd_groups_in_tg = (tg_dim.x + 31) / 32; // Assumes SIMD width of 32
+
+                for (uint sg_idx = 0; sg_idx < num_simd_groups_in_tg; ++sg_idx) {
+                    final_sum_for_chunk += G_simd_group_v_sums[sg_idx];
+                }
+
+                // Write the final summed chunk to the output buffer, respecting current_tile_len bounds for the write.
+                uint output_base_idx = global_item_idx * params.head_dim + base_dim_offset + i;
+                if (i < current_tile_len)     output_buffer[output_base_idx + 0] = (half)final_sum_for_chunk.x;
+                if (i+1 < current_tile_len)   output_buffer[output_base_idx + 1] = (half)final_sum_for_chunk.y;
+                if (i+2 < current_tile_len)   output_buffer[output_base_idx + 2] = (half)final_sum_for_chunk.z;
+                if (i+3 < current_tile_len)   output_buffer[output_base_idx + 3] = (half)final_sum_for_chunk.w;
+            }
+
+            // Barrier to ensure thread 0's write to output_buffer is complete before any thread
+            // from any SIMD group potentially overwrites G_simd_group_v_sums in the next 'i' iteration.
+            // This is critical if G_simd_group_v_sums is reused across 'i' iterations.
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+        }
+
+        // No final barrier needed here because the iteration loop already ends with a barrier
     }  // End of base_dim_offset loop for tiling
 }  // End of kernel
