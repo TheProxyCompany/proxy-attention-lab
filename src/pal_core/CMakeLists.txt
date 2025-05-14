@@ -17,11 +17,29 @@ else()
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -DNDEBUG")
 endif()
 
-# --- PAL Debug Logging ---
-option(PAL_ENABLE_DEBUG_LOGGING "Enable PAL debug std::cerr logging" OFF)
-if(PAL_ENABLE_DEBUG_LOGGING)
-    add_compile_definitions(PAL_DEBUG)
-    message(STATUS "PAL Debug logging enabled via -DPAL_DEBUG")
+# --- Find or Fetch spdlog ---
+if(NOT TARGET spdlog::spdlog_header_only AND NOT TARGET spdlog)
+    find_package(spdlog QUIET CONFIG)
+endif()
+
+if(NOT TARGET spdlog::spdlog_header_only AND NOT TARGET spdlog)
+    message(STATUS "PAL: spdlog not found via find_package. Attempting FetchContent.")
+    include(FetchContent)
+    FetchContent_Declare(
+        spdlog
+        GIT_REPOSITORY https://github.com/gabime/spdlog.git
+        GIT_TAG v1.14.1 # Or any recent stable tag
+        EXCLUDE_FROM_ALL
+    )
+    FetchContent_MakeAvailable(spdlog)
+    if(TARGET spdlog::spdlog_header_only)
+        set(PAL_SPDLOG_TARGET spdlog::spdlog_header_only)
+    elseif(TARGET spdlog)
+        set(PAL_SPDLOG_TARGET spdlog)
+    else()
+        message(FATAL_ERROR "PAL: Failed to find or fetch spdlog.")
+    endif()
+    message(STATUS "PAL: Using spdlog from FetchContent target: ${PAL_SPDLOG_TARGET}")
 endif()
 
 # --- Python ---
@@ -99,6 +117,7 @@ target_link_libraries(
         "-framework Foundation"
         "-framework QuartzCore"
         mlx
+        spdlog::spdlog_header_only
 )
 
 
