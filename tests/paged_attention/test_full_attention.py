@@ -1,3 +1,23 @@
+# Copyright 2024 The Proxy Company. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
+"""Tests for full attention computation.
+
+This module contains tests that verify the complete paged attention operation,
+including matrix multiplication, softmax, and value aggregation.
+"""
+
 import logging
 
 import mlx.core as mx
@@ -7,8 +27,9 @@ from proxy_attention_lab import paged_attention
 logger = logging.getLogger(__name__)
 
 
-def test_full_attention_in_one_block():
-    """
+def test_full_attention_in_one_block() -> None:
+    """Test full attention computation in a single block.
+
     Tests the full attention computation (max score, softmax, and V-aggregation)
     for a single item with multiple history tokens.
 
@@ -22,7 +43,7 @@ def test_full_attention_in_one_block():
 
     All token positions in this test are within the same logical block 0.
     """
-    # --- Config ---
+    # --- Configuration ---
     num_q_threads = 1  # Just one query thread for this test
     cfg_tokens_per_page = 64
     cfg_num_kv_heads = 1
@@ -31,7 +52,7 @@ def test_full_attention_in_one_block():
     # Current token position is 3, so we'll attend to history positions 0, 1, and 2
     current_position = 3
 
-    # --- Inputs ---
+    # --- Setup test inputs ---
     # 1. Q-vector: Shape [num_q_threads, cfg_head_dim]
     py_queries = mx.array([[1.0, 2.0, 3.0, 4.0]], dtype=mx.float16)
 
@@ -66,7 +87,7 @@ def test_full_attention_in_one_block():
     # 7. Query Token Offset: Current position
     py_query_token_offset = mx.array([current_position], dtype=mx.int32)
 
-    # --- Call the kernel ---
+    # --- Run paged attention ---
     output_arr = paged_attention(
         py_queries,
         py_k_cache_pool,
@@ -78,7 +99,7 @@ def test_full_attention_in_one_block():
     )
     mx.eval(output_arr)
 
-    # --- Calculate expected output ---
+    # --- Calculate expected output (Python reference) ---
     # Scale factor for dot product
     py_scale = 1.0 / mx.sqrt(mx.array(float(cfg_head_dim))).item()
 
@@ -116,8 +137,11 @@ def test_full_attention_in_one_block():
     # Output should be [num_q_threads, head_dim] with weighted V-vectors
     expected_shape = (num_q_threads, cfg_head_dim)
 
-    assert output_arr.shape == expected_shape
-    assert output_arr.dtype == mx.float16
+    # Verify results
+    assert output_arr.shape == expected_shape, (
+        f"Output shape {output_arr.shape} does not match expected {expected_shape}"
+    )
+    assert output_arr.dtype == mx.float16, f"Output dtype {output_arr.dtype} does not match float16"
     assert mx.allclose(output_arr, expected_v_reshaped, atol=1e-2), (
         f"Value mismatch. Expected: {expected_v_reshaped}, Got: {output_arr}"
     )

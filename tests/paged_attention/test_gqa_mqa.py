@@ -1,3 +1,24 @@
+# Copyright 2024 The Proxy Company. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
+"""Tests for GQA (Grouped Query Attention) and MQA (Multi-Query Attention).
+
+This module contains tests that verify the correct behavior of the paged attention
+operation when using Grouped Query Attention (GQA) and Multi-Query Attention (MQA)
+configurations, where the number of query heads can differ from the number of key-value heads.
+"""
+
 import logging
 
 import mlx.core as mx
@@ -8,8 +29,12 @@ from proxy_attention_lab import paged_attention
 logger = logging.getLogger(__name__)
 
 
-def test_fetch_k_vector_from_multiple_kv_heads():
-    """GQA: multiple Q heads map to KV heads; computes dot products."""
+def test_fetch_k_vector_from_multiple_kv_heads() -> None:
+    """Test GQA with multiple Q heads mapping to KV heads.
+
+    This test verifies that in Grouped Query Attention (GQA) mode, multiple query heads
+    correctly map to their corresponding KV heads and compute accurate dot products.
+    """
     num_tokens = 1
     num_q_heads = 2
     cfg_tokens_per_page = 64
@@ -97,15 +122,23 @@ def test_fetch_k_vector_from_multiple_kv_heads():
     logger.info(f"Test: Expected V output: {expected_v_output}")
     logger.info(f"Test: Actual V output: {output_arr}")
 
-    assert output_arr.shape == expected_output_shape
-    assert output_arr.dtype == mx.float16
-
+    # Verify results
+    assert output_arr.shape == expected_output_shape, (
+        f"Output shape {output_arr.shape} does not match expected {expected_output_shape}"
+    )
+    assert output_arr.dtype == mx.float16, f"Output dtype {output_arr.dtype} does not match float16"
     # Check V output vectors
-    assert mx.allclose(output_arr, expected_v_output, atol=1e-2, rtol=1e-2)
+    assert mx.allclose(output_arr, expected_v_output, atol=1e-2, rtol=1e-2), (
+        "V output vectors do not match expected values for GQA mapping"
+    )
 
 
-def test_invalid_gqa_configuration():
-    """Non multiple GQA config raises exception."""
+def test_invalid_gqa_configuration() -> None:
+    """Test that invalid GQA configurations raise appropriate exceptions.
+
+    This test verifies that when the number of query heads is not a multiple of the
+    number of KV heads, the kernel correctly raises an exception.
+    """
     num_tokens = 1
     num_q_heads = 3
     cfg_tokens_per_page = 64
@@ -142,9 +175,8 @@ def test_invalid_gqa_configuration():
         mx.eval(output_arr)
 
 
-def test_mqa_kv_head_selection():
-    """
-    Tests Multi-Query Attention (MQA) configuration where num_q_heads < num_kv_heads.
+def test_mqa_kv_head_selection() -> None:
+    """Test Multi-Query Attention (MQA) KV head selection.
 
     This test verifies that the kernel correctly maps query heads to KV heads
     when there are fewer query heads than KV heads, ensuring each query head
@@ -204,16 +236,7 @@ def test_mqa_kv_head_selection():
     mx.eval(output_arr)
 
     # Calculate expected results
-    # The kernel should use K-vector from KV head 0 for the query
-    denominator = mx.sqrt(mx.array(float(cfg_head_dim))).item()
-    assert isinstance(denominator, float)
-    py_scale = 1.0 / denominator
-
     # Q=[1,2,3,4] with K=[1,1,1,1] from kv_head=0 gives dot product = 10
-    (1.0 * 1.0 + 2.0 * 1.0 + 3.0 * 1.0 + 4.0 * 1.0) * py_scale  # = 10 * 0.5 = 5.0
-
-    # If the kernel incorrectly used kv_head=1 with K=[2,2,2,2], we'd get:
-    (1.0 * 2.0 + 2.0 * 2.0 + 3.0 * 2.0 + 4.0 * 2.0) * py_scale  # = 20 * 0.5 = 10.0
 
     # Output is now full attention format [num_q_threads, cfg_head_dim]
     total_items = num_tokens * num_q_heads
@@ -236,23 +259,29 @@ def test_mqa_kv_head_selection():
     logger.info(f"Test MQA: Expected V output = {expected_v_output}")
     logger.info(f"Test MQA: Actual V output = {output_arr}")
 
-    assert output_arr.shape == expected_output_shape
-    assert output_arr.dtype == mx.float16
-
+    # Verify results
+    assert output_arr.shape == expected_output_shape, (
+        f"Output shape {output_arr.shape} does not match expected {expected_output_shape}"
+    )
+    assert output_arr.dtype == mx.float16, f"Output dtype {output_arr.dtype} does not match float16"
     # Verify that the kernel is correctly using KV head 0 for the query by checking the V output
-    assert mx.allclose(output_arr, expected_v_output, atol=1e-2, rtol=1e-2)
-
+    assert mx.allclose(output_arr, expected_v_output, atol=1e-2, rtol=1e-2), (
+        "MQA is not correctly using KV head 0 for the query"
+    )
     # Also explicitly verify we're not getting the incorrect V-vector from KV head 1
-    assert not mx.allclose(output_arr, incorrect_v_output, atol=1e-2, rtol=1e-2)
+    assert not mx.allclose(output_arr, incorrect_v_output, atol=1e-2, rtol=1e-2), (
+        "MQA is incorrectly using KV head 1 instead of KV head 0"
+    )
 
     logger.info("test_mqa_kv_head_selection PASSED")
 
 
-def test_mqa_multi_token_kv_head_selection_2d_query():
-    """
-    PARAMETER STRUCT DEBUGGING TEST
+def test_mqa_multi_token_kv_head_selection_2d_query() -> None:
+    """Test MQA with multi-token KV head selection using 2D queries.
+
     This test is specifically configured to diagnose struct layout/marshalling issues
-    between C++ and Metal. It only checks the first 5 parameters in PagedAttentionParams.
+    between C++ and Metal. It verifies that the Parameter struct is correctly passed
+    between the C++ layer and the Metal kernel.
     """
     # Test configuration
     num_tokens = 5  # Multiple tokens to test consistent KV-head selection
@@ -283,11 +312,6 @@ def test_mqa_multi_token_kv_head_selection_2d_query():
     # All query tokens look at history position 0
     py_query_token_offset = mx.ones(num_tokens, dtype=mx.int32)
 
-    # Calculate expected scale factor for verification
-    denominator = mx.sqrt(mx.array(float(cfg_head_dim))).item()
-    assert isinstance(denominator, float)
-    1.0 / denominator
-
     # Call the kernel with our debug version
     output_arr = paged_attention(
         py_queries,
@@ -317,11 +341,14 @@ def test_mqa_multi_token_kv_head_selection_2d_query():
     logger.info(f"Test MQA 2D: Expected output: {expected_v_output}")
     logger.info(f"Test MQA 2D: Actual output: {output_arr}")
 
-    # Check shape and values
-    assert output_arr.shape == expected_output_shape
-    assert mx.allclose(output_arr, expected_v_output, atol=1e-2, rtol=1e-2)
-
-    # Only verify dtype - this test is purely for debug information
-    assert output_arr.dtype == mx.float16
+    # Verify results
+    assert output_arr.shape == expected_output_shape, (
+        f"Output shape {output_arr.shape} does not match expected {expected_output_shape}"
+    )
+    assert output_arr.dtype == mx.float16, f"Output dtype {output_arr.dtype} does not match float16"
+    # Check values match expected V-vector from correct KV head
+    assert mx.allclose(output_arr, expected_v_output, atol=1e-2, rtol=1e-2), (
+        "MQA with 2D queries is not correctly selecting KV head 0"
+    )
 
     logger.info("test_mqa_multi_token_kv_head_selection_2d_query - PARAMETER DEBUG TEST COMPLETED")

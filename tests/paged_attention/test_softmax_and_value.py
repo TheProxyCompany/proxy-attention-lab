@@ -1,3 +1,23 @@
+# Copyright 2024 The Proxy Company. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
+"""Tests for softmax and value aggregation in paged attention.
+
+This module contains tests focused on the softmax computation and value vector
+aggregation aspects of the paged attention operation.
+"""
+
 import logging
 
 import mlx.core as mx
@@ -7,18 +27,19 @@ from proxy_attention_lab import paged_attention
 logger = logging.getLogger(__name__)
 
 
-def test_v_aggregation_local_accumulation():
-    """
-    Tests the V-aggregation for a single item, single history token,
-    with proper softmax probability calculation using global max and sum_exp.
-    The kernel should now compute and output the weighted V vectors.
+def test_v_aggregation_local_accumulation() -> None:
+    """Test V-aggregation with local accumulation.
+
+    Tests the V-aggregation for a single item with a single history token,
+    verifying proper softmax probability calculation using global max and sum_exp.
+    The kernel should compute and output correctly weighted V vectors.
     """
     num_items = 1
     cfg_head_dim = 4
     cfg_num_kv_heads = 1
     cfg_tokens_per_page = 64
 
-    # Inputs
+    # --- Setup test inputs ---
     # Q: [1, head_dim]
     py_queries = mx.array([[1.0, 1.0, 1.0, 1.0]], dtype=mx.float16)
 
@@ -36,7 +57,7 @@ def test_v_aggregation_local_accumulation():
     py_query_to_seq_map = mx.array([0], dtype=mx.int32)
     py_query_token_offset = mx.array([1], dtype=mx.int32)  # Effective history length = 1 (looks at hist_idx 0)
 
-    # Calculate expected values for verification
+    # --- Calculate expected output (Python reference) ---
     py_scale = 1.0 / mx.sqrt(mx.array(float(cfg_head_dim))).item()  # 0.5
 
     # Note: Q is now pre-scaled in the kernel, so the dot product directly gives the scaled score
@@ -64,7 +85,7 @@ def test_v_aggregation_local_accumulation():
     expected_v_output = py_v_cache_pool[0, 0, 0, :] * softmax_prob_hist0  # [10.0, 20.0, 30.0, 40.0] * 1.0
     expected_v_output_reshaped = expected_v_output.reshape(num_items, cfg_head_dim)
 
-    # Call the kernel
+    # --- Run paged attention ---
     output_arr = paged_attention(
         py_queries,
         py_k_cache_pool,
@@ -86,8 +107,7 @@ def test_v_aggregation_local_accumulation():
     assert output_arr.shape == expected_shape, (
         f"Output shape {output_arr.shape} does not match expected {expected_shape}"
     )
-    assert output_arr.dtype == mx.float16
-
+    assert output_arr.dtype == mx.float16, f"Output dtype {output_arr.dtype} does not match float16"
     # Value assertion - fully reduced V vector
     assert mx.allclose(output_arr, expected_v_output_reshaped, atol=1e-2), (
         f"Value mismatch. Expected (full V): {expected_v_output_reshaped}, Got: {output_arr}"
