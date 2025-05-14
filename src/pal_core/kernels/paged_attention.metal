@@ -571,11 +571,7 @@ constant static const uint kMaxAccumulationTile = 64;         // Size of the fix
 
             // Perform SIMD-group reduction for each component of the float4.
             // The result (reduced_v_chunk) will be identical for all threads within the same SIMD-group.
-            float4 reduced_simd_group_sum_chunk;
-            reduced_simd_group_sum_chunk.x = simd_sum(partial_v_chunk.x);
-            reduced_simd_group_sum_chunk.y = simd_sum(partial_v_chunk.y);
-            reduced_simd_group_sum_chunk.z = simd_sum(partial_v_chunk.z);
-            reduced_simd_group_sum_chunk.w = simd_sum(partial_v_chunk.w);
+            float4 reduced_simd_group_sum_chunk = simd_sum(partial_v_chunk);
 
             // Lane 0 of each SIMD group writes its SIMD group's sum to the shared G_simd_group_v_sums array.
             if (simd_lane_id == 0) {
