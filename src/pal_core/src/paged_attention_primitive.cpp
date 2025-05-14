@@ -250,7 +250,13 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx:
 
     const size_t default_threads_per_item_group = 64;
     auto max_threads = kernel_pipeline_state->maxTotalThreadsPerThreadgroup();
+    #ifdef PAL_DEBUG
+    std::cerr << "[PAL Primitive] Device maxTotalThreadsPerThreadgroup: " << max_threads << std::endl;
+    #endif
     const size_t threads_per_item_group = std::min(default_threads_per_item_group, max_threads);
+    if (threads_per_item_group == 0) {
+        throw std::runtime_error("[PagedAttentionPrimitive] Calculated threads_per_item_group is 0. Device maxTotalThreadsPerThreadgroup might be 0 or default is 0. This is invalid.");
+    }
     // No longer throw if max_threads < default_threads_per_item_group
     // The kernel will adapt to the actual threads_per_item_group dispatched
     #ifdef PAL_DEBUG
@@ -278,12 +284,16 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx:
     // 3. G_simd_reduced_maxes: MAX_SIMD_GROUPS_PER_TG floats
     // 4. G_simd_reduced_adjusted_sum_exps: MAX_SIMD_GROUPS_PER_TG floats
     // 5. G_final_max_for_item: 1 float
+    // 6. G_final_sum_exp_for_item: 1 float
+    // 7. G_V_reduction_scratch: MAX_SIMD_GROUPS_PER_TG floats (for V component reduction)
     size_t tg_memory_bytes = sizeof(float) * (
         head_dim +                    // q_shmem
         threads_per_item_group +      // G_partial_max_scores
         MAX_SIMD_GROUPS_PER_TG +      // G_simd_reduced_maxes
         MAX_SIMD_GROUPS_PER_TG +      // G_simd_reduced_adjusted_sum_exps
-        1                             // G_final_max_for_item
+        1 +                           // G_final_max_for_item
+        1 +                           // G_final_sum_exp_for_item
+        MAX_SIMD_GROUPS_PER_TG        // G_V_reduction_scratch (for one float component reduction)
     );
 
     // Check against device's maxThreadgroupMemoryLength
@@ -359,29 +369,27 @@ std::vector<mx::Shape> PagedAttentionPrimitive::output_shapes(const std::vector<
     if (inputs.empty()) {
         throw std::invalid_argument("[PagedAttentionPrimitive::output_shapes] Requires at least one input (query).");
     }
+    if (inputs.size() < 2 || inputs[1].ndim() != 4) {
+         throw std::invalid_argument("[PagedAttentionPrimitive::output_shapes] K-pool (inputs[1]) is needed and must be 4D to determine head_dim for output shape.");
+    }
 
     const auto& q = inputs[0];
+    uint32_t current_head_dim = inputs[1].shape(3); // Get head_dim from K-pool
 
-    // With planar output layout, we return a 1D array of size [total_dispatch_threads * 2]
-    // where the first plane [0:total_dispatch_threads] contains max_scores
-    // and the second plane [total_dispatch_threads:2*total_dispatch_threads] contains sum_exp_scores
-    size_t num_items_to_process = 0;
-
-    if (q.ndim() == 3) {
-        // Q is [NumTokens, NumQHeads, HeadDim]
-        // Output is [NumTokens * NumQHeads * 2] (planar layout)
-        num_items_to_process = q.shape(0) * q.shape(1);
-        return {{static_cast<int>(num_items_to_process * 2)}};
-    } else if (q.ndim() == 2) {
-        // Q is [NumDispatchThreads, HeadDim]
-        // Output is [NumDispatchThreads * 2] (planar layout)
-        num_items_to_process = q.shape(0);
-        return {{static_cast<int>(num_items_to_process * 2)}};
-    } else if (q.ndim() == 1) {
-        // Q is [NumDispatchThreads]
-        // Output is [NumDispatchThreads * 2] (planar layout)
-        num_items_to_process = q.shape(0);
-        return {{static_cast<int>(num_items_to_process * 2)}};
+    if (q.ndim() == 3) { // Q is [NumTokens, NumQHeads, QueryHeadDim]
+        // Output will be [NumTokens * NumQHeads, AttentionOutputHeadDim]
+        return {{ q.shape(0) * q.shape(1), static_cast<int>(current_head_dim) }};
+    } else if (q.ndim() == 2) { // Q is [NumItems, QueryHeadDim]
+        // Output will be [NumItems, AttentionOutputHeadDim]
+        return {{ q.shape(0), static_cast<int>(current_head_dim) }};
+    } else if (q.ndim() == 1) { // Q is [NumItems] (assuming QueryHeadDim=1 and AttentionOutputHeadDim=1)
+         if (current_head_dim != 1) {
+            // This case was problematic before; if head_dim is not 1, outputting [NumItems, head_dim]
+            // might be unexpected if the input was truly scalar.
+            // However, for consistency in output structure, we make it [NumItems, head_dim].
+            // The C++ validation for 1D queries already ensures head_dim is 1.
+         }
+        return {{ q.shape(0), static_cast<int>(current_head_dim) }};
     } else {
         throw std::invalid_argument("[PagedAttentionPrimitive::output_shapes] Query input 'q' must be 1D, 2D, or 3D.");
     }

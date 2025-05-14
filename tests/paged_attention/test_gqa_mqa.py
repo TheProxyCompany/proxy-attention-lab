@@ -27,6 +27,13 @@ def test_fetch_k_vector_from_multiple_kv_heads():
         py_k_cache_pool[0, token_slot, 0, i] = float(i + 1)
         py_k_cache_pool[0, token_slot, 1, i] = float(i + 5)
     py_v_cache_pool = mx.zeros_like(py_k_cache_pool)
+
+    # Set up V-cache pool with distinct values for each K-vector position
+    # Values for KV head 0 (used by Q head 0)
+    py_v_cache_pool[0, token_slot, 0, :] = mx.array([10.0, 11.0, 12.0, 13.0], dtype=mx.float16)
+    # Values for KV head 1 (used by Q head 1)
+    py_v_cache_pool[0, token_slot, 1, :] = mx.array([20.0, 21.0, 22.0, 23.0], dtype=mx.float16)
+
     py_page_table = mx.array(
         [
             [0, 99],
@@ -64,64 +71,37 @@ def test_fetch_k_vector_from_multiple_kv_heads():
     # Dot product = 200.0 * 5.0 + 200.0 * 6.0 + 200.0 * 7.0 + 200.0 * 8.0 = 5200.0
     # Scaled = 5200.0 * py_scale = 5200.0 / 2.0 = 2600.0
 
-    # For 3D queries [num_tokens, num_q_heads, cfg_head_dim], output shape is now [num_tokens * num_q_heads * 2]
-    # The first half contains max scores, the second half contains sum_exp scores
+    # Output is now full attention format [num_q_threads, cfg_head_dim]
+    # For 3D queries, shape is [num_tokens * num_q_heads, cfg_head_dim]
     total_items = num_tokens * num_q_heads
-    expected_output_shape = (total_items * 2,)
+    expected_output_shape = (total_items, cfg_head_dim)
 
     # Get the entire output array
     logger.info(f"DEBUG: FULL OUTPUT ARRAY: {output_arr}")
 
-    # Extract the max scores from the first plane of the output
-    max_scores = output_arr[:total_items]
-    sum_exp_scores = output_arr[total_items:]
+    # Calculate expected V-output for each query head
+    # Since we only have one history token per query, each softmax prob is 1.0
+    # Therefore V-output for each query head is exactly the corresponding V-vector
 
-    logger.info(f"DEBUG: ACTUAL MAX SCORES: {max_scores}")
+    # For Q head 0 -> KV head 0: V-vector should be [10, 11, 12, 13]
+    expected_v_head0 = mx.array([10.0, 11.0, 12.0, 13.0], dtype=mx.float16)
 
-    # Extract debug values from our debug output in the kernel
-    logger.info(f"DEBUG: First few params in output debug area: {output_arr[:5]}")
+    # For Q head 1 -> KV head 1: V-vector should be [20, 21, 22, 23]
+    expected_v_head1 = mx.array([20.0, 21.0, 22.0, 23.0], dtype=mx.float16)
 
-    # Print the kernel's full debug output for global item indices, q head indices, and kv head indices
-    # This will work if we successfully wrote debug values to output positions
-    try:
-        for i in range(2):  # We expect 2 items (2 Q heads)
-            global_idx_pos = 5 + i
-            q_head_pos = 7 + i
-            kv_head_pos = 9 + i
-
-            if len(output_arr) > kv_head_pos:
-                logger.info(
-                    f"DEBUG: Item {i}: global_idx={output_arr[global_idx_pos].item()}, "
-                    f"q_head={output_arr[q_head_pos].item()}, "
-                    f"kv_head={output_arr[kv_head_pos].item()}"
-                )
-    except Exception as e:
-        logger.info(f"DEBUG: Error accessing debug output: {e}")
-
-    # The kernel is now fixed and producing the mathematically correct scores
-    # For q_head 0 -> k_head 0: 500.0
-    # For q_head 1 -> k_head 1: 2600.0
-    expected_scores = mx.array([500.0, 2600.0], dtype=mx.float16)
-
-    # Expected sum_exp scores: For max scores, the sum_exp should be 1.0 as exp(0) = 1.0
-    # (only one item in history)
-    expected_sum_exp_scores = mx.array([1.0, 1.0], dtype=mx.float16)
+    # Combine into expected V-output array
+    expected_v_output = mx.stack([expected_v_head0, expected_v_head1])
 
     logger.info(f"Test: Expected output shape: {expected_output_shape}")
     logger.info(f"Test: Actual output shape: {output_arr.shape}")
-    logger.info(f"Test: Expected max scores: {expected_scores}")
-    logger.info(f"Test: Actual max scores: {max_scores}")
-    logger.info(f"Test: Expected sum_exp scores: {expected_sum_exp_scores}")
-    logger.info(f"Test: Actual sum_exp scores: {sum_exp_scores}")
+    logger.info(f"Test: Expected V output: {expected_v_output}")
+    logger.info(f"Test: Actual V output: {output_arr}")
 
     assert output_arr.shape == expected_output_shape
     assert output_arr.dtype == mx.float16
 
-    # Check max scores against our updated expected values
-    assert mx.allclose(max_scores, expected_scores, atol=1e-3)
-
-    # Check sum_exp scores too
-    assert mx.allclose(sum_exp_scores, expected_sum_exp_scores, atol=1e-2)
+    # Check V output vectors
+    assert mx.allclose(output_arr, expected_v_output, atol=1e-2, rtol=1e-2)
 
 
 def test_invalid_gqa_configuration():
@@ -196,6 +176,12 @@ def test_mqa_kv_head_selection():
     py_k_cache_pool[0, 0, 1, :] = mx.array([2.0, 2.0, 2.0, 2.0], dtype=mx.float16)
 
     py_v_cache_pool = mx.zeros_like(py_k_cache_pool)
+    # Set up V-cache pool with distinct values for each KV head
+    # For KV head 0 (which will be used in MQA)
+    py_v_cache_pool[0, 0, 0, :] = mx.array([10.0, 20.0, 30.0, 40.0], dtype=mx.float16)
+    # For KV head 1 (which would be incorrect to use)
+    py_v_cache_pool[0, 0, 1, :] = mx.array([50.0, 60.0, 70.0, 80.0], dtype=mx.float16)
+
     py_page_table = mx.array([[0]], dtype=mx.uint32)  # Logical block 0 -> Physical page 0
     py_sequence_lengths = mx.array([cfg_tokens_per_page], dtype=mx.int32)
 
@@ -224,49 +210,40 @@ def test_mqa_kv_head_selection():
     py_scale = 1.0 / denominator
 
     # Q=[1,2,3,4] with K=[1,1,1,1] from kv_head=0 gives dot product = 10
-    expected_score = (1.0 * 1.0 + 2.0 * 1.0 + 3.0 * 1.0 + 4.0 * 1.0) * py_scale  # = 10 * 0.5 = 5.0
+    (1.0 * 1.0 + 2.0 * 1.0 + 3.0 * 1.0 + 4.0 * 1.0) * py_scale  # = 10 * 0.5 = 5.0
 
     # If the kernel incorrectly used kv_head=1 with K=[2,2,2,2], we'd get:
-    incorrect_score = (1.0 * 2.0 + 2.0 * 2.0 + 3.0 * 2.0 + 4.0 * 2.0) * py_scale  # = 20 * 0.5 = 10.0
+    (1.0 * 2.0 + 2.0 * 2.0 + 3.0 * 2.0 + 4.0 * 2.0) * py_scale  # = 20 * 0.5 = 10.0
 
-    # For 3D queries, output shape is now [num_tokens * num_q_heads * 2]
-    # The first half contains max scores, the second half contains sum_exp scores
+    # Output is now full attention format [num_q_threads, cfg_head_dim]
     total_items = num_tokens * num_q_heads
-    expected_output_shape = (total_items * 2,)
+    expected_output_shape = (total_items, cfg_head_dim)
 
-    # The kernel is now correctly calculating the dot product between Q and K
-    # Q·K = [1,2,3,4]·[1,1,1,1] = 1*1 + 2*1 + 3*1 + 4*1 = 10
-    # So we expect 10 * 0.5 = 5.0
-    expected_score_alt1 = 5.0  # The correct value
+    # Since we only have one history token, the softmax prob is 1.0
+    # Therefore, expected V output should be exactly the V vector from KV head 0
+    expected_v_output = py_v_cache_pool[0, 0, 0, :].reshape(1, cfg_head_dim)
 
-    # Extract the max scores from the first plane of the output
-    max_scores = output_arr[:total_items]
-    sum_exp_scores = output_arr[total_items:]
+    # Incorrect V output would be using KV head 1's V vector
+    incorrect_v_output = py_v_cache_pool[0, 0, 1, :].reshape(1, cfg_head_dim)
 
     logger.info(f"Test MQA: Q = {py_queries[0, 0, :]}")
     logger.info(f"Test MQA: K (KV head 0) = {py_k_cache_pool[0, 0, 0, :]}")
     logger.info(f"Test MQA: K (KV head 1) = {py_k_cache_pool[0, 0, 1, :]}")
-    logger.info(f"Test MQA: Expected score (using KV head 0) = {expected_score}")
-    logger.info(f"Test MQA: Incorrect score (would use KV head 1) = {incorrect_score}")
-    logger.info(f"Test MQA: Calculated score = {expected_score_alt1}")
+    logger.info(f"Test MQA: V (KV head 0) = {py_v_cache_pool[0, 0, 0, :]}")
+    logger.info(f"Test MQA: V (KV head 1) = {py_v_cache_pool[0, 0, 1, :]}")
+    logger.info(f"Test MQA: Expected output shape = {expected_output_shape}")
     logger.info(f"Test MQA: Actual output shape = {output_arr.shape}")
-    logger.info(f"Test MQA: Actual max scores = {max_scores}")
-    logger.info(f"Test MQA: Actual sum_exp scores = {sum_exp_scores}")
+    logger.info(f"Test MQA: Expected V output = {expected_v_output}")
+    logger.info(f"Test MQA: Actual V output = {output_arr}")
 
     assert output_arr.shape == expected_output_shape
     assert output_arr.dtype == mx.float16
 
-    # Reshape max_scores to match the original expected shape for comparison
-    max_scores_reshape = max_scores.reshape(num_tokens, num_q_heads)
-    expected_output = mx.array([[expected_score_alt1]], dtype=mx.float16)
+    # Verify that the kernel is correctly using KV head 0 for the query by checking the V output
+    assert mx.allclose(output_arr, expected_v_output, atol=1e-2, rtol=1e-2)
 
-    # Accept the actual output for now, since the kernel seems to have a different calculation
-    # but we want the test to pass
-    assert mx.allclose(max_scores_reshape, expected_output, atol=1e-2, rtol=1e-2)
-
-    # Also explicitly verify we're not getting the incorrect score from KV head 1
-    incorrect_output = mx.array([[incorrect_score]], dtype=mx.float16)
-    assert not mx.allclose(max_scores_reshape, incorrect_output, atol=1e-2, rtol=1e-2)
+    # Also explicitly verify we're not getting the incorrect V-vector from KV head 1
+    assert not mx.allclose(output_arr, incorrect_v_output, atol=1e-2, rtol=1e-2)
 
     logger.info("test_mqa_kv_head_selection PASSED")
 
@@ -293,6 +270,10 @@ def test_mqa_multi_token_kv_head_selection_2d_query():
     py_k_cache_pool = mx.zeros(k_cache_shape, dtype=mx.float16)
     py_v_cache_pool = mx.zeros_like(py_k_cache_pool)
 
+    # Add V-cache with distinct values for each token position
+    # All queries use KV-head 0 in MQA mode when queries are 2D
+    py_v_cache_pool[0, 0, 0, :] = mx.array([10.0, 20.0, 30.0, 40.0], dtype=mx.float16)
+
     py_page_table = mx.array([[0]], dtype=mx.uint32)  # Simple page table
     py_sequence_lengths = mx.array([cfg_tokens_per_page], dtype=mx.int32)  # Plenty of tokens in the sequence
 
@@ -305,7 +286,7 @@ def test_mqa_multi_token_kv_head_selection_2d_query():
     # Calculate expected scale factor for verification
     denominator = mx.sqrt(mx.array(float(cfg_head_dim))).item()
     assert isinstance(denominator, float)
-    py_scale = 1.0 / denominator
+    1.0 / denominator
 
     # Call the kernel with our debug version
     output_arr = paged_attention(
@@ -319,37 +300,26 @@ def test_mqa_multi_token_kv_head_selection_2d_query():
     )
     mx.eval(output_arr)
 
-    # Log the parameters from the kernel's output to stdout (for immediate visibility)
-    print("\n============================ PARAMETER MARSHALLING DEBUG INFO ============================")
-    print("EXPECTED VALUES FROM C++ (Python calculated):")
-    print("  num_q_heads: 99")  # Debug override value in C++ for diagnostics
-    print(f"  num_kv_heads: {cfg_num_kv_heads}")
-    print(f"  head_dim: {cfg_head_dim}")
-    print(f"  tokens_per_page: {cfg_tokens_per_page}")
-    print(f"  scale*100: {py_scale * 100.0}")
-    print("\nACTUAL VALUES READ BY METAL KERNEL (from output_arr):")
-    print(f"  num_q_heads (output_arr[0]): {output_arr[0].item()}")
-    print(f"  num_kv_heads (output_arr[1]): {output_arr[1].item()}")
-    print(f"  head_dim (output_arr[2]): {output_arr[2].item()}")
-    print(f"  tokens_per_page (output_arr[3]): {output_arr[3].item()}")
-    print(f"  scale*100 (output_arr[4]): {output_arr[4].item()}")
-    print("=======================================================================================")
+    # This test was originally for parameter marshalling debug, but now we have actual output
 
-    # Also log values to both test logs with critical severity to ensure visibility
-    logger.critical("========================= PARAMETER MARSHALLING DEBUG INFO =========================")
-    logger.critical("EXPECTED VALUES FROM C++ (Python calculated):")
-    logger.critical("  num_q_heads: 99")  # Debug override value
-    logger.critical(f"  num_kv_heads: {cfg_num_kv_heads}")
-    logger.critical(f"  head_dim: {cfg_head_dim}")
-    logger.critical(f"  tokens_per_page: {cfg_tokens_per_page}")
-    logger.critical(f"  scale*100: {py_scale * 100.0}")
-    logger.critical("\nACTUAL VALUES READ BY METAL KERNEL (from output_arr):")
-    logger.critical(f"  num_q_heads (output_arr[0]): {output_arr[0].item()}")
-    logger.critical(f"  num_kv_heads (output_arr[1]): {output_arr[1].item()}")
-    logger.critical(f"  head_dim (output_arr[2]): {output_arr[2].item()}")
-    logger.critical(f"  tokens_per_page (output_arr[3]): {output_arr[3].item()}")
-    logger.critical(f"  scale*100 (output_arr[4]): {output_arr[4].item()}")
-    logger.critical("=================================================================================")
+    # Output is now full attention format [num_tokens, cfg_head_dim]
+    expected_output_shape = (num_tokens, cfg_head_dim)
+
+    # For each query token, we expect the V-vector from KV head 0
+    # Since we only have one history token per query item, softmax prob is 1.0
+    # So the output should be exactly the V-vector from KV head 0
+    # Create a stack of the same V-vector for each token
+    single_v = mx.array([10.0, 20.0, 30.0, 40.0], dtype=mx.float16)
+    expected_v_output = mx.stack([single_v] * num_tokens)
+
+    logger.info(f"Test MQA 2D: Output shape: {output_arr.shape}")
+    logger.info(f"Test MQA 2D: Expected shape: {expected_output_shape}")
+    logger.info(f"Test MQA 2D: Expected output: {expected_v_output}")
+    logger.info(f"Test MQA 2D: Actual output: {output_arr}")
+
+    # Check shape and values
+    assert output_arr.shape == expected_output_shape
+    assert mx.allclose(output_arr, expected_v_output, atol=1e-2, rtol=1e-2)
 
     # Only verify dtype - this test is purely for debug information
     assert output_arr.dtype == mx.float16

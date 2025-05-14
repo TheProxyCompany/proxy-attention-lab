@@ -10,6 +10,7 @@ using namespace metal;
 
 // Compile-time constants for kernel configuration
 constant static const uint MAX_SIMD_GROUPS_PER_TG = 8; // Max possible SIMD groups (256/32 = 8)
+constant static const uint MAX_HEAD_DIM_FOR_SHARED_MEM = 128; // Maximum supported head dimension
 
 
 /**
@@ -51,7 +52,7 @@ constant static const uint MAX_SIMD_GROUPS_PER_TG = 8; // Max possible SIMD grou
     uint        simd_lane_id                        [[thread_index_in_simdgroup]],
     uint        simd_group_id                       [[simdgroup_index_in_threadgroup]]
 ) {
-    (void)v_cache_pool_in;
+    // v_cache_pool_in is now actively used for V-aggregation
     (void)simd_lane_id; (void)simd_group_id; (void)tg_dim;
 
     // --- Thread Identifiers ---
@@ -65,6 +66,8 @@ constant static const uint MAX_SIMD_GROUPS_PER_TG = 8; // Max possible SIMD grou
     threadgroup float* G_simd_reduced_maxes              = G_partial_max_scores + tg_dim.x;
     threadgroup float* G_simd_reduced_adjusted_sum_exps  = G_simd_reduced_maxes + MAX_SIMD_GROUPS_PER_TG;
     threadgroup float* G_final_max_for_item              = G_simd_reduced_adjusted_sum_exps + MAX_SIMD_GROUPS_PER_TG;
+    threadgroup float* G_final_sum_exp_for_item          = G_final_max_for_item + 1;
+    threadgroup float* G_V_reduction_scratch             = G_final_sum_exp_for_item + 1; // Used for V component reduction
 
     // --- Determine Q-vector pointer for this item ---
     // This logic is adapted from the original single-thread-per-item kernel.
@@ -86,8 +89,9 @@ constant static const uint MAX_SIMD_GROUPS_PER_TG = 8; // Max possible SIMD grou
     // Since we're using dynamic threadgroup memory allocation, no need to check against a fixed limit.
     // The C++ side will ensure the requested memory size is within device limits.
 
+    // Pre-scale Q during staging as suggested by O3
     for (uint i = local_thread_idx; i < params.head_dim; i += tg_dim.x) {
-        q_shmem[i] = (float)q_vector_item_ptr[i];
+        q_shmem[i] = (float)q_vector_item_ptr[i] * params.scale; // Pre-scaled
     }
     threadgroup_barrier(mem_flags::mem_threadgroup); // Synchronize after Q-staging
 
@@ -121,6 +125,14 @@ constant static const uint MAX_SIMD_GROUPS_PER_TG = 8; // Max possible SIMD grou
     float thread_local_sum_exp = 0.0f;
     bool thread_processed_any_valid_score = false;
     bool thread_first_valid_score_in_chunk = true;
+
+    // Define thread-local V accumulator
+    float thread_local_V_accumulator[MAX_HEAD_DIM_FOR_SHARED_MEM]; // Array to accumulate V vectors
+
+    // Initialize the accumulator to zeros
+    for (uint i = 0; i < params.head_dim && i < MAX_HEAD_DIM_FOR_SHARED_MEM; ++i) {
+        thread_local_V_accumulator[i] = 0.0f;
+    }
 
     if (item_effective_history_length > 0) {
         // Distribute history tokens among threads in the group
@@ -208,7 +220,7 @@ constant static const uint MAX_SIMD_GROUPS_PER_TG = 8; // Max possible SIMD grou
                 }
             }
 
-            current_score_float *= params.scale;
+            // Note: current_score_float is already scaled because q_shmem was pre-scaled
 
             // Online Log-Sum-Exp update for this thread's local accumulation
             if (thread_first_valid_score_in_chunk) {
@@ -303,12 +315,238 @@ constant static const uint MAX_SIMD_GROUPS_PER_TG = 8; // Max possible SIMD grou
             final_global_sum_exp_score += G_simd_reduced_adjusted_sum_exps[i];
         }
 
-        // --- Output in planar layout ---
-        // Always write the proper max score for the item
-        output_buffer[global_item_idx] = (half)final_global_max_score;
-        uint output_pitch = params.total_items_in_dispatch;
-        if (output_pitch == 0) output_pitch = 1;
-        // Don't check size since we don't have that method
-        output_buffer[global_item_idx + output_pitch] = (half)final_global_sum_exp_score;
+        // Write global max score and sum_exp to threadgroup memory for all threads to use
+        *G_final_max_for_item = final_global_max_score;
+        *G_final_sum_exp_for_item = final_global_sum_exp_score;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup); // Ensure all threads see the global values
+
+    // All threads read the global values
+    float global_max_score = *G_final_max_for_item;
+    float global_sum_exp_score = *G_final_sum_exp_for_item;
+
+    // Calculate head dimension slice per thread
+    uint head_dim_slice_per_thread = (params.head_dim + tg_dim.x - 1) / tg_dim.x;  // Ceiling division
+    uint v_accum_start_idx = local_thread_idx * head_dim_slice_per_thread;
+    uint v_accum_end_idx = min((local_thread_idx + 1) * head_dim_slice_per_thread, params.head_dim);
+
+    // --- Second Pass: V-fetching and accumulation using global stats ---
+    // ALL threads participate in this work now
+    if (item_effective_history_length > 0) {
+        // Zero out the V accumulator - make sure we're working with clean values
+        for (uint i = 0; i < params.head_dim && i < MAX_HEAD_DIM_FOR_SHARED_MEM; ++i) {
+            thread_local_V_accumulator[i] = 0.0f;
+        }
+
+        // Distribute history tokens among threads (same as in first pass)
+        uint num_hist_tokens_per_thread = (item_effective_history_length + tg_dim.x - 1) / tg_dim.x;
+        uint hist_start_idx = local_thread_idx * num_hist_tokens_per_thread;
+        uint hist_end_idx = min((local_thread_idx + 1) * num_hist_tokens_per_thread, item_effective_history_length);
+
+        // Each thread rescans its assigned history chunk
+        for (uint hist_token_idx = hist_start_idx; hist_token_idx < hist_end_idx; ++hist_token_idx) {
+            uint target_historical_logical_token_pos = hist_token_idx;
+
+            uint logical_block_idx = target_historical_logical_token_pos / params.tokens_per_page;
+            uint token_slot_in_page = target_historical_logical_token_pos % params.tokens_per_page;
+
+            if (logical_block_idx >= params.max_logical_blocks_per_seq) {
+                break; // Beyond page table bounds
+            }
+
+            uint page_table_flat_idx = item_seq_idx_in_batch * params.max_logical_blocks_per_seq + logical_block_idx;
+            uint physical_page_id = page_table_in[page_table_flat_idx];
+
+            if (physical_page_id >= params.num_physical_pages_in_pool) {
+                continue; // Skip invalid physical page
+            }
+
+            // Same KV head selection as in main loop
+            uint q_head_for_kv_map_within_item = 0;
+            if (params.num_q_heads > 1) {
+                q_head_for_kv_map_within_item = global_item_idx % params.num_q_heads;
+            }
+
+            uint target_kv_head_idx = 0;
+            if (params.num_kv_heads > 0) {
+                if (params.num_q_heads > params.num_kv_heads) { // GQA
+                    uint gqa_factor = params.num_q_heads / params.num_kv_heads;
+                    target_kv_head_idx = q_head_for_kv_map_within_item / gqa_factor;
+                } else if (params.num_q_heads < params.num_kv_heads) { // MQA
+                    target_kv_head_idx = 0;
+                } else { // MHA
+                    target_kv_head_idx = q_head_for_kv_map_within_item;
+                }
+                if (target_kv_head_idx >= params.num_kv_heads) {
+                    target_kv_head_idx = target_kv_head_idx % params.num_kv_heads;
+                }
+            }
+
+            // Fetch K vector and compute dot product with pre-scaled Q
+            ulong k_elements_per_token_slot_per_kv_head = (ulong)params.head_dim;
+            ulong k_elements_per_token_slot_all_kv_heads = (ulong)params.num_kv_heads * k_elements_per_token_slot_per_kv_head;
+            ulong k_elements_per_physical_page = (ulong)params.tokens_per_page * k_elements_per_token_slot_all_kv_heads;
+            ulong k_page_base_offset_in_elements = (ulong)physical_page_id * k_elements_per_physical_page;
+            ulong k_token_slot_base_offset_in_elements = (ulong)token_slot_in_page * k_elements_per_token_slot_all_kv_heads;
+            ulong k_kv_head_base_offset_in_elements = (ulong)target_kv_head_idx * k_elements_per_token_slot_per_kv_head;
+            ulong k_vector_start_idx = k_page_base_offset_in_elements +
+                                     k_token_slot_base_offset_in_elements +
+                                     k_kv_head_base_offset_in_elements;
+            device const half* k_vector_ptr = k_cache_pool_in + k_vector_start_idx;
+
+            // Recompute the attention score (now with pre-scaled Q)
+            float score = 0.0f;
+            if (params.head_dim > 0) {
+                device const packed_half4* k_ptr_h4 = reinterpret_cast<device const packed_half4*>(k_vector_ptr);
+                for (uint i = 0; i < params.head_dim / 4; ++i) {
+                    float4 k_vec_f4 = float4(k_ptr_h4[i]);
+                    float4 q_vec_f4 = {q_shmem[i * 4 + 0], q_shmem[i * 4 + 1], q_shmem[i * 4 + 2], q_shmem[i * 4 + 3]};
+                    float dp = dot(q_vec_f4, k_vec_f4);
+                    score += dp;
+                }
+            }
+
+            // Calculate softmax probability using global stats
+            float softmax_prob_i = 0.0f;
+            if (global_sum_exp_score > 1e-9f) {
+                softmax_prob_i = exp(max(score - global_max_score, -16.0f)) / global_sum_exp_score;
+            }
+
+            // Fetch V-vector and accumulate weighted values
+            ulong v_elements_per_token_slot_per_kv_head = (ulong)params.head_dim;
+            ulong v_elements_per_token_slot_all_kv_heads = (ulong)params.num_kv_heads * v_elements_per_token_slot_per_kv_head;
+            ulong v_elements_per_physical_page = (ulong)params.tokens_per_page * v_elements_per_token_slot_all_kv_heads;
+            ulong v_page_base_offset_in_elements = (ulong)physical_page_id * v_elements_per_physical_page;
+            ulong v_token_slot_base_offset_in_elements = (ulong)token_slot_in_page * v_elements_per_token_slot_all_kv_heads;
+            ulong v_kv_head_base_offset_in_elements = (ulong)target_kv_head_idx * v_elements_per_token_slot_per_kv_head;
+            ulong v_vector_start_idx = v_page_base_offset_in_elements +
+                                     v_token_slot_base_offset_in_elements +
+                                     v_kv_head_base_offset_in_elements;
+            device const half* v_vector_ptr = v_cache_pool_in + v_vector_start_idx;
+
+            if (params.head_dim > 0) {
+                device const packed_half4* v_ptr_h4 = reinterpret_cast<device const packed_half4*>(v_vector_ptr);
+                for (uint i = 0; i < params.head_dim / 4; ++i) {
+                    float4 v_vec_f4 = float4(v_ptr_h4[i]);
+                    thread_local_V_accumulator[i * 4 + 0] += softmax_prob_i * v_vec_f4.x;
+                    thread_local_V_accumulator[i * 4 + 1] += softmax_prob_i * v_vec_f4.y;
+                    thread_local_V_accumulator[i * 4 + 2] += softmax_prob_i * v_vec_f4.z;
+                    thread_local_V_accumulator[i * 4 + 3] += softmax_prob_i * v_vec_f4.w;
+                }
+            }
+        }
+    }
+
+    // --- Threadgroup Reduction for V Accumulator ---
+    // Process V components in float4 chunks for efficiency
+    // Calculate the number of SIMD groups in this threadgroup
+    uint num_simd_groups = (tg_dim.x + 31) / 32; // Ceiling division by 32
+
+    // Process head_dim in chunks of 4 (for float4 processing)
+    for (uint h_chunk_idx = 0; h_chunk_idx < (params.head_dim / 4); ++h_chunk_idx) {
+        uint base_h_idx = h_chunk_idx * 4;
+
+        // Load this thread's float4 chunk from its local V accumulator
+        float4 my_v_chunk = {
+            thread_local_V_accumulator[base_h_idx + 0],
+            thread_local_V_accumulator[base_h_idx + 1],
+            thread_local_V_accumulator[base_h_idx + 2],
+            thread_local_V_accumulator[base_h_idx + 3]
+        };
+
+        // Reduce each component of the float4 across the SIMD group
+        float simd_sum_x = simd_sum(my_v_chunk.x);
+        float simd_sum_y = simd_sum(my_v_chunk.y);
+        float simd_sum_z = simd_sum(my_v_chunk.z);
+        float simd_sum_w = simd_sum(my_v_chunk.w);
+
+        // Store SIMD group's sums into shared memory for X component
+        if (simd_lane_id == 0) {
+            G_V_reduction_scratch[simd_group_id] = simd_sum_x;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // Thread 0 sums results for X component across all SIMD groups
+        if (local_thread_idx == 0) {
+            float final_comp_sum_x = 0.0f;
+            for (uint i = 0; i < num_simd_groups; ++i) {
+                final_comp_sum_x += G_V_reduction_scratch[i];
+            }
+            output_buffer[global_item_idx * params.head_dim + base_h_idx + 0] = (half)final_comp_sum_x;
+        }
+
+        // Y component
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (simd_lane_id == 0) {
+            G_V_reduction_scratch[simd_group_id] = simd_sum_y;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        if (local_thread_idx == 0) {
+            float final_comp_sum_y = 0.0f;
+            for (uint i = 0; i < num_simd_groups; ++i) {
+                final_comp_sum_y += G_V_reduction_scratch[i];
+            }
+            output_buffer[global_item_idx * params.head_dim + base_h_idx + 1] = (half)final_comp_sum_y;
+        }
+
+        // Z component
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (simd_lane_id == 0) {
+            G_V_reduction_scratch[simd_group_id] = simd_sum_z;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        if (local_thread_idx == 0) {
+            float final_comp_sum_z = 0.0f;
+            for (uint i = 0; i < num_simd_groups; ++i) {
+                final_comp_sum_z += G_V_reduction_scratch[i];
+            }
+            output_buffer[global_item_idx * params.head_dim + base_h_idx + 2] = (half)final_comp_sum_z;
+        }
+
+        // W component
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (simd_lane_id == 0) {
+            G_V_reduction_scratch[simd_group_id] = simd_sum_w;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        if (local_thread_idx == 0) {
+            float final_comp_sum_w = 0.0f;
+            for (uint i = 0; i < num_simd_groups; ++i) {
+                final_comp_sum_w += G_V_reduction_scratch[i];
+            }
+            output_buffer[global_item_idx * params.head_dim + base_h_idx + 3] = (half)final_comp_sum_w;
+        }
+
+        // Sync before processing the next chunk
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    // Handle remaining components if head_dim is not a multiple of 4
+    uint remaining = params.head_dim % 4;
+    if (remaining > 0) {
+        uint base_h_idx = (params.head_dim / 4) * 4;
+
+        for (uint offset = 0; offset < remaining; ++offset) {
+            float my_v_comp = thread_local_V_accumulator[base_h_idx + offset];
+            float simd_sum_comp = simd_sum(my_v_comp);
+
+            if (simd_lane_id == 0) {
+                G_V_reduction_scratch[simd_group_id] = simd_sum_comp;
+            }
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+
+            if (local_thread_idx == 0) {
+                float final_comp_sum = 0.0f;
+                for (uint i = 0; i < num_simd_groups; ++i) {
+                    final_comp_sum += G_V_reduction_scratch[i];
+                }
+                output_buffer[global_item_idx * params.head_dim + base_h_idx + offset] = (half)final_comp_sum;
+            }
+
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+        }
     }
 } // End of kernel body

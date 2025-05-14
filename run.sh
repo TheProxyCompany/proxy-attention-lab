@@ -47,6 +47,7 @@ fi
 log "Installing/Updating PAL dependencies (including MLX, Nanobind from pyproject.toml)..."
 export CMAKE_BUILD_PARALLEL_LEVEL=8 # Set parallel build level to 8
 export PAL_DEBUG=true
+export PAL_ENABLE_DEBUG_LOGGING=ON # Enable debug logging
 "$UV_EXECUTABLE_PATH" pip install --no-deps "git+https://github.com/TheProxyCompany/mlx.git" "nanobind==2.5.0"
 "$UV_EXECUTABLE_PATH" pip install "." --force-reinstall --no-build-isolation --no-cache-dir
 

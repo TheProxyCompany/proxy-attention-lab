@@ -9,55 +9,33 @@ logger = logging.getLogger(__name__)
 
 def test_max_score_over_history_in_one_block():
     """
-    Tests the kernel's ability to find the maximum score over a history window.
-
-    This test verifies that the kernel can:
-    1. Identify the current Q token's logical position
-    2. Loop through historical token positions from 0 up to current position
-    3. Compute dot product scores with each historical K-vector
-    4. Find and return the maximum score
-
-    All token positions in this test are within the same logical block 0.
+    Tests the full attention computation (max score, softmax, and V-aggregation)
+    for a single item with multiple history tokens in one block.
     """
     # --- Config ---
-    num_q_threads = 1  # Just one query thread for this test
+    num_q_threads = 1
     cfg_tokens_per_page = 64
     cfg_num_kv_heads = 1
     cfg_head_dim = 4
-
-    # Current token position is 3, so we'll attend to history positions 0, 1, and 2
     current_position = 3
 
     # --- Inputs ---
-    # 1. Q-vector: Shape [num_q_threads, cfg_head_dim]
     py_queries = mx.array([[1.0, 2.0, 3.0, 4.0]], dtype=mx.float16)
 
-    # 2. K-Cache Pool: [NumPhysPages, TokensPerPage, NumKVHeads, HeadDim]
-    num_physical_pages = 1
-    k_cache_shape = (num_physical_pages, cfg_tokens_per_page, cfg_num_kv_heads, cfg_head_dim)
+    k_cache_shape = (1, cfg_tokens_per_page, cfg_num_kv_heads, cfg_head_dim)
     py_k_cache_pool = mx.zeros(k_cache_shape, dtype=mx.float16)
-
-    # Historical K-vectors with different values to produce different scores
-    # K-vector at position 0
     py_k_cache_pool[0, 0, 0, :] = mx.array([1.0, 1.0, 1.0, 1.0], dtype=mx.float16)
-    # K-vector at position 1
     py_k_cache_pool[0, 1, 0, :] = mx.array([2.0, 2.0, 2.0, 2.0], dtype=mx.float16)
-    # K-vector at position 2
     py_k_cache_pool[0, 2, 0, :] = mx.array([0.5, 0.5, 0.5, 0.5], dtype=mx.float16)
 
-    # 3. V-Cache Pool (not used for this test)
-    py_v_cache_pool = mx.zeros_like(py_k_cache_pool)
+    py_v_cache_pool = mx.zeros(k_cache_shape, dtype=mx.float16)
+    py_v_cache_pool[0, 0, 0, :] = mx.array([10.0, 11.0, 12.0, 13.0], dtype=mx.float16)
+    py_v_cache_pool[0, 1, 0, :] = mx.array([20.0, 21.0, 22.0, 23.0], dtype=mx.float16)
+    py_v_cache_pool[0, 2, 0, :] = mx.array([30.0, 31.0, 32.0, 33.0], dtype=mx.float16)
 
-    # 4. Page Table: Maps logical block 0 to physical page 0
-    py_page_table = mx.array([[0]], dtype=mx.uint32)  # Shape (1, 1)
-
-    # 5. Sequence Lengths: One sequence with enough tokens
+    py_page_table = mx.array([[0]], dtype=mx.uint32)
     py_sequence_lengths = mx.array([cfg_tokens_per_page], dtype=mx.int32)
-
-    # 6. Query to Sequence Map: Maps our single query to sequence 0
     py_query_to_seq_map = mx.zeros(num_q_threads, dtype=mx.int32)
-
-    # 7. Query Token Offset: Current position
     py_query_token_offset = mx.array([current_position], dtype=mx.int32)
 
     # --- Call the kernel ---
@@ -72,68 +50,60 @@ def test_max_score_over_history_in_one_block():
     )
     mx.eval(output_arr)
 
-    # --- Calculate expected output ---
-    # Scale factor for dot product
-    denominator = mx.sqrt(mx.array(float(cfg_head_dim))).item()
-    assert isinstance(denominator, float)
-    py_scale = 1.0 / denominator
+    # --- Calculate expected output (Python reference) ---
+    py_scale = 1.0 / mx.sqrt(mx.array(float(cfg_head_dim))).item()
+    scores_val = []
+    q_vec_py = py_queries[0].astype(mx.float32)
+    for hist_idx_calc in range(current_position):
+        k_vec_py = py_k_cache_pool[0, hist_idx_calc, 0, :].astype(mx.float32)
+        score = (mx.sum(q_vec_py * k_vec_py) * py_scale).item()
+        scores_val.append(score)
 
-    # Initialize list to store scores for each historical position
-    scores = []
+    true_max_score = -float("inf")
+    for s_val in scores_val:
+        if s_val > true_max_score:
+            true_max_score = s_val
+    if not scores_val:
+        true_max_score = 0.0  # Handle empty history case for max
 
-    # Loop through history positions
-    for hist_pos in range(current_position):
-        # For this test, token_slot_in_page is the same as hist_pos (all in logical block 0)
-        token_slot_in_page = hist_pos
+    exp_scores_minus_max = []
+    for s_val in scores_val:
+        exp_scores_minus_max.append(mx.exp(mx.maximum(s_val - true_max_score, -16.0)).item())
 
-        # Get K-vector for this historical position
-        k_vec = py_k_cache_pool[0, token_slot_in_page, 0, :]
+    true_sum_exp_score = sum(exp_scores_minus_max)
+    if true_sum_exp_score == 0 and not scores_val:  # if history was empty, sum_exp is 0
+        pass
+    elif true_sum_exp_score == 0:  # if history non-empty but all scores led to sum_exp 0 (e.g. all -inf)
+        true_sum_exp_score = 1.0  # Avoid division by zero, effectively making probs 0 if scores were -inf
 
-        # Compute the dot product
-        q_vec = py_queries[0]
-        dot_product = mx.sum(q_vec * k_vec).item()
-        assert isinstance(dot_product, float)
+    softmax_probs = []
+    if true_sum_exp_score != 0:
+        for val in exp_scores_minus_max:
+            softmax_probs.append(val / true_sum_exp_score)
+    else:  # All scores were effectively -infinity or history empty
+        softmax_probs = [0.0] * len(scores_val) if scores_val else []
 
-        # Apply scaling
-        score = dot_product * py_scale
-        scores.append(score)
+    expected_V_output_py = mx.zeros((cfg_head_dim,), dtype=mx.float32)
+    if softmax_probs:  # Only aggregate if there are probs
+        for i in range(current_position):
+            v_hist = py_v_cache_pool[0, i, 0, :].astype(mx.float32)
+            expected_V_output_py += v_hist * softmax_probs[i]
 
-    # Find maximum score
-    expected_max_score = max(scores)
+    expected_V_output_reshaped = expected_V_output_py.astype(mx.float16).reshape(num_q_threads, cfg_head_dim)
 
-    # Calculate detailed score values for debugging and verification
-    score0 = (1.0 * 1.0 + 2.0 * 1.0 + 3.0 * 1.0 + 4.0 * 1.0) * py_scale  # = 10 * 0.5 = 5.0
-    score1 = (1.0 * 2.0 + 2.0 * 2.0 + 3.0 * 2.0 + 4.0 * 2.0) * py_scale  # = 20 * 0.5 = 10.0
-    score2 = (1.0 * 0.5 + 2.0 * 0.5 + 3.0 * 0.5 + 4.0 * 0.5) * py_scale  # = 5 * 0.5 = 2.5
+    logger.info(f"Test ('{test_max_score_over_history_in_one_block.__name__}'):")
+    logger.info(f"  Scores: {scores_val}")
+    logger.info(f"  Max Score: {true_max_score}")
+    logger.info(f"  Sum Exp Score: {true_sum_exp_score}")
+    logger.info(f"  Softmax Probs: {softmax_probs}")
+    logger.info(f"  Expected V output: {expected_V_output_reshaped}")
+    logger.info(f"  Actual V output: {output_arr}")
 
-    logger.info(f"Score for hist_pos=0: {score0}")
-    logger.info(f"Score for hist_pos=1: {score1}")
-    logger.info(f"Score for hist_pos=2: {score2}")
-    logger.info(f"Expected max score: {expected_max_score}")
-
-    # The expected max score should be from hist_pos=1 (score1 = 10.0)
-    expected_max_score = max(scores)
-    expected_output = mx.array([expected_max_score], dtype=mx.float16)
-
-    # Output is now in planar format [num_q_threads * 2] where:
-    # - First half contains max scores: output_arr[:num_q_threads]
-    # - Second half contains sum_exp scores: output_arr[num_q_threads:]
-    expected_output_shape = (num_q_threads * 2,)
-
-    # Extract max scores from the first plane
-    max_scores = output_arr[:num_q_threads]
-
-    logger.info(f"Test: Expected output shape: {expected_output_shape}")
-    logger.info(f"Test: Actual output shape: {output_arr.shape}")
-    logger.info(f"Test: Expected max score: {expected_output}")
-    logger.info(f"Test: Actual max scores: {max_scores}")
-    logger.info(f"Test: Actual sum_exp scores: {output_arr[num_q_threads:]}")
-
-    assert output_arr.shape == expected_output_shape
+    assert output_arr.shape == expected_V_output_reshaped.shape
     assert output_arr.dtype == mx.float16
-    assert mx.allclose(max_scores, expected_output, atol=1e-2, rtol=1e-2)
-
-    logger.info("test_max_score_over_history_in_one_block PASSED")
+    assert mx.allclose(
+        output_arr, expected_V_output_reshaped, atol=1e-2, rtol=1e-2
+    )  # Increased tolerance slightly for float16 sum
 
 
 def test_max_score_over_multi_block_history():
@@ -186,8 +156,15 @@ def test_max_score_over_multi_block_history():
     # K-vector at position 1 (logical position 4)
     py_k_cache_pool[1, 1, 0, :] = mx.array([1.5, 1.5, 1.5, 1.5], dtype=mx.float16)  # Score will be 7.5
 
-    # 3. V-Cache Pool (not used for this test)
+    # 3. V-Cache Pool with distinct values for each position
     py_v_cache_pool = mx.zeros_like(py_k_cache_pool)
+    # V-vectors in physical page 0 (logical block 0)
+    py_v_cache_pool[0, 0, 0, :] = mx.array([10.0, 20.0, 30.0, 40.0], dtype=mx.float16)  # Position 0
+    py_v_cache_pool[0, 1, 0, :] = mx.array([50.0, 60.0, 70.0, 80.0], dtype=mx.float16)  # Position 1
+    py_v_cache_pool[0, 2, 0, :] = mx.array([5.0, 6.0, 7.0, 8.0], dtype=mx.float16)  # Position 2
+    # V-vectors in physical page 1 (logical block 1)
+    py_v_cache_pool[1, 0, 0, :] = mx.array([100.0, 110.0, 120.0, 130.0], dtype=mx.float16)  # Position 3
+    py_v_cache_pool[1, 1, 0, :] = mx.array([15.0, 25.0, 35.0, 45.0], dtype=mx.float16)  # Position 4
 
     # 4. Page Table: Maps logical blocks to physical pages
     # - Logical block 0 -> Physical page 0
@@ -215,16 +192,18 @@ def test_max_score_over_multi_block_history():
     )
     mx.eval(output_arr)
 
-    # --- Calculate expected output ---
+    # --- Calculate expected output (Python reference) ---
     # Scale factor for dot product
     denominator = mx.sqrt(mx.array(float(cfg_head_dim))).item()
     assert isinstance(denominator, float)
     py_scale = 1.0 / denominator
 
-    # Initialize list to store scores for each historical position
-    scores = []
+    # Calculate scores for each history position
+    scores_val = []
+    # Store V-vectors for each history position
+    v_vectors = []
 
-    # Loop through history positions
+    # Loop through history positions and calculate scaled QK scores
     for hist_pos in range(current_position):
         # Calculate logical block and token slot
         logical_block_idx = hist_pos // cfg_tokens_per_page
@@ -233,20 +212,17 @@ def test_max_score_over_multi_block_history():
         # Get physical page from page table
         physical_page_id = py_page_table[0, logical_block_idx].item()
 
-        # Get K-vector for this historical position
-        k_vec = py_k_cache_pool[physical_page_id, token_slot_in_page, 0, :]
+        # Get K-vector and V-vector for this historical position
+        k_vec = py_k_cache_pool[physical_page_id, token_slot_in_page, 0, :].astype(mx.float32)
+        v_vec = py_v_cache_pool[physical_page_id, token_slot_in_page, 0, :].astype(mx.float32)
 
-        # Compute the dot product
-        q_vec = py_queries[0]
-        dot_product = mx.sum(q_vec * k_vec).item()
-        assert isinstance(dot_product, float)
+        # Store V-vector for later use
+        v_vectors.append(v_vec)
 
-        # Apply scaling
-        score = dot_product * py_scale
-        scores.append(score)
-
-    # Find maximum score
-    expected_max_score = max(scores)
+        # Compute the dot product and apply scaling
+        q_vec = py_queries[0].astype(mx.float32)
+        score = (mx.sum(q_vec * k_vec) * py_scale).item()
+        scores_val.append(score)
 
     # Calculate detailed score values for debugging and verification
     score0 = (1.0 * 1.0 + 2.0 * 1.0 + 3.0 * 1.0 + 4.0 * 1.0) * py_scale  # = 10 * 0.5 = 5.0
@@ -255,33 +231,64 @@ def test_max_score_over_multi_block_history():
     score3 = (1.0 * 3.0 + 2.0 * 3.0 + 3.0 * 3.0 + 4.0 * 3.0) * py_scale  # = 30 * 0.5 = 15.0
     score4 = (1.0 * 1.5 + 2.0 * 1.5 + 3.0 * 1.5 + 4.0 * 1.5) * py_scale  # = 15 * 0.5 = 7.5
 
+    # Find maximum score
+    true_max_score = -float("inf")
+    if scores_val:  # Ensure scores_val is not empty
+        for s_val in scores_val:
+            if s_val > true_max_score:
+                true_max_score = s_val
+    else:  # Handle case with no valid scores (e.g., empty history)
+        true_max_score = 0.0
+
+    # Calculate exp(score - max_score) with clamp
+    exp_scores_minus_max = []
+    for s_val in scores_val:
+        exp_scores_minus_max.append(mx.exp(mx.maximum(s_val - true_max_score, -16.0)).item())
+
+    true_sum_exp_score = sum(exp_scores_minus_max)
+    # Handle sum_exp being zero to avoid division by zero
+    if not scores_val:  # If original scores_val was empty
+        true_sum_exp_score = 0.0  # Or based on spec for empty softmax
+    elif true_sum_exp_score < 1e-9:  # If sum is effectively zero due to all scores being very low
+        true_sum_exp_score = 1.0  # Prevent division by zero, probs will be ~0
+
+    softmax_probs = []
+    if true_sum_exp_score != 0.0:
+        for val in exp_scores_minus_max:
+            softmax_probs.append(val / true_sum_exp_score)
+    elif scores_val:  # scores existed but sum_exp was zero (all scores were ~ -inf)
+        softmax_probs = [0.0] * len(scores_val)
+    # else: softmax_probs remains empty if scores_val was empty
+
+    # Calculate expected weighted sum of V-vectors
+    expected_V_output_py = mx.zeros((cfg_head_dim,), dtype=mx.float32)
+    if softmax_probs:  # Only aggregate if there are probabilities
+        for i in range(len(softmax_probs)):  # Iterate up to the number of actual scores/probs
+            expected_V_output_py += v_vectors[i] * softmax_probs[i]
+
+    expected_V_output_reshaped = expected_V_output_py.astype(mx.float16).reshape(num_q_threads, cfg_head_dim)
+
     logger.info(f"Score for hist_pos=0 (block 0, slot 0): {score0}")
     logger.info(f"Score for hist_pos=1 (block 0, slot 1): {score1}")
     logger.info(f"Score for hist_pos=2 (block 0, slot 2): {score2}")
     logger.info(f"Score for hist_pos=3 (block 1, slot 0): {score3}")
     logger.info(f"Score for hist_pos=4 (block 1, slot 1): {score4}")
-    logger.info(f"Expected max score: {expected_max_score}")
+    logger.info(f"Max Score: {true_max_score}")
+    logger.info(f"Sum Exp Score: {true_sum_exp_score}")
+    logger.info(f"Softmax Probs: {softmax_probs}")
+    logger.info(f"Expected V output: {expected_V_output_reshaped}")
 
-    # The expected max score should be from hist_pos=3 (score3 = 15.0)
-    expected_output = mx.array([expected_max_score], dtype=mx.float16)
-
-    # Output is now in planar format [num_q_threads * 2] where:
-    # - First half contains max scores: output_arr[:num_q_threads]
-    # - Second half contains sum_exp scores: output_arr[num_q_threads:]
-    expected_output_shape = (num_q_threads * 2,)
-
-    # Extract max scores from the first plane
-    max_scores = output_arr[:num_q_threads]
+    # Output is now full attention format [num_q_threads, cfg_head_dim]
+    expected_output_shape = (num_q_threads, cfg_head_dim)
 
     logger.info(f"Test: Expected output shape: {expected_output_shape}")
     logger.info(f"Test: Actual output shape: {output_arr.shape}")
-    logger.info(f"Test: Expected max score: {expected_output}")
-    logger.info(f"Test: Actual max scores: {max_scores}")
-    logger.info(f"Test: Actual sum_exp scores: {output_arr[num_q_threads:]}")
+    logger.info(f"Test: Expected V output: {expected_V_output_reshaped}")
+    logger.info(f"Test: Actual V output: {output_arr}")
 
     assert output_arr.shape == expected_output_shape
     assert output_arr.dtype == mx.float16
-    assert mx.allclose(max_scores, expected_output, atol=1e-2, rtol=1e-2)
+    assert mx.allclose(output_arr, expected_V_output_reshaped, atol=1e-2, rtol=1e-2)
 
     logger.info("test_max_score_over_multi_block_history PASSED")
 
@@ -317,8 +324,15 @@ def test_zero_history_returns_zero_score():
     k_cache_shape = (num_physical_pages, cfg_tokens_per_page, cfg_num_kv_heads, cfg_head_dim)
     py_k_cache_pool = mx.ones(k_cache_shape, dtype=mx.float16) * 10.0  # Fill with 10s
 
-    # 3. V-Cache Pool (not used for this test)
+    # 3. V-Cache Pool with values to verify that these are aggregated correctly
     py_v_cache_pool = mx.zeros_like(py_k_cache_pool)
+    # Set up V-cache with values to verify correct aggregation
+    py_v_cache_pool[0, 0, 0, :] = mx.array([10.0, 20.0, 30.0, 40.0], dtype=mx.float16)  # Position 0
+    py_v_cache_pool[0, 1, 0, :] = mx.array([50.0, 60.0, 70.0, 80.0], dtype=mx.float16)  # Position 1 (highest score)
+    py_v_cache_pool[0, 2, 0, :] = mx.array([5.0, 6.0, 7.0, 8.0], dtype=mx.float16)  # Position 2
+    # Positions 3-4 should NOT be accessed due to sequence length limit
+    py_v_cache_pool[0, 3, 0, :] = mx.array([100.0, 200.0, 300.0, 400.0], dtype=mx.float16)  # Position 3
+    py_v_cache_pool[1, 0, 0, :] = mx.array([500.0, 600.0, 700.0, 800.0], dtype=mx.float16)  # Position 4
 
     # 4. Page Table: Simple mapping for one logical block
     py_page_table = mx.array([[0]], dtype=mx.uint32)  # Shape (1, 1)
@@ -345,37 +359,24 @@ def test_zero_history_returns_zero_score():
     mx.eval(output_arr)
 
     # --- Expected output ---
-    # For zero history, the kernel should return 0.0 for all threads
-    # Both max scores and sum_exp scores should be 0
-    expected_max_scores = mx.zeros(num_q_threads, dtype=mx.float16)
-    expected_sum_exp_scores = mx.zeros(num_q_threads, dtype=mx.float16)
+    # For zero history, the kernel should return zeros for all V-vectors
+    expected_v_output = mx.zeros((num_q_threads, cfg_head_dim), dtype=mx.float16)
 
-    # Output is now in planar format [num_q_threads * 2] where:
-    # - First half contains max scores: output_arr[:num_q_threads]
-    # - Second half contains sum_exp scores: output_arr[num_q_threads:]
-    expected_output_shape = (num_q_threads * 2,)
-
-    # Extract max scores and sum_exp scores from the planes
-    max_scores = output_arr[:num_q_threads]
-    sum_exp_scores = output_arr[num_q_threads:]
+    # Output is now full attention format [num_q_threads, cfg_head_dim]
+    expected_output_shape = (num_q_threads, cfg_head_dim)
 
     logger.info(f"Test Zero History: Query token offsets = {py_query_token_offset}")
     logger.info(f"Test Zero History: Expected output shape = {expected_output_shape}")
     logger.info(f"Test Zero History: Actual output shape = {output_arr.shape}")
-    logger.info(f"Test Zero History: Expected max scores = {expected_max_scores}")
-    logger.info(f"Test Zero History: Actual max scores = {max_scores}")
-    logger.info(f"Test Zero History: Expected sum_exp scores = {expected_sum_exp_scores}")
-    logger.info(f"Test Zero History: Actual sum_exp scores = {sum_exp_scores}")
+    logger.info(f"Test Zero History: Expected V output = {expected_v_output}")
+    logger.info(f"Test Zero History: Actual V output = {output_arr}")
 
     # Verify output shape and type
     assert output_arr.shape == expected_output_shape
     assert output_arr.dtype == mx.float16
 
-    # Verify max scores are 0.0
-    assert mx.allclose(max_scores, expected_max_scores, atol=1e-3)
-
-    # Also verify that sum_exp scores are 0.0
-    assert mx.allclose(sum_exp_scores, expected_sum_exp_scores, atol=1e-3)
+    # Verify V output contains all zeros
+    assert mx.allclose(output_arr, expected_v_output, atol=1e-3)
 
     logger.info("test_zero_history_returns_zero_score PASSED")
 
@@ -424,8 +425,15 @@ def test_history_limited_by_sequence_length():
     # Position 4 - Beyond sequence length, should NOT be accessed
     py_k_cache_pool[1, 0, 0, :] = mx.array([10.0, 10.0, 10.0, 10.0], dtype=mx.float16)  # Score would be 20.0
 
-    # 3. V-Cache Pool (not used for this test)
+    # 3. V-Cache Pool with values to verify that these are aggregated correctly
     py_v_cache_pool = mx.zeros_like(py_k_cache_pool)
+    # Set up V-cache with values to verify correct aggregation
+    py_v_cache_pool[0, 0, 0, :] = mx.array([10.0, 20.0, 30.0, 40.0], dtype=mx.float16)  # Position 0
+    py_v_cache_pool[0, 1, 0, :] = mx.array([50.0, 60.0, 70.0, 80.0], dtype=mx.float16)  # Position 1 (highest score)
+    py_v_cache_pool[0, 2, 0, :] = mx.array([5.0, 6.0, 7.0, 8.0], dtype=mx.float16)  # Position 2
+    # Positions 3-4 should NOT be accessed due to sequence length limit
+    py_v_cache_pool[0, 3, 0, :] = mx.array([100.0, 200.0, 300.0, 400.0], dtype=mx.float16)  # Position 3
+    py_v_cache_pool[1, 0, 0, :] = mx.array([500.0, 600.0, 700.0, 800.0], dtype=mx.float16)  # Position 4
 
     # 4. Page Table: Two logical blocks mapped to two physical pages
     py_page_table = mx.array([[0, 1]], dtype=mx.uint32)  # Shape (1, 2)
@@ -462,35 +470,54 @@ def test_history_limited_by_sequence_length():
     score1 = 12.0 * py_scale  # = 12 * 0.5 = 6.0
     score2 = 8.0 * py_scale  # = 8 * 0.5 = 4.0
 
-    # Max score should be from position 1 (score1 = 6.0)
-    expected_max_score = score1
-    expected_output = mx.array([expected_max_score], dtype=mx.float16)
+    # Calculate expected V aggregation based on softmax over positions 0-2
+    # Find maximum score from positions 0-2
+    true_max_score = max(score0, score1, score2)  # Should be score1 = 6.0
 
-    # Output is now in planar format [num_q_threads * 2] where:
-    # - First half contains max scores: output_arr[:num_q_threads]
-    # - Second half contains sum_exp scores: output_arr[num_q_threads:]
+    # Calculate exp(score - max_score) with clamp for each position
+    exp_score0 = mx.exp(mx.maximum(score0 - true_max_score, -16.0)).item()
+    exp_score1 = mx.exp(mx.maximum(score1 - true_max_score, -16.0)).item()
+    exp_score2 = mx.exp(mx.maximum(score2 - true_max_score, -16.0)).item()
+
+    # Calculate sum of exp scores
+    true_sum_exp_score = exp_score0 + exp_score1 + exp_score2
+
+    # Calculate softmax probabilities
+    prob0 = exp_score0 / true_sum_exp_score
+    prob1 = exp_score1 / true_sum_exp_score
+    prob2 = exp_score2 / true_sum_exp_score
+
+    # Get V-vectors for each position
+    v_vec0 = py_v_cache_pool[0, 0, 0, :].astype(mx.float32)
+    v_vec1 = py_v_cache_pool[0, 1, 0, :].astype(mx.float32)
+    v_vec2 = py_v_cache_pool[0, 2, 0, :].astype(mx.float32)
+
+    # Calculate weighted sum of V-vectors
+    expected_V_output_py = v_vec0 * prob0 + v_vec1 * prob1 + v_vec2 * prob2
+
+    # Reshape to match output format [num_q_threads, cfg_head_dim]
     num_q_threads = 1  # For this test
-    expected_output_shape = (num_q_threads * 2,)
+    expected_V_output = expected_V_output_py.astype(mx.float16).reshape(num_q_threads, cfg_head_dim)
 
-    # Extract max scores from the first plane
-    max_scores = output_arr[:num_q_threads]
+    # Output is now full attention format [num_q_threads, cfg_head_dim]
+    expected_output_shape = (num_q_threads, cfg_head_dim)
 
     logger.info(f"Test History Limit: actual_sequence_length = {actual_sequence_length}")
     logger.info(f"Test History Limit: query_token_offset = {query_token_offset}")
     logger.info(f"Test History Limit: Score for position 0 = {score0}")
     logger.info(f"Test History Limit: Score for position 1 = {score1} (max)")
     logger.info(f"Test History Limit: Score for position 2 = {score2}")
-    logger.info(f"Test History Limit: Expected max score = {expected_max_score}")
-    logger.info(f"Test History Limit: Actual max scores = {max_scores}")
-    logger.info(f"Test History Limit: Actual sum_exp scores = {output_arr[num_q_threads:]}")
+    logger.info(f"Test History Limit: Softmax probabilities = [{prob0}, {prob1}, {prob2}]")
+    logger.info(f"Test History Limit: Expected V output = {expected_V_output}")
+    logger.info(f"Test History Limit: Actual V output = {output_arr}")
 
     # Verify output shape and type
     assert output_arr.shape == expected_output_shape
     assert output_arr.dtype == mx.float16
 
-    # Verify the max score is from position 1, not from positions 3 or 4
-    # which should not be accessed due to sequence length limit
-    assert mx.allclose(max_scores, expected_output, atol=1e-2, rtol=1e-2)
+    # Verify the V output contains the weighted sum of only positions 0-2,
+    # not including positions 3-4 which should be excluded by sequence length limit
+    assert mx.allclose(output_arr, expected_V_output, atol=1e-2, rtol=1e-2)
 
     logger.info("test_history_limited_by_sequence_length PASSED")
 
@@ -546,8 +573,15 @@ def test_history_scan_stops_at_page_table_limit():
     # Note: Position 4 would be in logical block 2 (which is beyond page table limit)
     # We don't need to set values for it, as it should not be accessed
 
-    # 3. V-Cache Pool (not used for this test)
+    # 3. V-Cache Pool with values to verify that these are aggregated correctly
     py_v_cache_pool = mx.zeros_like(py_k_cache_pool)
+    # Set up V-cache with values to verify correct aggregation
+    py_v_cache_pool[0, 0, 0, :] = mx.array([10.0, 20.0, 30.0, 40.0], dtype=mx.float16)  # Position 0
+    py_v_cache_pool[0, 1, 0, :] = mx.array([50.0, 60.0, 70.0, 80.0], dtype=mx.float16)  # Position 1 (highest score)
+    py_v_cache_pool[0, 2, 0, :] = mx.array([5.0, 6.0, 7.0, 8.0], dtype=mx.float16)  # Position 2
+    # Positions 3-4 should NOT be accessed due to sequence length limit
+    py_v_cache_pool[0, 3, 0, :] = mx.array([100.0, 200.0, 300.0, 400.0], dtype=mx.float16)  # Position 3
+    py_v_cache_pool[1, 0, 0, :] = mx.array([500.0, 600.0, 700.0, 800.0], dtype=mx.float16)  # Position 4
 
     # 4. Page Table: Maps logical blocks 0,1 to physical pages 0,1
     # Limited to max_logical_blocks_per_seq_in_pagetable = 2
@@ -587,17 +621,39 @@ def test_history_scan_stops_at_page_table_limit():
     score3 = 12.0 * py_scale  # = 12 * 0.5 = 6.0
 
     # Max score should be from position 2 (score2 = 10.0)
-    expected_max_score = score2
-    expected_output = mx.array([expected_max_score], dtype=mx.float16)
+    # Compute expected full attention output with softmax over valid positions
 
-    # Output is now in planar format [num_q_threads * 2] where:
-    # - First half contains max scores: output_arr[:num_q_threads]
-    # - Second half contains sum_exp scores: output_arr[num_q_threads:]
+    # Find maximum score from valid positions 0-3 (within page table limit)
+    true_max_score = max(score0, score1, score2, score3)  # Should be score2 = 10.0
+
+    # Calculate exp(score - max_score) with clamp for each position
+    exp_score0 = mx.exp(mx.maximum(score0 - true_max_score, -16.0)).item()
+    exp_score1 = mx.exp(mx.maximum(score1 - true_max_score, -16.0)).item()
+    exp_score2 = mx.exp(mx.maximum(score2 - true_max_score, -16.0)).item()
+    exp_score3 = mx.exp(mx.maximum(score3 - true_max_score, -16.0)).item()
+
+    # Calculate sum of exp scores
+    true_sum_exp_score = exp_score0 + exp_score1 + exp_score2 + exp_score3
+
+    # Calculate softmax probabilities
+    prob0 = exp_score0 / true_sum_exp_score
+    prob1 = exp_score1 / true_sum_exp_score
+    prob2 = exp_score2 / true_sum_exp_score
+    prob3 = exp_score3 / true_sum_exp_score
+
+    # Get V-vectors for each position
+    v_vec0 = py_v_cache_pool[0, 0, 0, :].astype(mx.float32)
+    v_vec1 = py_v_cache_pool[0, 1, 0, :].astype(mx.float32)
+    v_vec2 = py_v_cache_pool[1, 0, 0, :].astype(mx.float32)
+    v_vec3 = py_v_cache_pool[1, 1, 0, :].astype(mx.float32)
+
+    # Calculate weighted sum of V-vectors
+    expected_V_output_py = v_vec0 * prob0 + v_vec1 * prob1 + v_vec2 * prob2 + v_vec3 * prob3
+
+    # Output is now full attention format [num_q_threads, cfg_head_dim]
     num_q_threads = 1  # For this test
-    expected_output_shape = (num_q_threads * 2,)
-
-    # Extract max scores from the first plane
-    max_scores = output_arr[:num_q_threads]
+    expected_V_output = expected_V_output_py.astype(mx.float16).reshape(num_q_threads, cfg_head_dim)
+    expected_output_shape = (num_q_threads, cfg_head_dim)
 
     logger.info(f"Test Page Table Limit: max_logical_blocks_per_seq = {max_logical_blocks_per_seq_in_pagetable}")
     logger.info(f"Test Page Table Limit: query_token_offset = {query_token_offset}")
@@ -606,15 +662,15 @@ def test_history_scan_stops_at_page_table_limit():
     logger.info(f"  Position 1 (block 0, slot 1): {score1}")
     logger.info(f"  Position 2 (block 1, slot 0): {score2} (max)")
     logger.info(f"  Position 3 (block 1, slot 1): {score3}")
-    logger.info(f"Test Page Table Limit: Expected max score = {expected_max_score}")
-    logger.info(f"Test Page Table Limit: Actual max scores = {max_scores}")
-    logger.info(f"Test Page Table Limit: Actual sum_exp scores = {output_arr[num_q_threads:]}")
+    logger.info(f"Test Page Table Limit: Softmax probabilities = [{prob0}, {prob1}, {prob2}, {prob3}]")
+    logger.info(f"Test Page Table Limit: Expected V output = {expected_V_output}")
+    logger.info(f"Test Page Table Limit: Actual V output = {output_arr}")
 
     # Verify output shape and type
     assert output_arr.shape == expected_output_shape
     assert output_arr.dtype == mx.float16
 
-    # Verify the max score is from position 2, which is within the valid page table range
-    assert mx.allclose(max_scores, expected_output, atol=1e-2, rtol=1e-2)
+    # Verify the V output contains only information from valid page table blocks
+    assert mx.allclose(output_arr, expected_V_output, atol=1e-2, rtol=1e-2)
 
     logger.info("test_history_scan_stops_at_page_table_limit PASSED")
