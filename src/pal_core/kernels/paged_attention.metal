@@ -92,6 +92,13 @@ constant static const uint kMaxAccumulationTile = 64;         // Size of the fix
     uint local_thread_idx = local_idx_in_tg;    // Thread ID within this group
 
     // --- Carve the dynamic threadgroup buffer into logical sub-arrays ---
+    // Threadgroup scratch arrays for reductions.
+    // TODO(O3/PAL-TDD8): Investigate potential bank conflicts for these arrays if
+    // their sizes (threads_per_item_group or kMaxSimdGroupsPerThreadgroup)
+    // align poorly with Metal's memory bank width (typically 32 bytes, i.e., 8 floats).
+    // Profiling in TDD-8 should guide whether 2-way interleaving (e.g., float2)
+    // or padding is necessary for G_partial_max_scores or other scratch arrays
+    // to mitigate contention if observed.
     threadgroup float* q_shmem = tg_mem;  // head_dim floats
     threadgroup float* G_partial_max_scores = q_shmem + params.head_dim;  // threads_per_tg floats
     threadgroup float* G_simd_reduced_maxes = G_partial_max_scores + tg_dim.x;
@@ -383,8 +390,8 @@ constant static const uint kMaxAccumulationTile = 64;         // Size of the fix
 
     // --- Outer Loop for Tiled V-Accumulation ---
     for (uint base_dim_offset = 0; base_dim_offset < params.head_dim;
-         base_dim_offset += kMaxAccumulationTile) {
-        uint current_tile_len = min(kMaxAccumulationTile, params.head_dim - base_dim_offset);
+         base_dim_offset += params.max_accum_tile_runtime) {
+        uint current_tile_len = min(params.max_accum_tile_runtime, params.head_dim - base_dim_offset);
 
         // Zero out v_accum_tile for the current tile
         for (uint i = 0; i < current_tile_len; ++i) {

@@ -16,6 +16,16 @@
 // limitations under the License.
 // ============================================================================
 
+#ifdef __METAL_VERSION__
+// Metal shader - use Metal Standard Library types
+using uint32_t = unsigned int;
+using float32_t = float;
+#else
+// C++ code - use standard headers
+#include <stdint.h>
+#include <type_traits>  // For std::is_standard_layout_v
+#endif
+
 /**
  * @brief Shared parameter structure for paged attention operations.
  *
@@ -34,7 +44,15 @@ struct alignas(16) PagedAttentionParams {
   uint32_t num_sequences_in_batch;        // Number of sequences in batch
   uint32_t actual_threads_per_item_group; // Actual threads in each threadgroup
   uint32_t total_items_in_dispatch;       // Total items being dispatched
+  uint32_t max_accum_tile_runtime;        // Runtime V-accum tile size
 };
+
+// C++ compile-time check for standard layout
+#ifndef __METAL_VERSION__
+static_assert(std::is_standard_layout_v<PagedAttentionParams>,
+              "PagedAttentionParams must be a standard-layout type for safe "
+              "interoperability with Metal.");
+#endif
 
 #ifdef __METAL_VERSION__ // Only apply this check when compiling with Metal
 // Use C++11 static_assert, which MSL (C++14 based) should support

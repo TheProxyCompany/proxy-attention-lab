@@ -42,7 +42,7 @@ namespace mx = mlx::core;
 
 namespace pal::cpp {
 
-// Expected size for PagedAttentionParams: 9 uint32_t + 1 float = 40 bytes,
+// Expected size for PagedAttentionParams: 10 uint32_t + 1 float = 44 bytes,
 // padded to 48 by alignas(16)
 constexpr size_t kExpectedPagedAttentionParamsSize = 48;
 static_assert(
@@ -375,6 +375,14 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
   // Set thread allocation parameters in the params struct
   params_struct.actual_threads_per_item_group = static_cast<uint32_t>(threads_per_item_group);
   params_struct.total_items_in_dispatch = static_cast<uint32_t>(num_items_to_process);
+
+  // Set runtime V-accumulation tile size
+  constexpr uint32_t kMaxKernelAccumTileSize = 64; // Matches kMaxAccumulationTile in Metal
+  params_struct.max_accum_tile_runtime = kMaxKernelAccumTileSize;
+
+  spdlog::debug(
+      "[PAL Primitive] Setting max_accum_tile_runtime (kernel's tile capacity) to: {}",
+      params_struct.max_accum_tile_runtime);
 
   // Upload the complete parameter struct to the GPU
   compute_encoder.set_bytes(&params_struct, sizeof(PagedAttentionParams), 7);

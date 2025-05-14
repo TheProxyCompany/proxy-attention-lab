@@ -55,15 +55,26 @@ execute_process(
 message(STATUS "Nanobind CMake directory: ${nanobind_ROOT}")
 find_package(nanobind CONFIG REQUIRED)
 
-# --- Download Metal-CPP library ---
+# --- Metal-CPP library ---
 if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
-  include(FetchContent)
-  set(METAL_CPP_URL https://developer.apple.com/metal/cpp/files/metal-cpp_macOS15_iOS18.zip)
-  FetchContent_Declare(metal_cpp URL ${METAL_CPP_URL})
-  FetchContent_MakeAvailable(metal_cpp)
-  message(STATUS "Metal-CPP library found in: ${metal_cpp_SOURCE_DIR}")
+    # Check if Metal-CPP is already provided by parent project
+    if(NOT DEFINED metal_cpp_SOURCE_DIR OR NOT IS_DIRECTORY "${metal_cpp_SOURCE_DIR}")
+        message(STATUS "PAL: metal_cpp_SOURCE_DIR not defined by parent. Fetching Metal-CPP.")
+        include(FetchContent)
+        set(METAL_CPP_URL https://developer.apple.com/metal/cpp/files/metal-cpp_macOS15_iOS18.zip)
+        FetchContent_Declare(
+            metal_cpp
+            URL ${METAL_CPP_URL}
+        )
+        FetchContent_MakeAvailable(metal_cpp)
+        set(PAL_METAL_CPP_INCLUDE_DIR ${metal_cpp_SOURCE_DIR}) # Use the variable set by FetchContent
+        message(STATUS "PAL: Using Metal-CPP from FetchContent directory: ${PAL_METAL_CPP_INCLUDE_DIR}")
+    else()
+        set(PAL_METAL_CPP_INCLUDE_DIR ${metal_cpp_SOURCE_DIR})
+        message(STATUS "PAL: Using Metal-CPP provided by parent project from: ${PAL_METAL_CPP_INCLUDE_DIR}")
+    endif()
 else()
-  message(FATAL_ERROR "Metal is not supported on this platform - Only macOS is supported for now.")
+    message(FATAL_ERROR "Metal is not supported on this platform - Only macOS is supported for now.")
 endif()
 
 # --- Find MLX ---
@@ -102,7 +113,7 @@ target_include_directories(
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/>
         $<INSTALL_INTERFACE:include/>
         # Headers from dependencies that might be exposed through PAL's headers
-        $<BUILD_INTERFACE:${metal_cpp_SOURCE_DIR}>
+        $<BUILD_INTERFACE:${PAL_METAL_CPP_INCLUDE_DIR}>
         $<INSTALL_INTERFACE:include/metal_cpp>
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -132,7 +143,7 @@ mlx_build_metallib(
     SOURCES ${METAL_SOURCES}
     INCLUDE_DIRS
         ${CMAKE_CURRENT_SOURCE_DIR}/include/shaders
-        ${metal_cpp_SOURCE_DIR}/
+        ${PAL_METAL_CPP_INCLUDE_DIR}/
         ${MLX_INCLUDE_DIRS}
     OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     OUTPUT_FILENAME ${PAL_METALLIB_FILENAME}
