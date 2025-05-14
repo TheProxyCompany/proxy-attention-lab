@@ -27,12 +27,22 @@
 #include "pal_core/metal_loader.hpp"
 #include "pal_core/paged_attention_primitive.hpp"
 
-// Try to include spdlog if available, otherwise fall back to iostream
+// At the top, after other includes
 #if __has_include(<spdlog/spdlog.h>)
-#define HAS_SPDLOG 1
-#include <spdlog/spdlog.h>
+    #include <spdlog/spdlog.h>
+    #define PAL_HAS_SPDLOG 1
 #else
-#define HAS_SPDLOG 0
+    #define PAL_HAS_SPDLOG 0
+    // Minimal fallback if spdlog is not available (e.g., for standalone builds without FetchContent run)
+    // This could be a no-op or a simple std::cerr wrapper. For now, let's make it a no-op.
+    namespace spdlog {
+        template<typename... Args> void trace(Args... args) {}
+        template<typename... Args> void debug(Args... args) {}
+        template<typename... Args> void info(Args... args) {}
+        template<typename... Args> void warn(Args... args) {}
+        template<typename... Args> void error(Args... args) {}
+        template<typename... Args> void critical(Args... args) {}
+    } // namespace spdlog
 #endif
 
 namespace pal::cpp {

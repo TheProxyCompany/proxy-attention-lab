@@ -18,28 +18,41 @@ else()
 endif()
 
 # --- Find or Fetch spdlog ---
-if(NOT TARGET spdlog::spdlog_header_only AND NOT TARGET spdlog)
-    find_package(spdlog QUIET CONFIG)
-endif()
+find_package(spdlog QUIET CONFIG) # Attempt to find an installed/exported spdlog
 
-if(NOT TARGET spdlog::spdlog_header_only AND NOT TARGET spdlog)
+if(NOT spdlog_FOUND) # If not found by find_package
     message(STATUS "PAL: spdlog not found via find_package. Attempting FetchContent.")
     include(FetchContent)
     FetchContent_Declare(
-        spdlog
+        spdlog # Standard FetchContent name
         GIT_REPOSITORY https://github.com/gabime/spdlog.git
-        GIT_TAG v1.14.1 # Or any recent stable tag
+        GIT_TAG v1.14.1
         EXCLUDE_FROM_ALL
     )
+    # Make spdlog available. This typically defines targets like spdlog::spdlog_header_only or spdlog::spdlog
     FetchContent_MakeAvailable(spdlog)
-    if(TARGET spdlog::spdlog_header_only)
-        set(PAL_SPDLOG_TARGET spdlog::spdlog_header_only)
-    elseif(TARGET spdlog)
-        set(PAL_SPDLOG_TARGET spdlog)
-    else()
-        message(FATAL_ERROR "PAL: Failed to find or fetch spdlog.")
+else()
+    message(STATUS "PAL: Found spdlog via find_package.")
+endif()
+
+# Link against spdlog - prefer header-only if available from either path
+if(TARGET spdlog::spdlog_header_only)
+    set(PAL_SPDLOG_LINK_TARGET spdlog::spdlog_header_only)
+elseif(TARGET spdlog) # Check for compiled spdlog target
+    set(PAL_SPDLOG_LINK_TARGET spdlog)
+else()
+    # This might occur if find_package found it but didn't create a modern target,
+    # or FetchContent failed to create expected targets.
+    message(WARNING "PAL: Could not determine a CMake target for spdlog. Build might fail or use system headers if lucky.")
+    # As a last resort, if spdlog_INCLUDE_DIRS and spdlog_LIBRARIES were set by find_package (older style)
+    if(spdlog_INCLUDE_DIRS)
+        target_include_directories(${CORE_LIB_NAME} PRIVATE ${spdlog_INCLUDE_DIRS})
     endif()
-    message(STATUS "PAL: Using spdlog from FetchContent target: ${PAL_SPDLOG_TARGET}")
+    if(spdlog_LIBRARIES)
+        set(PAL_SPDLOG_LINK_TARGET ${spdlog_LIBRARIES}) # This could be a list
+    else()
+        set(PAL_SPDLOG_LINK_TARGET "") # Avoid CMake error if var is empty
+    endif()
 endif()
 
 # --- Python ---
@@ -57,22 +70,26 @@ find_package(nanobind CONFIG REQUIRED)
 
 # --- Metal-CPP library ---
 if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
-    # Check if Metal-CPP is already provided by parent project
-    if(NOT DEFINED metal_cpp_SOURCE_DIR OR NOT IS_DIRECTORY "${metal_cpp_SOURCE_DIR}")
-        message(STATUS "PAL: metal_cpp_SOURCE_DIR not defined by parent. Fetching Metal-CPP.")
+    # Check if metal_cpp_SOURCE_DIR is already defined (e.g., by a parent like MLX)
+    if(DEFINED ENV{METAL_CPP_DIR} AND IS_DIRECTORY "$ENV{METAL_CPP_DIR}")
+         set(PAL_METAL_CPP_INCLUDE_DIR "$ENV{METAL_CPP_DIR}")
+         message(STATUS "PAL: Using Metal-CPP provided by environment METAL_CPP_DIR: ${PAL_METAL_CPP_INCLUDE_DIR}")
+    elif(DEFINED metal_cpp_SOURCE_DIR AND IS_DIRECTORY "${metal_cpp_SOURCE_DIR}")
+        set(PAL_METAL_CPP_INCLUDE_DIR ${metal_cpp_SOURCE_DIR})
+        message(STATUS "PAL: Using Metal-CPP provided by parent project (metal_cpp_SOURCE_DIR): ${PAL_METAL_CPP_INCLUDE_DIR}")
+    else()
+        message(STATUS "PAL: Metal-CPP not found from parent. Fetching Metal-CPP.")
         include(FetchContent)
         set(METAL_CPP_URL https://developer.apple.com/metal/cpp/files/metal-cpp_macOS15_iOS18.zip)
         FetchContent_Declare(
-            metal_cpp
+            metal_cpp # Standard name for this FetchContent
             URL ${METAL_CPP_URL}
         )
         FetchContent_MakeAvailable(metal_cpp)
-        set(PAL_METAL_CPP_INCLUDE_DIR ${metal_cpp_SOURCE_DIR}) # Use the variable set by FetchContent
+        set(PAL_METAL_CPP_INCLUDE_DIR ${metal_cpp_SOURCE_DIR}) # metal_cpp_SOURCE_DIR is set by FetchContent_MakeAvailable for target 'metal_cpp'
         message(STATUS "PAL: Using Metal-CPP from FetchContent directory: ${PAL_METAL_CPP_INCLUDE_DIR}")
-    else()
-        set(PAL_METAL_CPP_INCLUDE_DIR ${metal_cpp_SOURCE_DIR})
-        message(STATUS "PAL: Using Metal-CPP provided by parent project from: ${PAL_METAL_CPP_INCLUDE_DIR}")
     endif()
+    # Ensure PAL_METAL_CPP_INCLUDE_DIR is used in target_include_directories and mlx_build_metallib
 else()
     message(FATAL_ERROR "Metal is not supported on this platform - Only macOS is supported for now.")
 endif()
@@ -128,7 +145,7 @@ target_link_libraries(
         "-framework Foundation"
         "-framework QuartzCore"
         mlx
-        spdlog::spdlog_header_only
+        ${PAL_SPDLOG_LINK_TARGET}
 )
 
 

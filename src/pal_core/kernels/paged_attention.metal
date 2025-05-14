@@ -82,10 +82,7 @@ constant static const uint kMaxAccumulationTile = 64;         // Size of the fix
         kernel_scale = 1.0f;  // Fallback for head_dim == 0 to avoid division by zero/NaN
     }
 
-    // Register unused parameters to prevent warnings
-    (void)simd_lane_id;
-    (void)simd_group_id;
-    (void)tg_dim;
+    // All thread parameters are now properly used in the kernel
 
     // --- Thread Identifiers ---
     uint global_item_idx = tg_pos_in_grid.x;    // Identifies the query-head item

@@ -21,11 +21,27 @@
 
 #include <cmath>
 #include <iostream>
-#include <spdlog/spdlog.h>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
+
+#if __has_include(<spdlog/spdlog.h>)
+    #include <spdlog/spdlog.h>
+    #define PAL_HAS_SPDLOG 1
+#else
+    #define PAL_HAS_SPDLOG 0
+    // Minimal fallback if spdlog is not available (e.g., for standalone builds without FetchContent run)
+    // This could be a no-op or a simple std::cerr wrapper. For now, let's make it a no-op.
+    namespace spdlog {
+        template<typename... Args> void trace(Args... args) {}
+        template<typename... Args> void debug(Args... args) {}
+        template<typename... Args> void info(Args... args) {}
+        template<typename... Args> void warn(Args... args) {}
+        template<typename... Args> void error(Args... args) {}
+        template<typename... Args> void critical(Args... args) {}
+    } // namespace spdlog
+#endif
 
 #include <mlx/allocator.h>
 #include <mlx/array.h>
@@ -42,9 +58,9 @@ namespace mx = mlx::core;
 
 namespace pal::cpp {
 
-// Expected size for PagedAttentionParams: 10 uint32_t + 1 float = 44 bytes,
-// padded to 48 by alignas(16)
-constexpr size_t kExpectedPagedAttentionParamsSize = 48;
+// Expected size for PagedAttentionParams: 8 uint32_t = 32 bytes,
+// aligned to 32 by alignas(16)
+constexpr size_t kExpectedPagedAttentionParamsSize = 32;
 static_assert(
     sizeof(PagedAttentionParams) == kExpectedPagedAttentionParamsSize,
     "sizeof(PagedAttentionParams) mismatch between C++ and expected size. "
@@ -134,8 +150,6 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
                 fmt::ptr(&params_struct));
   spdlog::trace("[PAL DEBUG PARAMS] params_struct.head_dim ADDRESS: {}",
                 fmt::ptr(&params_struct.head_dim));
-  spdlog::trace("[PAL DEBUG PARAMS] params_struct.scale ADDRESS: {}",
-                fmt::ptr(&params_struct.scale));
   spdlog::trace("[PAL DEBUG PARAMS] offsetof(PagedAttentionParams, num_q_heads): {}",
                 offsetof(PagedAttentionParams, num_q_heads));
   spdlog::trace("[PAL DEBUG PARAMS] offsetof(PagedAttentionParams, num_kv_heads): {}",
@@ -144,10 +158,8 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
                 offsetof(PagedAttentionParams, head_dim));
   spdlog::trace("[PAL DEBUG PARAMS] offsetof(PagedAttentionParams, tokens_per_page): {}",
                 offsetof(PagedAttentionParams, tokens_per_page));
-  spdlog::trace("[PAL DEBUG PARAMS] offsetof(PagedAttentionParams, scale): {}",
-                offsetof(PagedAttentionParams, scale));
-  spdlog::trace("[PAL DEBUG PARAMS] offsetof(PagedAttentionParams, total_items_in_dispatch): {}",
-                offsetof(PagedAttentionParams, total_items_in_dispatch));
+  // Parameter scale has been removed
+  // Parameter total_items_in_dispatch has been removed
 
   // Validate K/V pool geometry
   if (k_pool.ndim() != 4) {  // Expecting [NumPhysPages, TokensPerPage, NumKVHeads, HeadDim]
@@ -228,13 +240,7 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
         "[PagedAttentionPrimitive] Query 'q' ndim not supported.");
   }
 
-  // Calculate attention scale factor
-  if (params_struct.head_dim > 0) {
-    params_struct.scale =
-        1.0f / sqrtf(static_cast<float>(params_struct.head_dim));
-  } else {
-    params_struct.scale = 1.0f;  // Should not happen with valid inputs
-  }
+  // Scale factor (1.0f / sqrt(head_dim)) is now calculated in the kernel
 
   // Validate page table and extract logical blocks parameters
   if (page_table.ndim() != 2) {
@@ -243,9 +249,6 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
         "MaxLogBlocksPerSeq].");
   }
   params_struct.max_logical_blocks_per_seq = page_table.shape(1);
-  if (params_struct.max_logical_blocks_per_seq == 0 && page_table.size() > 0) {
-    params_struct.max_logical_blocks_per_seq = 1;  // Avoid division by zero if used as stride
-  }
 
   // Set pool geometry parameters
   params_struct.num_physical_pages_in_pool = k_pool.shape(0);
@@ -308,8 +311,7 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
         "of tokens (or items for 1D/2D queries)");
   }
 
-  // Set total items in dispatch for planar output layout
-  params_struct.total_items_in_dispatch = static_cast<uint32_t>(num_items_to_process);
+  // No longer setting total_items_in_dispatch
 
   // Debug output for parameter values
   spdlog::trace("[PAL DEBUG PARAMS] C++ sizeof(PagedAttentionParams): {} bytes.",
@@ -322,8 +324,6 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
                 offsetof(PagedAttentionParams, head_dim));
   spdlog::trace("[PAL DEBUG PARAMS] C++ offsetof(tokens_per_page): {}",
                 offsetof(PagedAttentionParams, tokens_per_page));
-  spdlog::trace("[PAL DEBUG PARAMS] C++ offsetof(scale): {}",
-                offsetof(PagedAttentionParams, scale));
 
   // Log parameter values being sent to the kernel
   spdlog::debug("[PAL SENDING PARAMS] num_q_heads: {}",
@@ -333,7 +333,7 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
   spdlog::debug("[PAL SENDING PARAMS] head_dim: {}", params_struct.head_dim);
   spdlog::debug("[PAL SENDING PARAMS] tokens_per_page: {}",
                 params_struct.tokens_per_page);
-  spdlog::debug("[PAL SENDING PARAMS] scale: {}", params_struct.scale);
+  // Scale is now calculated in the kernel
 
   // Log additional parameter values
   spdlog::trace("[PAL DEBUG PARAMS] max_logical_blocks_per_seq = {}",
@@ -342,18 +342,12 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
                 params_struct.num_physical_pages_in_pool);
   spdlog::trace("[PAL DEBUG PARAMS] num_sequences_in_batch = {}",
                 params_struct.num_sequences_in_batch);
-  spdlog::trace("[PAL DEBUG PARAMS] total_items_in_dispatch = {}",
-                params_struct.total_items_in_dispatch);
-  spdlog::trace("[PAL DEBUG PARAMS] actual_threads_per_item_group = {}",
-                params_struct.actual_threads_per_item_group);
 
   // Log parameter memory addresses for debugging
   spdlog::trace("[PAL DEBUG PARAMS] params_struct ADDRESS: {}",
                 fmt::ptr(&params_struct));
   spdlog::trace("[PAL DEBUG PARAMS] params_struct.head_dim ADDRESS: {}",
                 fmt::ptr(&params_struct.head_dim));
-  spdlog::trace("[PAL DEBUG PARAMS] params_struct.scale ADDRESS: {}",
-                fmt::ptr(&params_struct.scale));
 
   // Configure thread and threadgroup dimensions
   const size_t default_threads_per_item_group = 64;
@@ -372,9 +366,7 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
   spdlog::debug("[PAL Primitive] Effective threads_per_item_group for dispatch: {}",
                 threads_per_item_group);
 
-  // Set thread allocation parameters in the params struct
-  params_struct.actual_threads_per_item_group = static_cast<uint32_t>(threads_per_item_group);
-  params_struct.total_items_in_dispatch = static_cast<uint32_t>(num_items_to_process);
+  // These parameters are no longer used in the params struct
 
   // Set runtime V-accumulation tile size
   constexpr uint32_t kMaxKernelAccumTileSize = 64; // Matches kMaxAccumulationTile in Metal
@@ -417,11 +409,11 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
   MTL::Device* device = d.mtl_device();
   size_t max_tg_memory = device->maxThreadgroupMemoryLength();
   if (tg_memory_bytes > max_tg_memory) {
-    throw std::invalid_argument(
-        "[PagedAttentionPrimitive] Required threadgroup memory (" +
-        std::to_string(tg_memory_bytes) + " bytes) exceeds device maximum (" +
-        std::to_string(max_tg_memory) +
-        " bytes). Try reducing head_dim or threads_per_item_group.");
+    throw std::runtime_error(
+        "[PagedAttentionPrimitive] Calculated threadgroup memory (" +
+        std::to_string(tg_memory_bytes) + " bytes) exceeds device limit (" +
+        std::to_string(max_tg_memory) + " bytes)."
+    );
   }
 
   // Set the threadgroup memory length and dispatch the kernel
