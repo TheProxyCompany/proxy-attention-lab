@@ -1,3 +1,23 @@
+# Copyright 2024 The Proxy Company. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
+"""Core functionality tests for paged attention operations.
+
+This module contains tests that verify the core functionality of the paged attention
+mechanism, including token fetching, vector operations, and the attention computation.
+"""
+
 import logging
 
 import mlx.core as mx
@@ -7,8 +27,14 @@ from proxy_attention_lab import paged_attention
 logger = logging.getLogger(__name__)
 
 
-def test_fetch_k_vector_element_for_first_token_of_sequence():
-    """Sequence parallel fetch; expect dot product of Q with K with scale applied."""
+def test_fetch_k_vector_element_for_first_token_of_sequence() -> None:
+    """Test K vector fetch for first token with dot product of Q and K.
+
+    This test verifies that the paged attention operation correctly fetches
+    K vector elements for the first token of each sequence and applies the
+    appropriate scaling factor to the dot product.
+    """
+    # Configuration
     num_q_threads = 2
     cfg_tokens_per_page = 64
     cfg_num_kv_heads = 1
@@ -17,17 +43,21 @@ def test_fetch_k_vector_element_for_first_token_of_sequence():
 
     # Create 2D queries with shape [num_q_threads, cfg_head_dim]
     py_queries = mx.zeros((num_q_threads, cfg_head_dim), dtype=mx.float16)
-    # Set Q-vectors: For thread 0, use [100.0, 0.0, 0.0, 0.0]
-    py_queries[0, 0] = 100.0
-    # For thread 1, use [200.0, 0.0, 0.0, 0.0]
-    py_queries[1, 0] = 200.0
+    # Set Q-vectors with specific values
+    py_queries[0, 0] = 100.0  # Thread 0: [100.0, 0.0, 0.0, 0.0]
+    py_queries[1, 0] = 200.0  # Thread 1: [200.0, 0.0, 0.0, 0.0]
 
+    # Create K-cache with specific values
     num_physical_pages = 2
     k_cache_shape = (num_physical_pages, cfg_tokens_per_page, cfg_num_kv_heads, cfg_head_dim)
     py_k_cache_pool = mx.zeros(k_cache_shape, dtype=mx.float16)
+
+    # Set K-vector for page 0, token 0 to [11.0, 0.0, 0.0, 0.0]
     py_k_cache_pool[0, 0, 0, 0] = 11.0
     for i in range(1, cfg_head_dim):
         py_k_cache_pool[0, 0, 0, i] = 0.0
+
+    # Set K-vector for page 1, token 0 to [22.0, 0.0, 0.0, 0.0]
     py_k_cache_pool[1, 0, 0, 0] = 22.0
     for i in range(1, cfg_head_dim):
         py_k_cache_pool[1, 0, 0, i] = 0.0
@@ -37,22 +67,25 @@ def test_fetch_k_vector_element_for_first_token_of_sequence():
     py_v_cache_pool[0, 0, 0, :] = mx.array([10.0, 20.0, 30.0, 40.0], dtype=mx.float16)
     py_v_cache_pool[1, 0, 0, :] = mx.array([100.0, 200.0, 300.0, 400.0], dtype=mx.float16)
 
+    # Page table maps: seq 0, block 0 -> page 0; seq 1, block 0 -> page 1
     py_page_table = mx.array(
         [
-            [0, 99],
-            [1, 88],
+            [0, 99],  # Sequence 0: logical block 0 -> physical page 0, block 1 -> page 99 (unused)
+            [1, 88],  # Sequence 1: logical block 0 -> physical page 1, block 1 -> page 88 (unused)
         ],
         dtype=mx.uint32,
     )
     assert py_page_table.shape == (num_q_threads, cfg_max_logical_blocks_per_seq_in_pagetable)
+
+    # Set up sequence metadata
     py_sequence_lengths = mx.array([10, 5], dtype=mx.int32)
     py_query_to_seq_map = mx.array([0, 1], dtype=mx.int32)
 
-    # Modified for history-based attention:
-    # With the new kernel looking at history from 0 to query_token_offset - 1,
-    # we need to set query_token_offset to 1 to make the kernel look at position 0
+    # With history-based attention:
+    # Set query_token_offset to 1 to make the kernel look at position 0
     py_query_token_offset = mx.array([1, 1], dtype=mx.int32)
 
+    # Run paged attention
     output_arr = paged_attention(
         py_queries,
         py_k_cache_pool,
@@ -65,44 +98,41 @@ def test_fetch_k_vector_element_for_first_token_of_sequence():
     mx.eval(output_arr)
 
     # --- Calculate expected output (Python reference) ---
-    1.0 / mx.sqrt(mx.array(float(cfg_head_dim))).item()
 
-    # Calculate scores for each item
+    # Expected scores (not explicitly used in test):
     # Item 0: Q[0] dot K[0,0,0] * scale = 100.0 * 11.0 * 0.5 = 550.0
     # Item 1: Q[1] dot K[1,0,0] * scale = 200.0 * 22.0 * 0.5 = 2200.0
 
-    # Calculate softmax probs - for single history token, prob is always 1.0
+    # For single history token, softmax prob is always 1.0
 
-    # Calculate expected V outputs
-    expected_V_item0 = mx.zeros((cfg_head_dim,), dtype=mx.float32)
-    expected_V_item1 = mx.zeros((cfg_head_dim,), dtype=mx.float32)
-
+    # Create expected V outputs
     # V-aggregation for item 0: V[0,0,0] * prob[0] = V[0,0,0] * 1.0
     expected_V_item0 = py_v_cache_pool[0, 0, 0, :].astype(mx.float32)
-
     # V-aggregation for item 1: V[1,0,0] * prob[0] = V[1,0,0] * 1.0
     expected_V_item1 = py_v_cache_pool[1, 0, 0, :].astype(mx.float32)
 
     # Combine and reshape to match kernel output
     expected_V_output = mx.array([expected_V_item0.astype(mx.float16), expected_V_item1.astype(mx.float16)])
 
-    # Debug the actual output shape
-    logger.info(f"DEBUG: output_arr shape = {output_arr.shape}, type = {type(output_arr)}")
-    logger.info(f"DEBUG: expected_V_output shape = {expected_V_output.shape}")
-
-    # For 2D queries with new full attention output, the shape is [num_q_threads, head_dim]
+    # For 2D queries, output shape is [num_q_threads, head_dim]
     expected_output_shape = (num_q_threads, cfg_head_dim)
 
+    # Log test details
+    logger.info(f"DEBUG: output_arr shape = {output_arr.shape}, type = {type(output_arr)}")
+    logger.info(f"DEBUG: expected_V_output shape = {expected_V_output.shape}")
     logger.info(f"Test: Expected output shape: {expected_output_shape}")
     logger.info(f"Test: Actual output shape: {output_arr.shape}")
     logger.info(f"Test: Expected V output: {expected_V_output}")
     logger.info(f"Test: Actual V output: {output_arr}")
 
-    assert output_arr.shape == expected_output_shape
-    assert output_arr.dtype == mx.float16
-
-    # Check that output V-vectors match the expected values
-    assert mx.allclose(output_arr, expected_V_output, atol=1e-2, rtol=1e-2)
+    # Verify results
+    assert output_arr.shape == expected_output_shape, (
+        f"Output shape {output_arr.shape} does not match expected {expected_output_shape}"
+    )
+    assert output_arr.dtype == mx.float16, f"Output dtype {output_arr.dtype} does not match float16"
+    assert mx.allclose(output_arr, expected_V_output, atol=1e-2, rtol=1e-2), (
+        "Output values do not match expected values"
+    )
 
 
 def test_fetch_entire_k_vector_for_specific_token_slot():
@@ -160,8 +190,6 @@ def test_fetch_entire_k_vector_for_specific_token_slot():
     mx.eval(output_arr)
 
     # --- Calculate expected output (Python reference) ---
-    1.0 / mx.sqrt(mx.array(float(cfg_head_dim))).item()
-
     # Calculate scores for each item
     # Item 0: Q[0] dot K[0,0,0] * scale = 100.0 * (1+2+3+4) * 0.5 = 100.0 * 10 * 0.5 = 500.0
     # Item 1: Q[1] dot K[1,0,0] * scale = 200.0 * (5+6+7+8) * 0.5 = 200.0 * 26 * 0.5 = 2600.0
@@ -252,8 +280,6 @@ def test_fetch_k_vector_from_variable_token_slot_in_first_logical_block():
     mx.eval(output_arr)
 
     # --- Calculate expected output (Python reference) ---
-    1.0 / mx.sqrt(mx.array(float(cfg_head_dim))).item()
-
     # Calculate scores for each item
     # Item 0 (thread 0): Q[0] dot K[0,3,0] * scale = 100.0 * (1+2+3+4) * 0.5 = 100.0 * 10 * 0.5 = 500.0
     # Item 1 (thread 1): Q[1] dot K[0,7,0] * scale = 200.0 * (5+6+7+8) * 0.5 = 200.0 * 26 * 0.5 = 2600.0
@@ -345,8 +371,6 @@ def test_correct_token_processing_for_2d_queries_variable_offsets():
     mx.eval(output_arr)
 
     # --- Calculate expected output (Python reference) ---
-    1.0 / mx.sqrt(mx.array(float(cfg_head_dim))).item()
-
     # Calculate scores for each item
     # Item 0: Dot(Q[0], K[0,0,0]) * scale = (1+2+1+2) * 0.5 = 6 * 0.5 = 3.0
     # Item 1: Dot(Q[1], K[0,1,0]) * scale = (3+4+3+4)*(2) * 0.5 = 28 * 0.5 = 14.0
