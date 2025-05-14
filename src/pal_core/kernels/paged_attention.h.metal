@@ -19,17 +19,3 @@ using namespace metal;
     uint        simd_lane_id,
     uint        simd_group_id
 );
-
-[[kernel]] void paged_attn_debug_kernel(
-    device      const half* queries_in,
-    device      const half* k_cache_pool_in,
-    device      const half* v_cache_pool_in,
-    device      const uint* page_table_in,
-    device      const int* sequence_lengths_in,
-    device      const int* query_to_seq_map_in,
-    device      const int* query_token_offset_in,
-    constant    const PagedAttentionParams* params,
-    device      half* output_buffer,
-    uint3       tg_pos_in_grid,
-    uint        local_idx_in_tg
-);
