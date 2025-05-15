@@ -59,15 +59,6 @@ namespace mx = mlx::core;
 
 namespace pal::cpp {
 
-// Expected size for PagedAttentionParams: 8 uint32_t (32 bytes) + 1 float (4 bytes) = 36 bytes.
-// alignas(16) means total size is 48, as it's padded to multiple of 16.
-// Note: We use 64-byte alignment for threadgroup memory, but the struct itself remains 16-byte aligned.
-constexpr size_t kExpectedPagedAttentionParamsSize = 48;
-static_assert(
-    sizeof(PagedAttentionParams) == kExpectedPagedAttentionParamsSize,
-    "sizeof(PagedAttentionParams) mismatch between C++ and expected size (48 bytes). "
-    "Check paged_attention_types.h, members, and padding.");
-
 PagedAttentionPrimitive::PagedAttentionPrimitive(
     mx::StreamOrDevice stream_or_device,
     int num_q_heads,
@@ -97,37 +88,6 @@ void PagedAttentionPrimitive::eval_cpu(const std::vector<mx::array>& inputs,
 
 void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
                                        mx::array& out) {
-  // Validate input count
-  if (inputs.size() != 7) {
-    throw std::invalid_argument(
-        "[PagedAttentionPrimitive::eval_gpu] Expected 7 inputs (Q, K_pool, "
-        "V_pool, Page_table, SeqLens, QToSeqMap, QOffsets), received " +
-        std::to_string(inputs.size()));
-  }
-
-  // Extract inputs
-  const auto& q = inputs[0];
-  const auto& k_pool = inputs[1];
-  const auto& v_pool = inputs[2];
-  const auto& page_table = inputs[3];
-  const auto& sequence_lengths = inputs[4];
-  const auto& query_to_seq_map = inputs[5];
-  const auto& query_token_offset = inputs[6];
-
-  // Type checks for inputs (intentionally abbreviated as commented in original)
-  if (q.dtype() != mx::float16 || k_pool.dtype() != mx::float16 ||
-      v_pool.dtype() != mx::float16) {
-    /* Type checks preserved from original */
-  }
-  if (page_table.dtype() != mx::uint32) {
-    /* Type checks preserved from original */
-  }
-  if (sequence_lengths.dtype() != mx::int32 ||
-      query_to_seq_map.dtype() != mx::int32 ||
-      query_token_offset.dtype() != mx::int32) {
-    /* Type checks preserved from original */
-  }
-
   // Prepare Metal kernel and command encoder
   auto& s = stream();
   auto& d = mlx::core::metal::device(s.device);
@@ -160,59 +120,18 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
                 offsetof(PagedAttentionParams, head_dim));
   spdlog::trace("[PAL DEBUG PARAMS] offsetof(PagedAttentionParams, tokens_per_page): {}",
                 offsetof(PagedAttentionParams, tokens_per_page));
-  // Parameter scale has been removed
-  // Parameter total_items_in_dispatch has been removed
 
-  // Validate K/V pool geometry
-  if (k_pool.ndim() != 4) {  // Expecting [NumPhysPages, TokensPerPage, NumKVHeads, HeadDim]
-    throw std::invalid_argument("[PagedAttentionPrimitive] k_pool must be 4D.");
-  }
+  // Extract inputs for later reference - these are needed after the validation
+  const auto& q = inputs[0];
+  const auto& k_pool = inputs[1];
+  const auto& v_pool = inputs[2];
+  const auto& page_table = inputs[3];
+  const auto& sequence_lengths = inputs[4];
+  const auto& query_to_seq_map = inputs[5];
+  const auto& query_token_offset = inputs[6];
 
-  // Extract and validate tokens_per_page from KV pool
-  int tokens_per_page_from_k_pool = k_pool.shape(1);
-  if (this->tokens_per_page_ > 0 &&
-      this->tokens_per_page_ != tokens_per_page_from_k_pool) {
-    std::string error_msg =
-        "[PagedAttentionPrimitive] Mismatch: tokens_per_page at construction (" +
-        std::to_string(this->tokens_per_page_) +
-        ") does not match k_pool.shape(1) (" +
-        std::to_string(tokens_per_page_from_k_pool) + ")";
-    throw std::invalid_argument(error_msg);
-  }
-
-  // Extract parameters from KV pool shape
-  params_struct.tokens_per_page = tokens_per_page_from_k_pool;
-  params_struct.num_kv_heads = k_pool.shape(2);
-  params_struct.head_dim = k_pool.shape(3);
-
-  // Constants for head_dim validation
-  constexpr uint32_t kMaxAccumulationTile = 64;
-  constexpr uint32_t kMaxHeadDimMetalInKernel = 256; // Match Metal's kMaxHeadDimMetal
-
-  // Validate head_dim
-  if (params_struct.head_dim == 0) {
-    throw std::invalid_argument(
-        "[PagedAttentionPrimitive] head_dim cannot be 0.");
-  }
-  if (params_struct.head_dim % 4 != 0) {
-    throw std::invalid_argument(
-        "[PagedAttentionPrimitive] head_dim (" +
-        std::to_string(params_struct.head_dim) +
-        ") must be a multiple of 4 for vectorized kernel execution.");
-  }
-  if (params_struct.head_dim > kMaxHeadDimMetalInKernel) {
-    throw std::invalid_argument(
-        "[PagedAttentionPrimitive] params_struct.head_dim (" +
-        std::to_string(params_struct.head_dim) +
-        ") exceeds kernel's internal processing limit kMaxHeadDimMetal (" +
-        std::to_string(kMaxHeadDimMetalInKernel) + ").");
-  }
-  if (params_struct.head_dim > kMaxAccumulationTile * 1024) {
-    throw std::invalid_argument(
-        "[PagedAttentionPrimitive] params_struct.head_dim (" +
-        std::to_string(params_struct.head_dim) +
-        ") is excessively large for the tiled kernel approach.");
-  }
+  // Validate inputs and extract initial parameters
+  validate_and_extract_initial_params(inputs, params_struct, num_q_heads_, head_dim_, tokens_per_page_);
 
   // Check if head_dim alone would cause threadgroup memory overflow
   // Get threadgroup memory early to check if head_dim is too large by itself
@@ -226,69 +145,7 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
         std::to_string(max_tg_memory_bytes) + " bytes). Reduce head_dim to a smaller value.");
   }
 
-  // Validate query dimensions
-  if (q.ndim() < 1) {
-    throw std::invalid_argument(
-        "Queries 'q' must have at least 1 dimension.");
-  }
-
-  // Check query format and set num_q_heads
-  if (q.ndim() == 3) {
-    if (q.shape(2) != params_struct.head_dim) {
-      throw std::invalid_argument(
-          "[PagedAttentionPrimitive] For 3D query input [NumTokens, NumQHeads, "
-          "HeadDim], the HeadDim must match K/V head_dim.");
-    }
-    params_struct.num_q_heads = q.shape(1);
-  } else if (q.ndim() == 2) {
-    if (q.shape(1) != params_struct.head_dim) {
-      throw std::invalid_argument(
-          "[PagedAttentionPrimitive] For 2D query input [NumDispatchThreads, "
-          "HeadDim], the HeadDim must match K/V head_dim.");
-    }
-    params_struct.num_q_heads = 1;
-  } else if (q.ndim() == 1) {
-    if (params_struct.head_dim != 1) {
-      throw std::invalid_argument(
-          "[PagedAttentionPrimitive] For 1D query input (interpreted as scalar "
-          "items), the K/V head_dim (params_struct.head_dim = " +
-          std::to_string(params_struct.head_dim) +
-          ") must also be 1. The kernel will attempt to read head_dim elements "
-          "for Q.");
-    }
-    params_struct.num_q_heads = 1;  // Each item is effectively its own "Q-head" of size 1.
-  } else {
-    throw std::invalid_argument(
-        "[PagedAttentionPrimitive] Query 'q' ndim not supported.");
-  }
-
-  // Scale factor (1.0f / sqrt(head_dim)) is now calculated in the kernel
-
-  // Validate page table and extract logical blocks parameters
-  if (page_table.ndim() != 2) {
-    throw std::invalid_argument(
-        "[PagedAttentionPrimitive] page_table must be 2D [NumBatchSeq, "
-        "MaxLogBlocksPerSeq].");
-  }
-  params_struct.max_logical_blocks_per_seq = page_table.shape(1);
-
-  // Set pool geometry parameters
-  params_struct.num_physical_pages_in_pool = k_pool.shape(0);
-  params_struct.num_sequences_in_batch = page_table.shape(0);
-
-  // Validate Grouped Query Attention (GQA) parameters
-  if (params_struct.num_q_heads > params_struct.num_kv_heads) {  // GQA case
-    if (params_struct.num_kv_heads == 0) {                       // Avoid division by zero
-      throw std::invalid_argument(
-          "[PagedAttentionPrimitive] num_kv_heads cannot be 0 if num_q_heads > "
-          "0 for GQA.");
-    }
-    if (params_struct.num_q_heads % params_struct.num_kv_heads != 0) {
-      throw std::invalid_argument(
-          "[PagedAttentionPrimitive] For GQA (num_q_heads > num_kv_heads), "
-          "num_q_heads must be an integer multiple of num_kv_heads.");
-    }
-  }
+  // GQA validation already done in validate_and_extract_initial_params
 
   // Set input arrays for the compute encoder
   compute_encoder.set_input_array(q, 0);
@@ -390,16 +247,14 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
 
   // These parameters are no longer used in the params struct
 
-  // Set runtime V-accumulation tile size
-  constexpr uint32_t kMaxKernelAccumTileSize = 64; // Matches kMaxAccumulationTile in Metal
-  params_struct.max_accum_tile_runtime = kMaxKernelAccumTileSize;
+  // Set runtime V-accumulation tile size using constant defined in header
+  params_struct.max_accum_tile_runtime = kMaxAccumulationTile;
 
-  // Set d_chunk_size_runtime for processing head_dim in chunks
-  constexpr uint32_t kDefaultAccTileChunkSizeInCPP = 64; // Must match Metal's kDefaultAccTileChunkSize
+  // Set d_chunk_size_runtime for processing head_dim in chunks using constant defined in header
 
   // Default d_chunk_size, ensuring it's valid and <= head_dim
-  uint32_t desired_d_chunk = 64;
-  params_struct.d_chunk_size_runtime = std::min(desired_d_chunk, params_struct.head_dim);
+  uint32_t requested_d_chunk_size = kDefaultAccTileChunkSizeInCPP;
+  params_struct.d_chunk_size_runtime = std::min(requested_d_chunk_size, params_struct.head_dim);
   if (params_struct.d_chunk_size_runtime == 0 && params_struct.head_dim > 0) { // If head_dim itself is < 64 but > 0
       params_struct.d_chunk_size_runtime = params_struct.head_dim;
   }
@@ -428,7 +283,7 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
   params_struct.log_exp_min_clamp = logf(fp16_denorm_min_val);
 
   // Calculate threadgroup memory size needed for kernel execution
-  constexpr uint32_t kMaxSimdGroupsPerThreadgroup = 8;
+  // Using kMaxSimdGroupsPerThreadgroup from header
   const uint32_t head_dim = params_struct.head_dim;
   // max_tg_memory_bytes is already set earlier in the code
 
@@ -443,48 +298,56 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
   size_t G_simd_group_v_sums_size = kMaxSimdGroupsPerThreadgroup * 4; // float4 per SIMD group
 
   // Calculate threadgroup memory with correct alignment of each section
-  const uint32_t head_dim_cpp = params_struct.head_dim; // Use the value from params_struct
-  const size_t threads_per_tg_cpp = threads_per_item_group; // From earlier calculation
-  const uint32_t num_simd_groups_cpp = (threads_per_tg_cpp + 31u) / 32u; // Consistent with kernel
+  const uint32_t current_head_dim = params_struct.head_dim; // Use the value from params_struct
+  const size_t current_threads_per_group = threads_per_item_group; // From earlier calculation
+  const uint32_t num_simd_groups_cpp = (current_threads_per_group + 31u) / 32u; // Consistent with kernel
 
-  uintptr_t current_offset_bytes = 0;
+  uintptr_t tg_mem_current_offset_bytes = 0;
 
-  // 1. q_shmem: head_dim_cpp floats
-  size_t q_shmem_section_bytes = head_dim_cpp * sizeof(float);
-  current_offset_bytes += q_shmem_section_bytes;
+  // 1. q_shmem: current_head_dim floats
+  size_t q_shmem_section_bytes = current_head_dim * sizeof(float);
+  tg_mem_current_offset_bytes += q_shmem_section_bytes;
 
-  // 2. G_partial_max_scores: threads_per_tg_cpp floats
-  current_offset_bytes = (current_offset_bytes + 63u) & ~63u; // Align start of this section to 64 bytes
-  size_t G_partial_max_scores_section_bytes = threads_per_tg_cpp * sizeof(float);
-  current_offset_bytes += G_partial_max_scores_section_bytes;
+  // Align subsequent threadgroup memory sections to kAlignmentBytes (e.g., 64 bytes).
+  // This helps align with cache line sizes on Apple M-series GPUs and can prevent
+  // performance issues like false sharing or split transactions for buffers
+  // accessed by multiple threads or SIMD groups. While Metal's specification
+  // only guarantees 16-byte alignment for generic threadgroup buffers,
+  // aligning to cache line size (often 64 bytes on these architectures)
+  // is a common practice for performance-sensitive shared memory.
+  tg_mem_current_offset_bytes = (tg_mem_current_offset_bytes + kAlignmentMask) & ~kAlignmentMask;
+
+  // 2. G_partial_max_scores: current_threads_per_group floats
+  size_t G_partial_max_scores_section_bytes = current_threads_per_group * sizeof(float);
+  tg_mem_current_offset_bytes += G_partial_max_scores_section_bytes;
 
   // 3. G_simd_reduced_maxes: num_simd_groups_cpp floats
-  current_offset_bytes = (current_offset_bytes + 63u) & ~63u; // Align to 64 bytes
+  tg_mem_current_offset_bytes = (tg_mem_current_offset_bytes + kAlignmentMask) & ~kAlignmentMask; // Align to cache line
   size_t G_simd_reduced_maxes_section_bytes = num_simd_groups_cpp * sizeof(float);
-  current_offset_bytes += G_simd_reduced_maxes_section_bytes;
+  tg_mem_current_offset_bytes += G_simd_reduced_maxes_section_bytes;
 
   // 4. G_simd_reduced_adjusted_sum_exps: num_simd_groups_cpp floats
-  current_offset_bytes = (current_offset_bytes + 63u) & ~63u; // Align to 64 bytes
+  tg_mem_current_offset_bytes = (tg_mem_current_offset_bytes + kAlignmentMask) & ~kAlignmentMask; // Align to cache line
   size_t G_simd_reduced_adjusted_sum_exps_section_bytes = num_simd_groups_cpp * sizeof(float);
-  current_offset_bytes += G_simd_reduced_adjusted_sum_exps_section_bytes;
+  tg_mem_current_offset_bytes += G_simd_reduced_adjusted_sum_exps_section_bytes;
 
   // 5. g_global_stats_ptr (float2 for m_global, s_global)
-  current_offset_bytes = (current_offset_bytes + 63u) & ~63u; // Align to 64 bytes
+  tg_mem_current_offset_bytes = (tg_mem_current_offset_bytes + kAlignmentMask) & ~kAlignmentMask; // Align to cache line
   size_t g_global_stats_section_bytes = 2 * sizeof(float); // float2 = 2 floats
-  current_offset_bytes += g_global_stats_section_bytes;
+  tg_mem_current_offset_bytes += g_global_stats_section_bytes;
 
   // 6. g_s_global_compensation_ptr: 1 float (for Kahan summation)
-  current_offset_bytes = (current_offset_bytes + 63u) & ~63u; // Align to 64 bytes
+  tg_mem_current_offset_bytes = (tg_mem_current_offset_bytes + kAlignmentMask) & ~kAlignmentMask; // Align to cache line
   size_t g_s_global_compensation_section_bytes = 1 * sizeof(float);
-  current_offset_bytes += g_s_global_compensation_section_bytes;
+  tg_mem_current_offset_bytes += g_s_global_compensation_section_bytes;
 
   // 7. G_simd_group_v_sums (for current V-tile reduction)
-  current_offset_bytes = (current_offset_bytes + 63u) & ~63u; // Align to 64 bytes
+  tg_mem_current_offset_bytes = (tg_mem_current_offset_bytes + kAlignmentMask) & ~kAlignmentMask; // Align to cache line
   size_t G_simd_group_v_sums_section_bytes = num_simd_groups_cpp * sizeof(float) * 4; // float4
-  current_offset_bytes += G_simd_group_v_sums_section_bytes;
+  tg_mem_current_offset_bytes += G_simd_group_v_sums_section_bytes;
 
-  // The total fixed memory needed is the current_offset_bytes, properly aligned
-  size_t fixed_tg_mem_needed_bytes = (current_offset_bytes + 63u) & ~63u; // Total for fixed parts, aligned
+  // The total fixed memory needed is the tg_mem_current_offset_bytes, properly aligned
+  size_t fixed_tg_mem_needed_bytes = (tg_mem_current_offset_bytes + kAlignmentMask) & ~kAlignmentMask; // Total for fixed parts, aligned
 
   spdlog::debug("[PAL Primitive] Fixed tg_mem needed (Q, softmax_stats, V_reduct_scratch): {} bytes", fixed_tg_mem_needed_bytes);
 
@@ -510,7 +373,7 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
 
   // Calculate memory for score_tile with SIMD group padding to avoid bank conflicts
   size_t score_data_floats = params_struct.tile_size_T_runtime; // This is the actual number of scores we need to store for one tile
-  size_t pad_floats_per_sg = 8; // 32-byte padding per SIMD group offset
+  size_t pad_floats_per_sg = kScoreTilePaddingFloatsPerSimdGroup; // 32-byte padding per SIMD group offset
   size_t pad_total_floats = 0;
   if (num_simd_groups_cpp > 1) { // Padding only needed if there's more than one SIMD group
       pad_total_floats = (num_simd_groups_cpp - 1) * pad_floats_per_sg;
@@ -593,22 +456,22 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
 
   // Before finalizing parameters, recalculate the memory required using the final tile_size_T_runtime value
   // This ensures we use the actual memory requirements after all clamping and rounding
-  uintptr_t final_current_offset_for_tiles = fixed_tg_mem_needed_bytes;
-  final_current_offset_for_tiles = (final_current_offset_for_tiles + 63u) & ~63u; // Align start of score tile
+  uintptr_t tg_mem_final_offset_for_tiles = fixed_tg_mem_needed_bytes;
+  tg_mem_final_offset_for_tiles = (tg_mem_final_offset_for_tiles + kAlignmentMask) & ~kAlignmentMask; // Align start of score tile
 
   // Since we're not using threadgroup memory for K/V tile caching (direct global memory access in the kernel),
   // we only need to allocate for score_tile, but now with SIMD group padding
   size_t score_data_floats_final = params_struct.tile_size_T_runtime;
   size_t pad_total_floats_final = 0;
   if (num_simd_groups_cpp > 1) {
-      pad_total_floats_final = (num_simd_groups_cpp - 1) * pad_floats_per_sg;
+      pad_total_floats_final = (num_simd_groups_cpp - 1) * kScoreTilePaddingFloatsPerSimdGroup;
   }
   size_t total_floats_for_score_tile_region_final = score_data_floats_final + pad_total_floats_final;
   size_t mem_for_score_tile_final = total_floats_for_score_tile_region_final * sizeof(float);
-  final_current_offset_for_tiles += mem_for_score_tile_final;
+  tg_mem_final_offset_for_tiles += mem_for_score_tile_final;
 
-  size_t total_mem_before_padding = (final_current_offset_for_tiles + 63u) & ~63u;
-  size_t padding_bytes = 32;
+  size_t total_mem_before_padding = (tg_mem_final_offset_for_tiles + kAlignmentMask) & ~kAlignmentMask;
+  size_t padding_bytes = kFinalTgMemoryPaddingGuardBytes;
   size_t final_tg_memory_bytes = total_mem_before_padding + padding_bytes;
 
   // Still defining these K/V pointers in the Metal kernel, but they're not actually used for caching

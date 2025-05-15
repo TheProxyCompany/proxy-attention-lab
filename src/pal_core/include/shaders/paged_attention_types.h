@@ -16,6 +16,8 @@
 // limitations under the License.
 // ============================================================================
 
+#pragma once
+
 #ifdef __METAL_VERSION__
 // Metal shader - use Metal Standard Library types
 using uint32_t = unsigned int;
