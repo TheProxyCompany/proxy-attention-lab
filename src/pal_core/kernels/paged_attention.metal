@@ -200,33 +200,33 @@ using namespace metal;
         threadgroup_barrier(mem_flags::mem_threadgroup); // Ensure all threads see this before potentially exiting/starting Pass 2
     } else {
         // --- Distribute history tokens among threads in the group for Pass 1---
-        uint num_hist_tokens_per_thread =
-            (item_effective_history_length + tg_dim.x - 1) / tg_dim.x;
-        uint hist_start_idx = local_thread_idx * num_hist_tokens_per_thread;
-        uint hist_end_idx = min((local_thread_idx + 1) * num_hist_tokens_per_thread,
-                              item_effective_history_length);
+    uint num_hist_tokens_per_thread =
+        (item_effective_history_length + tg_dim.x - 1) / tg_dim.x;
+    uint hist_start_idx = local_thread_idx * num_hist_tokens_per_thread;
+    uint hist_end_idx = min((local_thread_idx + 1) * num_hist_tokens_per_thread,
+                          item_effective_history_length);
 
         // --- Pass 1: History scan for m_local and d_local ---
-        for (uint hist_token_idx = hist_start_idx; hist_token_idx < hist_end_idx; ++hist_token_idx) {
-            uint target_historical_logical_token_pos = hist_token_idx;
-            uint logical_block_idx = target_historical_logical_token_pos / params.tokens_per_page;
-            uint token_slot_in_page = target_historical_logical_token_pos % params.tokens_per_page;
+    for (uint hist_token_idx = hist_start_idx; hist_token_idx < hist_end_idx; ++hist_token_idx) {
+        uint target_historical_logical_token_pos = hist_token_idx;
+        uint logical_block_idx = target_historical_logical_token_pos / params.tokens_per_page;
+        uint token_slot_in_page = target_historical_logical_token_pos % params.tokens_per_page;
 
             if (logical_block_idx >= params.max_logical_blocks_per_seq) break;
 
             uint page_table_flat_idx = item_seq_idx_in_batch * params.max_logical_blocks_per_seq + logical_block_idx;
-            uint physical_page_id = page_table_in[page_table_flat_idx];
+        uint physical_page_id = page_table_in[page_table_flat_idx];
 
             if (physical_page_id >= params.num_physical_pages_in_pool) continue;
 
             uint q_head_for_kv_map_within_item = (params.num_q_heads > 1) ? (global_item_idx % params.num_q_heads) : 0;
-            uint target_kv_head_idx = 0;
-            if (params.num_kv_heads > 0) {
+        uint target_kv_head_idx = 0;
+        if (params.num_kv_heads > 0) {
                 if (params.num_q_heads > params.num_kv_heads) { // GQA
                     target_kv_head_idx = q_head_for_kv_map_within_item / (params.num_q_heads / params.num_kv_heads);
                 } else { // MHA or MQA (num_q_heads <= num_kv_heads)
-                    target_kv_head_idx = q_head_for_kv_map_within_item;
-                }
+                target_kv_head_idx = q_head_for_kv_map_within_item;
+            }
                 if (target_kv_head_idx >= params.num_kv_heads) target_kv_head_idx %= params.num_kv_heads; // Safety
             }
 
@@ -235,73 +235,73 @@ using namespace metal;
                                   (ulong)target_kv_head_idx * params.head_dim;
             device const half* k_vector_ptr = k_cache_pool_in + k_base_offset;
 
-            float current_score_fp32 = 0.0f;
+        float current_score_fp32 = 0.0f;
             bool use_vectorized_load_h4 = (params.head_dim % 4 == 0);
 
-            if (params.head_dim > 0) {
+        if (params.head_dim > 0) {
                 if (use_vectorized_load_h4) {
                     device const packed_half4* k_ptr_h4 = reinterpret_cast<device const packed_half4*>(k_vector_ptr);
-                    for (uint i = 0; i < params.head_dim / 4; ++i) {
-                        float4 k_vec_f4 = float4(k_ptr_h4[i]);
+                for (uint i = 0; i < params.head_dim / 4; ++i) {
+                    float4 k_vec_f4 = float4(k_ptr_h4[i]);
                         float4 q_vec_f4 = { q_shmem[i*4+0], q_shmem[i*4+1], q_shmem[i*4+2], q_shmem[i*4+3] };
                         current_score_fp32 += dot(q_vec_f4, k_vec_f4);
-                    }
-                } else {
-                    for (uint i = 0; i < params.head_dim; ++i) {
-                        current_score_fp32 += q_shmem[i] * (float)k_vector_ptr[i];
-                    }
+                }
+            } else {
+                for (uint i = 0; i < params.head_dim; ++i) {
+                    current_score_fp32 += q_shmem[i] * (float)k_vector_ptr[i];
                 }
             }
+        }
 
-            float new_m_local = max(m_local, current_score_fp32);
+        float new_m_local = max(m_local, current_score_fp32);
             float alpha = exp(m_local - new_m_local);
-            float exponent_for_p = current_score_fp32 - new_m_local;
+        float exponent_for_p = current_score_fp32 - new_m_local;
             float p_val = exp(exponent_for_p);
 
-            d_local = d_local * alpha + p_val;
-            m_local = new_m_local;
+        d_local = d_local * alpha + p_val;
+        m_local = new_m_local;
         } // End of Pass 1 history scan loop
 
-        // --- Threadgroup Reduction for m_local (to find m_final_global) ---
+    // --- Threadgroup Reduction for m_local (to find m_final_global) ---
         G_partial_max_scores[local_thread_idx] = m_local;
-        threadgroup_barrier(mem_flags::mem_threadgroup);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
 
         float simd_max_m = simd_max(m_local);
-        if (simd_lane_id == 0 && simd_group_id < num_simd_groups) {
-            G_simd_reduced_maxes[simd_group_id] = simd_max_m;
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (simd_lane_id == 0 && simd_group_id < num_simd_groups) {
+        G_simd_reduced_maxes[simd_group_id] = simd_max_m;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
 
         float m_final_global_val = -INFINITY; // Renamed to avoid clash with later variable
-        if (local_thread_idx == 0) {
+    if (local_thread_idx == 0) {
             m_final_global_val = G_simd_reduced_maxes[0];
             for (uint i = 1; i < num_simd_groups; ++i) {
                 m_final_global_val = max(m_final_global_val, G_simd_reduced_maxes[i]);
             }
             if (m_final_global_val == -INFINITY) m_final_global_val = 0.0f;
             *G_final_max_for_item = m_final_global_val;
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
         m_final_global_val = *G_final_max_for_item;
 
         // --- Rescale d_local and Reduce d_local (for d_final_global) ---
         float d_rescale_exponent = m_local - m_final_global_val; // Use thread's m_local and final global m
         float d_local_rescaled = d_local * exp(d_rescale_exponent);
 
-        float simd_sum_d_rescaled = simd_sum(d_local_rescaled);
-        if (simd_lane_id == 0 && simd_group_id < num_simd_groups) {
-            G_simd_reduced_adjusted_sum_exps[simd_group_id] = simd_sum_d_rescaled;
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
+    float simd_sum_d_rescaled = simd_sum(d_local_rescaled);
+    if (simd_lane_id == 0 && simd_group_id < num_simd_groups) {
+        G_simd_reduced_adjusted_sum_exps[simd_group_id] = simd_sum_d_rescaled;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
 
         float d_final_global_val = 0.0f; // Renamed
-        if (local_thread_idx == 0) {
-            for (uint i = 0; i < num_simd_groups; ++i) {
+    if (local_thread_idx == 0) {
+        for (uint i = 0; i < num_simd_groups; ++i) {
                 d_final_global_val += G_simd_reduced_adjusted_sum_exps[i];
             }
             *G_final_sum_exp_for_item = d_final_global_val;
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
         // d_final_global_val is now in G_final_sum_exp_for_item, readable by all threads.
     } // End of if(item_effective_history_length > 0) for Pass 1
 
@@ -452,12 +452,12 @@ using namespace metal;
 
             if (simd_lane_id == 0 && simd_group_id < num_simd_groups) {
                 G_simd_group_v_sums[simd_group_id] = simd_sum_o_chunk;
-            }
-            threadgroup_barrier(mem_flags::mem_threadgroup);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
 
-            if (local_thread_idx == 0) {
+        if (local_thread_idx == 0) {
                 float4 o_final_chunk_summed = float4(0.0f);
-                for (uint sg = 0; sg < num_simd_groups; ++sg) {
+            for (uint sg = 0; sg < num_simd_groups; ++sg) {
                     o_final_chunk_summed += G_simd_group_v_sums[sg];
                 }
 
