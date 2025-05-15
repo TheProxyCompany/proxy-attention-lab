@@ -21,6 +21,21 @@
 
 using namespace metal;
 
+// --- Kernel Configuration Constants ---
+constant static const uint kMaxHeadDimMetal = 256;
+constant static const uint kDefaultAccTileChunkSize = 64;
+constant static const uint kMaxAccumulationTile = 64;
+
+constant static const uint kSimdLanesPerGroup = 32;
+constant static const uint kSimdPaddingFloats = 8;
+
+constant static const uint kAlignmentBytes = 64;
+constant static const uint kAlignmentMask = kAlignmentBytes - 1;
+
+constant static const uint kMaxTileSizeRuntimeSafetyCap = 512;
+constant static const float kEpsilonForZeroGuard = 1e-9f;
+
+
 /**
  * @brief Main kernel for paged attention computation.
  *
@@ -56,3 +71,181 @@ using namespace metal;
     uint        simd_lane_id,
     uint        simd_group_id
 );
+
+
+/**
+ * Maps a query head index to its corresponding key-value head index.
+ * Handles all attention types: MHA (num_q_heads == num_kv_heads),
+ * GQA (num_q_heads > num_kv_heads), and MQA (num_kv_heads = 1).
+ *
+ * @param global_item_q_head_idx Effective Q head index for the item
+ * @param num_q_heads_param Number of query heads
+ * @param num_kv_heads_param Number of key-value heads
+ * @return The mapped KV head index
+ */
+static inline uint map_q_to_kv_head(
+    uint global_item_q_head_idx, // Effective Q head index for the item
+    uint num_q_heads_param,
+    uint num_kv_heads_param
+) {
+    if (num_kv_heads_param == 0) return 0; // Safety for no KV heads
+    uint target_kv_head_idx = 0;
+    if (num_q_heads_param > num_kv_heads_param) { // GQA
+        target_kv_head_idx = global_item_q_head_idx / (num_q_heads_param / num_kv_heads_param);
+    } else { // MHA or MQA (num_q_heads <= num_kv_heads)
+        target_kv_head_idx = global_item_q_head_idx; // For MHA, direct map. For MQA (q_heads=1), this is 0.
+    }
+    return target_kv_head_idx % num_kv_heads_param; // Final safety modulo
+}
+
+/**
+ * Fetches a pointer to a key or value vector from the paged cache.
+ * Handles page table lookup, validity checks, and final pointer calculation.
+ *
+ * @param is_k_vector True for K pointer, false for V pointer
+ * @param actual_hist_token_pos History token position to fetch
+ * @param target_kv_head_idx Already mapped KV head index
+ * @param k_cache_pool_in_param Key cache pool
+ * @param v_cache_pool_in_param Value cache pool
+ * @param page_table_in_param Page table mapping logical blocks to physical pages
+ * @param item_seq_idx_in_batch_param Sequence index in batch
+ * @param kernel_params Kernel parameters struct
+ * @return Pointer to the K/V vector, or nullptr if invalid
+ */
+static inline device const half* fetch_kv_pointer(
+    bool is_k_vector, // true for K, false for V
+    uint actual_hist_token_pos,
+    uint target_kv_head_idx, // Already mapped
+    device const half* k_cache_pool_in_param,
+    device const half* v_cache_pool_in_param,
+    device const uint* page_table_in_param,
+    uint item_seq_idx_in_batch_param,
+    constant const PagedAttentionParams& kernel_params // Use a distinct name
+) {
+    uint logical_block_idx = actual_hist_token_pos / kernel_params.tokens_per_page;
+    if (logical_block_idx >= kernel_params.max_logical_blocks_per_seq) return nullptr; // Invalid block index
+
+    uint token_slot_in_page = actual_hist_token_pos % kernel_params.tokens_per_page;
+    uint page_table_flat_idx = item_seq_idx_in_batch_param * kernel_params.max_logical_blocks_per_seq + logical_block_idx;
+    uint physical_page_id = page_table_in_param[page_table_flat_idx];
+
+    if (physical_page_id >= kernel_params.num_physical_pages_in_pool) return nullptr; // Invalid page
+
+    ulong base_offset = (ulong)physical_page_id * kernel_params.tokens_per_page * kernel_params.num_kv_heads * kernel_params.head_dim +
+                        (ulong)token_slot_in_page * kernel_params.num_kv_heads * kernel_params.head_dim +
+                        (ulong)target_kv_head_idx * kernel_params.head_dim;
+
+    return is_k_vector ? (k_cache_pool_in_param + base_offset) : (v_cache_pool_in_param + base_offset);
+}
+
+/**
+ * Updates the shared softmax statistics using Kahan summation for numerical stability.
+ * This helper encapsulates the update of shared global statistics (m_global, s_global) and
+ * Kahan compensation term, and broadcasts the scale factor for rescaling previous accumulations.
+ *
+ * @param current_global_stats_ptr Pointer to shared {m_global, s_global} stats
+ * @param current_s_comp_ptr Pointer to shared Kahan compensation term
+ * @param m_local_tile_from_reduction Maximum score from current tile reduction
+ * @param d_local_tile_from_reduction Sum of exp(score - m_local) from current tile
+ * @param broadcast_scale_scratch_ptr Pointer to scratch space for broadcasting scale factor
+ * @param kernel_params Kernel parameters struct with log_exp_min_clamp
+ */
+static inline void update_softmax_stats_kahan(
+    threadgroup float2* current_global_stats_ptr,
+    threadgroup float* current_s_comp_ptr,
+    float m_local_tile_from_reduction,
+    float d_local_tile_from_reduction,
+    threadgroup float* broadcast_scale_scratch_ptr,
+    constant const PagedAttentionParams& kernel_params
+) {
+    // This helper is CALLED ONLY BY local_thread_idx == 0
+    float m_prev = (*current_global_stats_ptr).x;
+    float s_prev = (*current_global_stats_ptr).y;
+    float c_s_prev = *current_s_comp_ptr;
+
+    float m_new = m_prev;
+    float s_new_uncompensated = s_prev; // s_global before Kahan for current addition
+    float c_s_new = c_s_prev;
+    float scale_f = 1.0f;
+
+    if (m_local_tile_from_reduction > m_prev) {
+        m_new = m_local_tile_from_reduction;
+        scale_f = exp(max(m_prev - m_new, kernel_params.log_exp_min_clamp));
+        s_new_uncompensated = s_prev * scale_f; // Rescale s
+        c_s_new = c_s_prev * scale_f;         // Rescale its compensation term
+    }
+
+    float term_to_add = d_local_tile_from_reduction * exp(max(m_local_tile_from_reduction - m_new, kernel_params.log_exp_min_clamp));
+
+    // Kahan Sum for: s_new_final = s_new_uncompensated + term_to_add
+    float y_kahan = term_to_add - c_s_new; // c_s_new is compensation from *previous* Kahan steps on s_new_uncompensated
+    float t_kahan = s_new_uncompensated + y_kahan;
+    c_s_new = (t_kahan - s_new_uncompensated) - y_kahan; // New compensation for *next* addition
+    float s_new_final = t_kahan;                         // Final s_global after this tile
+
+    *current_global_stats_ptr = float2(m_new, s_new_final);
+    *current_s_comp_ptr = c_s_new;
+    broadcast_scale_scratch_ptr[0] = scale_f;
+}
+
+/**
+ * Zeros out the output vector for a given item when an early exit condition is met.
+ * This helper centralizes the logic for output zeroing in early exit conditions.
+ *
+ * @param item_global_idx The global item index for which to zero the output
+ * @param output_buffer_param Output buffer to write zeros to
+ * @param kernel_params Kernel parameters struct with head_dim
+ */
+static inline void zero_output_vector_for_item(
+    uint item_global_idx,
+    device half* output_buffer_param,
+    constant const PagedAttentionParams& kernel_params
+) {
+    // This helper should only be CALLED by local_thread_idx == 0
+    for (uint i = 0; i < kernel_params.head_dim; ++i) {
+        output_buffer_param[item_global_idx * kernel_params.head_dim + i] = 0.0h;
+    }
+}
+
+/**
+ * Computes the dot product between a query vector in shared memory and a key vector in global memory.
+ * Efficient vectorized implementation that assumes head_dim is a multiple of 4.
+ *
+ * @param q_vec_shmem_param Pointer to query vector in shared memory
+ * @param k_vec_global_param Pointer to key vector in global memory
+ * @param kernel_params Kernel parameters struct with head_dim
+ * @return The dot product result as a float
+ */
+static inline float dot_product_qk(
+    threadgroup const float* q_vec_shmem_param,
+    device const half* k_vec_global_param,
+    constant const PagedAttentionParams& kernel_params
+) {
+    float score = 0.0f;
+    // C++ validates head_dim % 4 == 0, so no scalar fallback needed in this helper's main loop.
+    // The helper assumes it's always called for a full head_dim that's a multiple of 4.
+    for (uint d = 0; d < kernel_params.head_dim; d += 4) {
+        float4 q_c = float4(q_vec_shmem_param[d], q_vec_shmem_param[d+1], q_vec_shmem_param[d+2], q_vec_shmem_param[d+3]);
+        // Load K components - Metal implicitly widens half to float in mixed expressions
+        float4 k_c = float4(
+            k_vec_global_param[d],
+            k_vec_global_param[d+1],
+            k_vec_global_param[d+2],
+            k_vec_global_param[d+3]
+        );
+        score += dot(q_c, k_c);
+    }
+    return score;
+}
+
+/**
+ * @brief Calculates 1/sqrt(head_dim) for scaling.
+ * @param head_dim_param The dimension of the attention head.
+ * @return The calculated scale factor, or 1.0f if head_dim is 0.
+ */
+static inline float calculate_inv_sqrt_head_dim(uint head_dim_param) {
+    if (head_dim_param > 0) {
+        return rsqrt((float)head_dim_param);
+    }
+    return 1.0f;
+}

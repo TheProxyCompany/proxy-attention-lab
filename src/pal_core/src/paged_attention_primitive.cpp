@@ -394,6 +394,32 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
   constexpr uint32_t kMaxKernelAccumTileSize = 64; // Matches kMaxAccumulationTile in Metal
   params_struct.max_accum_tile_runtime = kMaxKernelAccumTileSize;
 
+  // Set d_chunk_size_runtime for processing head_dim in chunks
+  constexpr uint32_t kDefaultAccTileChunkSizeInCPP = 64; // Must match Metal's kDefaultAccTileChunkSize
+
+  // Default d_chunk_size, ensuring it's valid and <= head_dim
+  uint32_t desired_d_chunk = 64;
+  params_struct.d_chunk_size_runtime = std::min(desired_d_chunk, params_struct.head_dim);
+  if (params_struct.d_chunk_size_runtime == 0 && params_struct.head_dim > 0) { // If head_dim itself is < 64 but > 0
+      params_struct.d_chunk_size_runtime = params_struct.head_dim;
+  }
+  // Ensure it's a multiple of 4 if > 0, for vector processing within the chunk
+  if (params_struct.d_chunk_size_runtime > 0 && params_struct.d_chunk_size_runtime % 4 != 0) {
+      // Round down to nearest multiple of 4 to not exceed head_dim if chunk was head_dim
+      params_struct.d_chunk_size_runtime = (params_struct.d_chunk_size_runtime / 4u) * 4u;
+      if (params_struct.d_chunk_size_runtime == 0 && params_struct.head_dim > 0) { // If rounding made it 0
+          params_struct.d_chunk_size_runtime = std::min(4u, params_struct.head_dim); // Smallest valid multiple of 4
+      }
+  }
+  if (params_struct.head_dim > 0 && params_struct.d_chunk_size_runtime == 0) { // Final safety if head_dim >0 but chunk is 0
+      params_struct.d_chunk_size_runtime = std::min(4u, params_struct.head_dim);
+  }
+
+  // Clamp to maximum size supported by Metal kernel's stack array
+  params_struct.d_chunk_size_runtime = std::min(params_struct.d_chunk_size_runtime, kDefaultAccTileChunkSizeInCPP);
+
+  spdlog::debug("[PAL Primitive] Setting d_chunk_size_runtime to: {}", params_struct.d_chunk_size_runtime);
+
   // Calculate a principled clamp value based on float16 denormalized minimum
   // Smallest positive half float subnormal: 2^-24 ≈ 5.96046e-08
   // log(5.96046e-08) ≈ -16.6355
@@ -442,15 +468,15 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
   size_t G_simd_reduced_adjusted_sum_exps_section_bytes = num_simd_groups_cpp * sizeof(float);
   current_offset_bytes += G_simd_reduced_adjusted_sum_exps_section_bytes;
 
-  // 5. G_final_max_for_item: 1 float
+  // 5. g_global_stats_ptr (float2 for m_global, s_global)
   current_offset_bytes = (current_offset_bytes + 63u) & ~63u; // Align to 64 bytes
-  size_t G_final_max_for_item_section_bytes = 1 * sizeof(float);
-  current_offset_bytes += G_final_max_for_item_section_bytes;
+  size_t g_global_stats_section_bytes = 2 * sizeof(float); // float2 = 2 floats
+  current_offset_bytes += g_global_stats_section_bytes;
 
-  // 6. G_final_sum_exp_for_item: 1 float
+  // 6. g_s_global_compensation_ptr: 1 float (for Kahan summation)
   current_offset_bytes = (current_offset_bytes + 63u) & ~63u; // Align to 64 bytes
-  size_t G_final_sum_exp_for_item_section_bytes = 1 * sizeof(float);
-  current_offset_bytes += G_final_sum_exp_for_item_section_bytes;
+  size_t g_s_global_compensation_section_bytes = 1 * sizeof(float);
+  current_offset_bytes += g_s_global_compensation_section_bytes;
 
   // 7. G_simd_group_v_sums (for current V-tile reduction)
   current_offset_bytes = (current_offset_bytes + 63u) & ~63u; // Align to 64 bytes
@@ -475,16 +501,30 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
   spdlog::debug("[PAL Primitive] Max TG mem: {}, Available for K/V/score tiles: {} bytes", max_tg_memory_bytes, available_mem_for_kv_score_tiles);
 
   // Memory per history item in a tile:
-  // One buffer for K or V (D floats, as V reuses K_tile's memory), plus one float for score.
-  // This coupling (V reusing K_tile) is important for this memory calculation.
-  size_t bytes_per_hist_item_in_tile = (params_struct.head_dim * sizeof(float)) + sizeof(float);
-  if (params_struct.head_dim == 0) { // Should be caught by earlier validation
-      bytes_per_hist_item_in_tile = sizeof(float); // Avoid division by zero if head_dim is 0
+  // Currently, the kernel directly loads K/V from global memory and doesn't use threadgroup memory caching
+  // for K/V tiles. We only need to allocate memory for score_tile (1 float per history item).
+  // This optimization significantly reduces threadgroup memory requirements.
+
+  // TODO: If in the future we implement cooperative loading of K/V into threadgroup memory,
+  // this calculation will need to be updated to include: (params_struct.head_dim * sizeof(float)) + sizeof(float)
+
+  // Calculate memory for score_tile with SIMD group padding to avoid bank conflicts
+  size_t score_data_floats = params_struct.tile_size_T_runtime; // This is the actual number of scores we need to store for one tile
+  size_t pad_floats_per_sg = 8; // 32-byte padding per SIMD group offset
+  size_t pad_total_floats = 0;
+  if (num_simd_groups_cpp > 1) { // Padding only needed if there's more than one SIMD group
+      pad_total_floats = (num_simd_groups_cpp - 1) * pad_floats_per_sg;
   }
 
+  size_t total_floats_for_score_tile_region = score_data_floats + pad_total_floats;
+  size_t mem_for_score_tile = total_floats_for_score_tile_region * sizeof(float);
+
+  spdlog::debug("[PAL Primitive] TG Mem - Score Tile Region: data_floats={}, pad_total_floats={}, total_region_floats={}, mem_bytes={}",
+                score_data_floats, pad_total_floats, total_floats_for_score_tile_region, mem_for_score_tile);
+
   uint32_t calculated_tile_size_T = 0;
-  if (bytes_per_hist_item_in_tile > 0) {
-      calculated_tile_size_T = static_cast<uint32_t>(available_mem_for_kv_score_tiles / bytes_per_hist_item_in_tile);
+  if (score_data_floats > 0) {
+      calculated_tile_size_T = static_cast<uint32_t>(available_mem_for_kv_score_tiles / mem_for_score_tile * score_data_floats);
   }
 
   spdlog::debug("[PAL Primitive] Max possible tile size T (before clamps): {}", calculated_tile_size_T);
@@ -493,6 +533,23 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
   const uint32_t min_tile_size_T = 16; // Hard floor
   const uint32_t practical_max_tile_size_T = 256; // Practical upper cap, can be tuned
 
+  // Apply O3's heuristic: Raise tile_size_T_runtime to at least 64 when head_dim <= 256
+  const uint32_t target_min_tile_size = 64;
+  if (params_struct.head_dim <= 256 && calculated_tile_size_T < target_min_tile_size) {
+      // Check if forcing to target_min_tile_size would exceed memory
+      size_t bytes_for_target_min_tile_kv = target_min_tile_size * params_struct.head_dim * sizeof(float);
+      size_t bytes_for_target_min_tile_score = target_min_tile_size * sizeof(float);
+      if (fixed_tg_mem_needed_bytes + bytes_for_target_min_tile_kv + bytes_for_target_min_tile_score <= max_tg_memory_bytes) {
+          spdlog::debug("[PAL Primitive] head_dim ({}) <= 256, raising tile_size_T from {} to {}",
+                        params_struct.head_dim, calculated_tile_size_T, target_min_tile_size);
+          calculated_tile_size_T = target_min_tile_size;
+      } else {
+          spdlog::debug("[PAL Primitive] head_dim ({}) <= 256, but cannot raise tile_size_T to {} due to memory limits with current fixed costs.",
+                        params_struct.head_dim, target_min_tile_size);
+      }
+  }
+
+  // Then apply standard clamps
   params_struct.tile_size_T_runtime = std::max(calculated_tile_size_T, min_tile_size_T);
   params_struct.tile_size_T_runtime = std::min(params_struct.tile_size_T_runtime, practical_max_tile_size_T);
 
@@ -530,28 +587,36 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
   spdlog::debug(
       "[PAL Primitive] Setting tile_size_T_runtime (for history tiling): {}",
       params_struct.tile_size_T_runtime);
+  spdlog::debug(
+      "[PAL Primitive] Setting d_chunk_size_runtime (for head_dim tiling): {}",
+      params_struct.d_chunk_size_runtime);
 
   // Before finalizing parameters, recalculate the memory required using the final tile_size_T_runtime value
   // This ensures we use the actual memory requirements after all clamping and rounding
   uintptr_t final_current_offset_for_tiles = fixed_tg_mem_needed_bytes;
-  final_current_offset_for_tiles = (final_current_offset_for_tiles + 63u) & ~63u; // Align start of K/V tile
-
-  // Calculate memory for finalized K/V and score tiles
-  size_t mem_for_kv_tile_final = params_struct.tile_size_T_runtime * params_struct.head_dim * sizeof(float);
-  final_current_offset_for_tiles += mem_for_kv_tile_final;
-
   final_current_offset_for_tiles = (final_current_offset_for_tiles + 63u) & ~63u; // Align start of score tile
-  size_t mem_for_score_tile_final = params_struct.tile_size_T_runtime * sizeof(float);
+
+  // Since we're not using threadgroup memory for K/V tile caching (direct global memory access in the kernel),
+  // we only need to allocate for score_tile, but now with SIMD group padding
+  size_t score_data_floats_final = params_struct.tile_size_T_runtime;
+  size_t pad_total_floats_final = 0;
+  if (num_simd_groups_cpp > 1) {
+      pad_total_floats_final = (num_simd_groups_cpp - 1) * pad_floats_per_sg;
+  }
+  size_t total_floats_for_score_tile_region_final = score_data_floats_final + pad_total_floats_final;
+  size_t mem_for_score_tile_final = total_floats_for_score_tile_region_final * sizeof(float);
   final_current_offset_for_tiles += mem_for_score_tile_final;
 
   size_t total_mem_before_padding = (final_current_offset_for_tiles + 63u) & ~63u;
   size_t padding_bytes = 32;
   size_t final_tg_memory_bytes = total_mem_before_padding + padding_bytes;
 
-  spdlog::debug("[PAL Primitive] TG Mem - K/V Tile (final) ({}x{} floats): {} bytes",
-                params_struct.tile_size_T_runtime, params_struct.head_dim, mem_for_kv_tile_final);
-  spdlog::debug("[PAL Primitive] TG Mem - Score Tile (final) ({} floats): {} bytes",
-                params_struct.tile_size_T_runtime, mem_for_score_tile_final);
+  // Still defining these K/V pointers in the Metal kernel, but they're not actually used for caching
+  size_t mem_for_kv_tile_final = 0; // Not allocated but tracked for logging
+
+  spdlog::debug("[PAL Primitive] TG Mem - K/V Tile (final): Not allocated (using direct global memory access)");
+  spdlog::debug("[PAL Primitive] TG Mem - Score Tile (final) ({} data floats + {} padding floats = {} total floats): {} bytes",
+                score_data_floats_final, pad_total_floats_final, total_floats_for_score_tile_region_final, mem_for_score_tile_final);
   spdlog::debug("[PAL Primitive] Added {} padding bytes. Final tg_memory_bytes: {}", padding_bytes, final_tg_memory_bytes);
 
   // Double-check that the final memory requirement still fits within device limits

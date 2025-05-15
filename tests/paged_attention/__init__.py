@@ -13,3 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 """Test package for paged attention functionality."""
+
+import logging
+
+logging.basicConfig(level=logging.DEBUG)
