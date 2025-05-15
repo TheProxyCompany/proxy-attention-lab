@@ -84,22 +84,11 @@ def test_paged_attention_determinism() -> None:
     )
 
     # 6. Query Token Offset: [NumQueryTokens]
-    # Offset for each query token within its sequence
-    # Ensure offsets are less than the corresponding sequence_lengths
-    # For generating query_token_offset, it's easier to use Python's random for conditional logic
-    # then convert to mx.array, as direct element-wise assignment based on another array's values
-    # is less straightforward with MLX's immutable arrays compared to NumPy.
-    # We'll build a Python list first.
     _query_token_offset_list = [0] * num_queries_tokens
     for i in range(num_queries_tokens):
         # Need to access scalar values from mx.array for Python's random.randint
         seq_idx = py_query_to_seq_map[i].item()
         max_offset = py_sequence_lengths[seq_idx].item()
-        # Ensure max_offset is at least 1 for randint(0, max_offset-1) if max_offset is 1
-        # or use randint(0, N) where N is exclusive if max_offset is 0 (empty sequence, offset 0)
-        # However, sequence_lengths are generated from 1 up, so max_offset >= 1.
-        # np.random.randint(low, high) -> low is inclusive, high is exclusive
-        # We want offset to be 0 to length-1. So randint(0, length)
         if max_offset > 0:
             _query_token_offset_list[i] = mx.random.randint(0, max_offset, []).item()
         else:  # Should not happen based on sequence_lengths generation, but defensive
@@ -124,7 +113,7 @@ def test_paged_attention_determinism() -> None:
     # (though MLX arrays are usually immutable, this is an extra safeguard for test setup)
     logger.info("Determinism Test: Second call to paged_attention with identical inputs.")
     output2 = paged_attention(
-        py_queries,  # MLX arrays are immutable, can reuse
+        py_queries,
         py_k_cache_pool,
         py_v_cache_pool,
         py_page_table,
@@ -138,10 +127,6 @@ def test_paged_attention_determinism() -> None:
     assert output1.shape == output2.shape, f"Output shapes differ: {output1.shape} vs {output2.shape}"
     assert output1.dtype == output2.dtype, f"Output dtypes differ: {output1.dtype} vs {output2.dtype}"
 
-    # For bit-for-bit exactness, mx.array_equal is appropriate.
-    # If there were any concerns about ultra-minor float variations due to non-associativity
-    # on different runs (highly unlikely for SIMD reductions on same GPU),
-    # mx.allclose would be a fallback, but array_equal is the goal here.
     assert mx.array_equal(output1, output2), (
         "Paged attention output is not deterministic. Outputs differ between two identical calls."
     )

@@ -25,6 +25,7 @@
 #include <stdexcept>
 #include <string>
 #include <type_traits>
+#include <limits>
 
 #if __has_include(<spdlog/spdlog.h>)
     #include <spdlog/spdlog.h>
@@ -58,13 +59,13 @@ namespace mx = mlx::core;
 
 namespace pal::cpp {
 
-// Expected size for PagedAttentionParams: 8 uint32_t = 32 bytes,
-// aligned to 32 by alignas(16)
-constexpr size_t kExpectedPagedAttentionParamsSize = 32;
+// Expected size for PagedAttentionParams: 8 uint32_t (32 bytes) + 1 float (4 bytes) = 36 bytes.
+// alignas(16) means total size is 48, as it's padded to multiple of 16.
+constexpr size_t kExpectedPagedAttentionParamsSize = 48;
 static_assert(
     sizeof(PagedAttentionParams) == kExpectedPagedAttentionParamsSize,
-    "sizeof(PagedAttentionParams) mismatch between C++ and expected size. "
-    "Check paged_attention_types.h and padding.");
+    "sizeof(PagedAttentionParams) mismatch between C++ and expected size (48 bytes). "
+    "Check paged_attention_types.h, members, and padding.");
 
 PagedAttentionPrimitive::PagedAttentionPrimitive(
     mx::StreamOrDevice stream_or_device,
@@ -202,6 +203,18 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
         "[PagedAttentionPrimitive] params_struct.head_dim (" +
         std::to_string(params_struct.head_dim) +
         ") is excessively large for the tiled kernel approach.");
+  }
+
+  // Check if head_dim alone would cause threadgroup memory overflow
+  // Get threadgroup memory early to check if head_dim is too large by itself
+  auto* device_ptr = d.mtl_device();
+  size_t max_tg_memory_bytes = device_ptr->maxThreadgroupMemoryLength();
+  size_t q_shmem_bytes = params_struct.head_dim * sizeof(float);
+  if (q_shmem_bytes > max_tg_memory_bytes) {
+    throw std::runtime_error(
+        "[PagedAttentionPrimitive] q_shmem size alone (" +
+        std::to_string(q_shmem_bytes) + " bytes) exceeds device's maximum threadgroup memory (" +
+        std::to_string(max_tg_memory_bytes) + " bytes). Reduce head_dim to a smaller value.");
   }
 
   // Validate query dimensions
@@ -372,9 +385,19 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
   constexpr uint32_t kMaxKernelAccumTileSize = 64; // Matches kMaxAccumulationTile in Metal
   params_struct.max_accum_tile_runtime = kMaxKernelAccumTileSize;
 
+  // Calculate a principled clamp value based on float16 denormalized minimum
+  // Smallest positive half float subnormal: 2^-24 ≈ 5.96046e-08
+  // log(5.96046e-08) ≈ -16.6355
+  const float fp16_denorm_min_val = 5.9604644775390625e-08f; // 2^-24
+  // Add a safety margin by making it more negative (-1.0f extra)
+  params_struct.log_exp_min_clamp = logf(fp16_denorm_min_val) - 1.0f;
+
   spdlog::debug(
       "[PAL Primitive] Setting max_accum_tile_runtime (kernel's tile capacity) to: {}",
       params_struct.max_accum_tile_runtime);
+  spdlog::debug(
+      "[PAL Primitive] Setting log_exp_min_clamp (based on fp16_denorm_min): {}",
+      params_struct.log_exp_min_clamp);
 
   // Upload the complete parameter struct to the GPU
   compute_encoder.set_bytes(&params_struct, sizeof(PagedAttentionParams), 7);
@@ -387,32 +410,40 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
   constexpr uint32_t kMaxSimdGroupsPerThreadgroup = 8;
   const uint32_t head_dim = params_struct.head_dim;
 
-  // Threadgroup memory layout calculation
-  // 1. q_shmem: head_dim floats
-  // 2. G_partial_max_scores: threads_per_item_group floats
-  // 3. G_simd_reduced_maxes: kMaxSimdGroupsPerThreadgroup floats
-  // 4. G_simd_reduced_adjusted_sum_exps: kMaxSimdGroupsPerThreadgroup floats
-  // 5. G_final_max_for_item: 1 float
-  // 6. G_final_sum_exp_for_item: 1 float
-  // 7. G_simd_group_v_sums: kMaxSimdGroupsPerThreadgroup float4s (4 * kMaxSimdGroupsPerThreadgroup floats)
-  size_t tg_memory_bytes = sizeof(float) * (
-      head_dim +                           // 1. q_shmem
-      threads_per_item_group +             // 2. G_partial_max_scores
-      kMaxSimdGroupsPerThreadgroup +       // 3. G_simd_reduced_maxes
-      kMaxSimdGroupsPerThreadgroup +       // 4. G_simd_reduced_adjusted_sum_exps
-      1 +                                  // 5. G_final_max_for_item
-      1 +                                  // 6. G_final_sum_exp_for_item
-      (kMaxSimdGroupsPerThreadgroup * 4)   // 7. G_simd_group_v_sums (float4 per SIMD group)
-  );
+  // Threadgroup memory layout calculation with proper 16-byte alignment between sections
+  // Starting with array sizes first:
+  size_t q_shmem_size = head_dim;
+  size_t G_partial_max_scores_size = threads_per_item_group;
+  size_t G_simd_reduced_maxes_size = kMaxSimdGroupsPerThreadgroup;
+  size_t G_simd_reduced_adjusted_sum_exps_size = kMaxSimdGroupsPerThreadgroup;
+  size_t G_final_max_for_item_size = 1;
+  size_t G_final_sum_exp_for_item_size = 1;
+  size_t G_simd_group_v_sums_size = kMaxSimdGroupsPerThreadgroup * 4; // float4 per SIMD group
+
+  // Calculate sizes with alignment padding (16-byte alignment)
+  auto align_to_16_bytes = [](size_t size_in_floats) -> size_t {
+    size_t size_in_bytes = size_in_floats * sizeof(float);
+    return ((size_in_bytes + 15) & ~15) / sizeof(float); // Round up to nearest 16-byte boundary (in float units)
+  };
+
+  size_t tg_memory_floats =
+      q_shmem_size +
+      align_to_16_bytes(G_partial_max_scores_size) +
+      align_to_16_bytes(G_simd_reduced_maxes_size) +
+      align_to_16_bytes(G_simd_reduced_adjusted_sum_exps_size) +
+      align_to_16_bytes(G_final_max_for_item_size) +
+      align_to_16_bytes(G_final_sum_exp_for_item_size) +
+      align_to_16_bytes(G_simd_group_v_sums_size);
+
+  size_t tg_memory_bytes = tg_memory_floats * sizeof(float);
 
   // Validate against device's maximum threadgroup memory limit
-  MTL::Device* device = d.mtl_device();
-  size_t max_tg_memory = device->maxThreadgroupMemoryLength();
-  if (tg_memory_bytes > max_tg_memory) {
+  // We already got max_tg_memory_bytes from device_ptr earlier
+  if (tg_memory_bytes > max_tg_memory_bytes) {
     throw std::runtime_error(
         "[PagedAttentionPrimitive] Calculated threadgroup memory (" +
         std::to_string(tg_memory_bytes) + " bytes) exceeds device limit (" +
-        std::to_string(max_tg_memory) + " bytes)."
+        std::to_string(max_tg_memory_bytes) + " bytes)."
     );
   }
 

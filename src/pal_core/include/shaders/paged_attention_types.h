@@ -42,20 +42,20 @@ struct alignas(16) PagedAttentionParams {
   uint32_t num_physical_pages_in_pool;    // Number of physical pages in pool
   uint32_t num_sequences_in_batch;        // Number of sequences in batch
   uint32_t max_accum_tile_runtime;        // Runtime V-accum tile size
+  float    log_exp_min_clamp;             // Minimum value for exponent in exp function
 };
 
-// C++ compile-time check for standard layout
-#ifndef __METAL_VERSION__
-#include <type_traits>
+// --- Assertions ---
+#ifndef __METAL_VERSION__ // C++ side
 static_assert(std::is_standard_layout_v<PagedAttentionParams>,
-              "PagedAttentionParams must be a standard-layout type for safe "
-              "interoperability with Metal.");
+              "PagedAttentionParams must be a standard-layout type.");
 static_assert(alignof(PagedAttentionParams) == 16,
               "PagedAttentionParams must have 16-byte alignment.");
-#endif
-
-#ifdef __METAL_VERSION__ // Only apply this check when compiling with Metal
-// Use C++11 static_assert, which MSL (C++14 based) should support
-static_assert(sizeof(PagedAttentionParams) == 32,
-              "sizeof(PagedAttentionParams) mismatch (expected 32 bytes).");
+// 8 uint32_t (32 bytes) + 1 float (4 bytes) = 36 data bytes.
+// alignas(16) means total size is 48, as it's padded to multiple of 16.
+static_assert(sizeof(PagedAttentionParams) == 48,
+              "C++ sizeof(PagedAttentionParams) expected to be 48 bytes.");
+#else // __METAL_VERSION__ (Metal side)
+static_assert(sizeof(PagedAttentionParams) == 48,
+              "Metal sizeof(PagedAttentionParams) expected to be 48 bytes.");
 #endif
