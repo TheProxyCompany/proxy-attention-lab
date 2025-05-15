@@ -48,6 +48,7 @@ constant static const float kEpsilonForZeroGuard = 1e-9f;
  * @param query_token_offset_in Position of each query in its sequence [N_threads]
  * @param params Parameters struct controlling kernel execution
  * @param output_buffer Output buffer for attention results
+ * @param tg_mem Threadgroup memory for scratch space
  * @param tg_pos_in_grid Threadgroup position in grid
  * @param tg_dim Threadgroup dimensions
  * @param local_idx_in_tg Thread index in threadgroup
@@ -59,9 +60,9 @@ constant static const float kEpsilonForZeroGuard = 1e-9f;
     device      const half* k_cache_pool_in,
     device      const half* v_cache_pool_in,
     device      const uint* page_table_in,
-    device      const int* sequence_lengths_in,
-    device      const int* query_to_seq_map_in,
-    device      const int* query_token_offset_in,
+    device      const int*  sequence_lengths_in,
+    device      const int*  query_to_seq_map_in,
+    device      const int*  query_token_offset_in,
     constant    const PagedAttentionParams& params,
     device      half* output_buffer,
     threadgroup float* tg_mem,
@@ -83,7 +84,7 @@ constant static const float kEpsilonForZeroGuard = 1e-9f;
  * @param num_kv_heads_param Number of key-value heads
  * @return The mapped KV head index
  */
-static inline uint map_q_to_kv_head(
+[[always_inline]] static inline uint map_q_to_kv_head(
     uint global_item_q_head_idx, // Effective Q head index for the item
     uint num_q_heads_param,
     uint num_kv_heads_param
@@ -105,14 +106,12 @@ static inline uint map_q_to_kv_head(
  * @param is_k_vector True for K pointer, false for V pointer
  * @param actual_hist_token_pos History token position to fetch
  * @param target_kv_head_idx Already mapped KV head index
- * @param k_cache_pool_in_param Key cache pool
- * @param v_cache_pool_in_param Value cache pool
- * @param page_table_in_param Page table mapping logical blocks to physical pages
+ * @param input_data Consolidated input data buffer references
  * @param item_seq_idx_in_batch_param Sequence index in batch
  * @param kernel_params Kernel parameters struct
  * @return Pointer to the K/V vector, or nullptr if invalid
  */
-static inline device const half* fetch_kv_pointer(
+[[always_inline]] static inline device const half* fetch_kv_pointer(
     bool is_k_vector, // true for K, false for V
     uint actual_hist_token_pos,
     uint target_kv_head_idx, // Already mapped
@@ -120,22 +119,43 @@ static inline device const half* fetch_kv_pointer(
     device const half* v_cache_pool_in_param,
     device const uint* page_table_in_param,
     uint item_seq_idx_in_batch_param,
-    constant const PagedAttentionParams& kernel_params // Use a distinct name
+    constant const PagedAttentionParams& kernel_params
 ) {
+    if ((is_k_vector && k_cache_pool_in_param == nullptr) ||
+        (!is_k_vector && v_cache_pool_in_param == nullptr) ||
+        page_table_in_param == nullptr) {
+        return nullptr;
+    }
+
+    // Calculate indices for page table lookup
     uint logical_block_idx = actual_hist_token_pos / kernel_params.tokens_per_page;
-    if (logical_block_idx >= kernel_params.max_logical_blocks_per_seq) return nullptr; // Invalid block index
+    if (logical_block_idx >= kernel_params.max_logical_blocks_per_seq) {
+        return nullptr;  // Invalid block index
+    }
 
     uint token_slot_in_page = actual_hist_token_pos % kernel_params.tokens_per_page;
     uint page_table_flat_idx = item_seq_idx_in_batch_param * kernel_params.max_logical_blocks_per_seq + logical_block_idx;
     uint physical_page_id = page_table_in_param[page_table_flat_idx];
 
-    if (physical_page_id >= kernel_params.num_physical_pages_in_pool) return nullptr; // Invalid page
+    if (physical_page_id >= kernel_params.num_physical_pages_in_pool) {
+        return nullptr;  // Invalid page
+    }
 
-    ulong base_offset = (ulong)physical_page_id * kernel_params.tokens_per_page * kernel_params.num_kv_heads * kernel_params.head_dim +
-                        (ulong)token_slot_in_page * kernel_params.num_kv_heads * kernel_params.head_dim +
-                        (ulong)target_kv_head_idx * kernel_params.head_dim;
+    // Calculate the offset with careful type casting and multiplication order
+    uint head_dim = kernel_params.head_dim;
+    uint tokens_per_page = kernel_params.tokens_per_page;
+    uint num_kv_heads = kernel_params.num_kv_heads;
 
-    return is_k_vector ? (k_cache_pool_in_param + base_offset) : (v_cache_pool_in_param + base_offset);
+    // Compute steps separately using ulong to avoid overflow
+    ulong page_offset = (ulong)physical_page_id * tokens_per_page * num_kv_heads * head_dim;
+    ulong token_offset = (ulong)token_slot_in_page * num_kv_heads * head_dim;
+    ulong head_offset = (ulong)target_kv_head_idx * head_dim;
+
+    // Combine offsets
+    ulong total_offset = page_offset + token_offset + head_offset;
+
+    // Return the appropriate pointer
+    return is_k_vector ? (k_cache_pool_in_param + total_offset) : (v_cache_pool_in_param + total_offset);
 }
 
 /**
@@ -150,7 +170,7 @@ static inline device const half* fetch_kv_pointer(
  * @param broadcast_scale_scratch_ptr Pointer to scratch space for broadcasting scale factor
  * @param kernel_params Kernel parameters struct with log_exp_min_clamp
  */
-static inline void update_softmax_stats_kahan(
+[[always_inline]] static inline void update_softmax_stats_kahan(
     threadgroup float2* current_global_stats_ptr,
     threadgroup float* current_s_comp_ptr,
     float m_local_tile_from_reduction,
@@ -195,7 +215,7 @@ static inline void update_softmax_stats_kahan(
  * @param output_buffer_param Output buffer to write zeros to
  * @param kernel_params Kernel parameters struct with head_dim
  */
-static inline void zero_output_vector_for_item(
+[[always_inline]] static inline void zero_output_vector_for_item(
     uint item_global_idx,
     device half* output_buffer_param,
     constant const PagedAttentionParams& kernel_params
@@ -215,7 +235,7 @@ static inline void zero_output_vector_for_item(
  * @param kernel_params Kernel parameters struct with head_dim
  * @return The dot product result as a float
  */
-static inline float dot_product_qk(
+[[always_inline]] static inline float dot_product_qk(
     threadgroup const float* q_vec_shmem_param,
     device const half* k_vec_global_param,
     constant const PagedAttentionParams& kernel_params
@@ -242,7 +262,7 @@ static inline float dot_product_qk(
  * @param head_dim_param The dimension of the attention head.
  * @return The calculated scale factor, or 1.0f if head_dim is 0.
  */
-static inline float calculate_inv_sqrt_head_dim(uint head_dim_param) {
+[[always_inline]] static inline float calculate_inv_sqrt_head_dim(uint head_dim_param) {
     if (head_dim_param > 0) {
         return rsqrt((float)head_dim_param);
     }

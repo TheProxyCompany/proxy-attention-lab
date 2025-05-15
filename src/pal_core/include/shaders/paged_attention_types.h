@@ -28,6 +28,7 @@ using float32_t = float;
 #include <type_traits>  // For std::is_standard_layout_v
 #endif
 
+
 /**
  * @brief Shared parameter structure for paged attention operations.
  *
@@ -51,6 +52,7 @@ struct alignas(16) PagedAttentionParams {
 
 // --- Assertions ---
 #ifndef __METAL_VERSION__ // C++ side
+
 static_assert(std::is_standard_layout_v<PagedAttentionParams>,
               "PagedAttentionParams must be a standard-layout type.");
 static_assert(alignof(PagedAttentionParams) == 16,
@@ -59,6 +61,7 @@ static_assert(alignof(PagedAttentionParams) == 16,
 // alignas(16) means total size is 48, as it's padded to multiple of 16.
 static_assert(sizeof(PagedAttentionParams) == 48,
               "C++ sizeof(PagedAttentionParams) expected to be 48 bytes.");
+
 #else // __METAL_VERSION__ (Metal side)
 static_assert(sizeof(PagedAttentionParams) == 48,
               "Metal sizeof(PagedAttentionParams) expected to be 48 bytes.");

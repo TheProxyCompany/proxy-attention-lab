@@ -44,6 +44,7 @@
     } // namespace spdlog
 #endif
 
+// MLX and Metal includes
 #include <mlx/allocator.h>
 #include <mlx/array.h>
 #include <mlx/backend/common/utils.h>
@@ -642,6 +643,14 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
         std::to_string(tg_memory_bytes) + " bytes) exceeds device limit (" +
         std::to_string(max_tg_memory_bytes) + " bytes) after tile_size_T_runtime adjustments."
     );
+  }
+
+  // Verify all pointers are valid before passing to Metal
+  if (!inputs[0].data<void>() || !inputs[1].data<void>() || !inputs[2].data<void>() ||
+      !inputs[3].data<void>() || !inputs[4].data<void>() || !inputs[5].data<void>() ||
+      !inputs[6].data<void>()) {
+    spdlog::error("[PAL Primitive] One or more input arrays have null data pointers");
+    throw std::runtime_error("Null input data pointers detected in paged attention primitive");
   }
 
   // Call the dispatch_metal_kernel helper with all needed parameters

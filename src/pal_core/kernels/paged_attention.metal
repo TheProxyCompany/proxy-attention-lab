@@ -68,9 +68,9 @@ using namespace metal;
     device      const half* k_cache_pool_in         [[buffer(1)]],
     device      const half* v_cache_pool_in         [[buffer(2)]],
     device      const uint* page_table_in           [[buffer(3)]],
-    device      const int* sequence_lengths_in      [[buffer(4)]],
-    device      const int* query_to_seq_map_in      [[buffer(5)]],
-    device      const int* query_token_offset_in    [[buffer(6)]],
+    device      const int*  sequence_lengths_in     [[buffer(4)]],
+    device      const int*  query_to_seq_map_in     [[buffer(5)]],
+    device      const int*  query_token_offset_in   [[buffer(6)]],
     constant    const PagedAttentionParams& params  [[buffer(7)]],
     device      half* output_buffer                 [[buffer(8)]],
     threadgroup float* tg_mem                       [[threadgroup(0)]],
@@ -97,6 +97,15 @@ using namespace metal;
     uint global_item_idx = tg_pos_in_grid.x;    // Identifies the query-head item
     uint local_thread_idx = local_idx_in_tg;    // Thread ID within this group
     const uint num_simd_groups = max(1u, (tg_dim.x + kSimdLanesPerGroup - 1) / kSimdLanesPerGroup); // Calculate number of actual SIMD groups
+
+    // --- 4.1/10: KV Head Mapping (constant per item) ---
+    const uint q_head_for_kv_map     = (params.num_q_heads > 1)
+                                     ? (global_item_idx % params.num_q_heads)
+                                     : 0;
+    const uint target_kv_head_idx_item =
+        map_q_to_kv_head(q_head_for_kv_map,
+                         params.num_q_heads,
+                         params.num_kv_heads);
 
     // --- 5/10: Threadgroup Memory Carving ---
     // Layout for Pass 1 and Pass 2 reductions.
@@ -231,9 +240,9 @@ using namespace metal;
                     // Default to a state that would lead to zero contribution if checks fail
                     float score_val = -INFINITY;
 
-                    // Get the Q head index for KV head mapping
-                    uint q_head_for_kv_map_k = (params.num_q_heads > 1) ? (global_item_idx % params.num_q_heads) : 0;
-                    uint target_kv_head_idx_k = map_q_to_kv_head(q_head_for_kv_map_k, params.num_q_heads, params.num_kv_heads);
+                    // KV-head index is constant for this item (computed once in section 4.1)
+                    uint target_kv_head_idx_k = target_kv_head_idx_item;
+
 
                     // Fetch K-vector pointer using helper
                     device const half* k_vector_ptr_val = fetch_kv_pointer(
@@ -333,15 +342,12 @@ using namespace metal;
                     acc_tile_local[i] *= scale_for_acc_iter_atomic;
                 }
 
-                // TODO: Consider Kahan summation for s_global in a future optimization
 
                 // --- 10.1.6/10: History Tile - Weighted V Accumulation ---
                 if (local_thread_idx < current_hist_tile_actual_len) {
                     uint actual_hist_token_pos = hist_tile_start + local_thread_idx;
 
-                    // Get V-vector pointer using same helper
-                    uint q_head_for_kv_map_v = (params.num_q_heads > 1) ? (global_item_idx % params.num_q_heads) : 0;
-                    uint target_kv_head_idx_v = map_q_to_kv_head(q_head_for_kv_map_v, params.num_q_heads, params.num_kv_heads);
+                    uint target_kv_head_idx_v = target_kv_head_idx_item;
 
                     // Use the helper to fetch V-vector pointer
                     device const half* v_vector_ptr_val = fetch_kv_pointer(
