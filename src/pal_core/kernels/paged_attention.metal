@@ -339,7 +339,8 @@ using namespace metal;
         float new_m_local = max(m_local, current_score_fp32);
         float alpha = fast::exp(m_local - new_m_local);
         float exponent_for_p = current_score_fp32 - new_m_local;
-        float p_val = fast::exp(max(exponent_for_p, params.log_exp_min_clamp));
+        // NEW: Branch-free version from O3 that allows underflow to zero
+        float p_val = (exponent_for_p < params.log_exp_min_clamp) ? 0.0f : fast::exp(exponent_for_p);
 
         d_local = d_local * alpha + p_val;
         m_local = new_m_local;
@@ -411,8 +412,9 @@ using namespace metal;
     m_final_global = *G_final_max_for_item; // All threads read the final global max
 
     // --- Rescale d_local and o_local, then Reduce d_local ---
-    // d_local_rescaled = d_local * fast::exp(m_local - m_final_global)
-    float d_local_rescaled = d_local * fast::exp(max(m_local - m_final_global, params.log_exp_min_clamp));
+    // Apply the same branch-free underflow to zero behavior
+    float rescale_exponent = m_local - m_final_global;
+    float d_local_rescaled = d_local * ((rescale_exponent < params.log_exp_min_clamp) ? 0.0f : fast::exp(rescale_exponent));
 
     // Use G_simd_reduced_adjusted_sum_exps and G_final_sum_exp_for_item for d_final_global
     float simd_sum_d_rescaled = simd_sum(d_local_rescaled);
@@ -433,8 +435,8 @@ using namespace metal;
     // d_final_global = *G_final_sum_exp_for_item;
 
     // --- Rescale o_local after history scan ---
-    // Apply scaling factor to all o_local components - clamp the exponent to prevent underflow
-    float final_o_rescale_factor = fast::exp(max(m_local - m_final_global, params.log_exp_min_clamp));
+    // Apply scaling factor to all o_local components with branch-free underflow to zero
+    float final_o_rescale_factor = (rescale_exponent < params.log_exp_min_clamp) ? 0.0f : fast::exp(rescale_exponent);
     for (uint i = 0; i < params.head_dim; ++i) {
         o_local[i] *= final_o_rescale_factor;
     }
