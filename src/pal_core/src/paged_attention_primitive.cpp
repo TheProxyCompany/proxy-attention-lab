@@ -34,6 +34,7 @@
     #define PAL_HAS_SPDLOG 0
     // Minimal fallback if spdlog is not available (e.g., for standalone builds without FetchContent run)
     // This could be a no-op or a simple std::cerr wrapper. For now, let's make it a no-op.
+    // Minimal no-op stubs if spdlog is unavailable.
     namespace spdlog {
         template<typename... Args> void trace(Args... args) {}
         template<typename... Args> void debug(Args... args) {}
@@ -51,7 +52,6 @@
 #include <mlx/backend/cpu/encoder.h>
 #include <mlx/backend/metal/device.h>
 #include <mlx/backend/metal/metal.h>
-#include <mlx/backend/metal/utils.h>
 #include <mlx/utils.h>
 
 #include "shaders/paged_attention_types.h"

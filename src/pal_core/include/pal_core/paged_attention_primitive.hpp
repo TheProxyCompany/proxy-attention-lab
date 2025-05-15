@@ -72,7 +72,7 @@ struct ThreadgroupMemoryLayout {
     }
 };
 
-// Expected size for PagedAttentionParams: 8 uint32_t (32 bytes) + 1 float (4 bytes) = 36 bytes.
+// Expected size for PagedAttentionParams: 10 uint32_t (40 bytes) + 1 float (4 bytes) = 44 bytes.
 // alignas(16) means total size is 48, as it's padded to multiple of 16.
 // Note: We use 64-byte alignment for threadgroup memory, but the struct itself remains 16-byte aligned.
 constexpr size_t kExpectedPagedAttentionParamsSize = 48;
@@ -415,7 +415,7 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
    *
    * @param compute_encoder Metal compute command encoder
    * @param kernel_pso Metal compute pipeline state
-   * @param kernel_inputs Vector of input arrays
+   * @param kernel_inputs Vector of input arrays (Q, K_pool, ...)
    * @param kernel_out_array Output array
    * @param kernel_params Parameters struct for the kernel
    * @param total_tg_memory_bytes Total threadgroup memory size in bytes

@@ -106,7 +106,9 @@ constant static const float kEpsilonForZeroGuard = 1e-9f;
  * @param is_k_vector True for K pointer, false for V pointer
  * @param actual_hist_token_pos History token position to fetch
  * @param target_kv_head_idx Already mapped KV head index
- * @param input_data Consolidated input data buffer references
+ * @param k_cache_pool_in_param Key cache base pointer
+ * @param v_cache_pool_in_param Value-cache base pointer
+ * @param page_table_in_param Page-table base pointer
  * @param item_seq_idx_in_batch_param Sequence index in batch
  * @param kernel_params Kernel parameters struct
  * @return Pointer to the K/V vector, or nullptr if invalid

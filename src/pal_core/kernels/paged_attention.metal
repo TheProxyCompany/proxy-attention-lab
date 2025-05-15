@@ -151,8 +151,6 @@ using namespace metal;
     // K_tile and V_tile pointers are defined but not used for tg memory caching
     // These are kept as placeholders for future optimization where we might
     // implement cooperative loading of K/V into threadgroup memory
-    threadgroup float* K_tile = nullptr; // Not actually allocated in tg memory
-    threadgroup float* V_tile = nullptr; // Not actually allocated in tg memory
 
     // --- 6/10: Q-Vector Pointer Calculation & Staging ---
     device const half* q_vector_item_ptr;
