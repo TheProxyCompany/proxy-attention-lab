@@ -19,7 +19,8 @@
 #include <metal_stdlib>
 #include "paged_attention.h.metal"
 
-constant static const uint kMaxHeadDim = 256;  // Maximum supported head dimension
+constant static const uint kMaxHeadDimMetal = 256; // Kernel's internal max, C++ validates params.head_dim against this
+constant static const uint kLocalAccumulationTileSize = 64;  // Fixed tile size for reduction phase only
 
 
 constant static const uint kMaxAccumulationTile = 64; // Matches kMaxAccumulationTile in C++ code
@@ -81,9 +82,10 @@ using namespace metal;
         kernel_scale = 1.0f;  // Fallback for head_dim == 0 to avoid division by zero/NaN
     }
 
-    // --- Validate head_dim for kernel usage ---
-    // This check ensures params.head_dim is valid for the kernel
-    if (params.head_dim == 0 || params.head_dim > kMaxHeadDim) {
+    // --- Basic input validation ---
+    // Early exit for degenerate case where head_dim is zero
+    if (params.head_dim == 0) {
+        // Zero the output and exit
         for (uint i = local_idx_in_tg; i < params.head_dim; i += tg_dim.x) {
             ulong output_idx = (ulong)tg_pos_in_grid.x * params.head_dim + i;
             output_buffer[output_idx] = 0.0h;
@@ -95,8 +97,10 @@ using namespace metal;
     float m_local = -INFINITY; // Maximum score accumulator
     float d_local = 0.0f;      // Sum of scaled exponentials accumulator
 
-    // o_local will store the partial V-weighted sum. Sized for max head dimension.
-    thread float o_local[kMaxHeadDim];
+    // o_local will store the full V-weighted sum for all head_dim components.
+    // This is sized to store up to kMaxHeadDimMetal elements, with C++ validation ensuring
+    // params.head_dim <= kMaxHeadDimMetal.
+    thread float o_local[kMaxHeadDimMetal];
 
     // --- Thread Identifiers ---
     uint global_item_idx = tg_pos_in_grid.x;    // Identifies the query-head item
@@ -221,9 +225,9 @@ using namespace metal;
     }
 
     // --- Initialize o_local before history scan ---
-    // Only initialize the tile size we're using, not the full head_dim
-    for (uint i = 0; i < kMaxAccumulationTile; ++i) {
-        o_local[i] = 0.0f;
+    // Initialize all params.head_dim components of o_local
+    for (uint i = 0; i < params.head_dim; ++i) {
+        o_local[i] = 0.0f; // Accesses up to params.head_dim, guarded by C++ validation
     }
 
     // --- Distribute history tokens among threads in the group ---
@@ -357,23 +361,21 @@ using namespace metal;
                                   v_kv_head_base_offset_in_elements;
         device const half* v_vector_ptr = v_cache_pool_in + v_vector_start_idx;
 
-        // --- Online o_local update (vectorised when possible) ---
-        if (use_vectorized_load && (params.head_dim % 4 == 0)) {
-            device const packed_half4* v_ptr_h4 =
-                reinterpret_cast<device const packed_half4*>(v_vector_ptr);
+        // --- Online o_local update with continuous rescaling for FULL head_dim ---
+        bool use_vectorized_v_load = (params.head_dim % 4 == 0);
+        if (use_vectorized_v_load) {
+            device const packed_half4* v_ptr_h4 = reinterpret_cast<device const packed_half4*>(v_vector_ptr);
             for (uint i = 0; i < params.head_dim / 4; ++i) {
                 float4 v_chunk = float4(v_ptr_h4[i]);
-                float4 o_chunk_old = float4(o_local[i * 4 + 0],
-                                            o_local[i * 4 + 1],
-                                            o_local[i * 4 + 2],
-                                            o_local[i * 4 + 3]);
+                float4 o_chunk_old = float4(o_local[i * 4 + 0], o_local[i * 4 + 1],
+                                           o_local[i * 4 + 2], o_local[i * 4 + 3]);
                 float4 o_chunk_new = o_chunk_old * alpha + p_val * v_chunk;
                 o_local[i * 4 + 0] = o_chunk_new.x;
                 o_local[i * 4 + 1] = o_chunk_new.y;
                 o_local[i * 4 + 2] = o_chunk_new.z;
                 o_local[i * 4 + 3] = o_chunk_new.w;
             }
-        } else {
+        } else { // Scalar update
             for (uint i = 0; i < params.head_dim; ++i) {
                 o_local[i] = o_local[i] * alpha + p_val * (float)v_vector_ptr[i];
             }
@@ -430,44 +432,53 @@ using namespace metal;
     // Only thread0 strictly needs d_final_global, but if others might, they can read it:
     // d_final_global = *G_final_sum_exp_for_item;
 
-    // --- Rescale o_local and Reduce it (component-wise) to get o_final_global_tile ---
-    // Apply scaling factor to o_local components - clamp the exponent to prevent underflow
-    float o_rescale_factor = fast::exp(max(m_local - m_final_global, params.log_exp_min_clamp));
+    // --- Rescale o_local after history scan ---
+    // Apply scaling factor to all o_local components - clamp the exponent to prevent underflow
+    float final_o_rescale_factor = fast::exp(max(m_local - m_final_global, params.log_exp_min_clamp));
+    for (uint i = 0; i < params.head_dim; ++i) {
+        o_local[i] *= final_o_rescale_factor;
+    }
 
-    for (uint h_idx = 0; h_idx < params.head_dim; h_idx += 4) {
-        float4 o_chunk_rescaled = float4(0.0f);
+    // Final normalization factor (inverse of sum of exps)
+    float inv_d = (d_final_global > 1e-9f) ? (1.0f / d_final_global) : 0.0f;
 
-        if (h_idx < params.head_dim)
-            o_chunk_rescaled.x = o_local[h_idx] * o_rescale_factor;
-        if (h_idx + 1 < params.head_dim)
-            o_chunk_rescaled.y = o_local[h_idx + 1] * o_rescale_factor;
-        if (h_idx + 2 < params.head_dim)
-            o_chunk_rescaled.z = o_local[h_idx + 2] * o_rescale_factor;
-        if (h_idx + 3 < params.head_dim)
-            o_chunk_rescaled.w = o_local[h_idx + 3] * o_rescale_factor;
+    // --- Reduce FULL o_local and Write Output in chunks of 4 ---
+    for (uint h_chunk_idx = 0; h_chunk_idx < params.head_dim; h_chunk_idx += 4) {
+        // Load from o_local for the current chunk (will be fully accumulated and rescaled already)
+        float4 o_chunk_thread_local_rescaled = float4(0.0f);
+        if (h_chunk_idx < params.head_dim)     o_chunk_thread_local_rescaled.x = o_local[h_chunk_idx];
+        if (h_chunk_idx + 1 < params.head_dim) o_chunk_thread_local_rescaled.y = o_local[h_chunk_idx + 1];
+        if (h_chunk_idx + 2 < params.head_dim) o_chunk_thread_local_rescaled.z = o_local[h_chunk_idx + 2];
+        if (h_chunk_idx + 3 < params.head_dim) o_chunk_thread_local_rescaled.w = o_local[h_chunk_idx + 3];
 
+        // Use SIMD group reduction to sum this chunk across threads
         float4 simd_sum_chunk;
-        simd_sum_chunk.x = simd_sum(o_chunk_rescaled.x);
-        simd_sum_chunk.y = simd_sum(o_chunk_rescaled.y);
-        simd_sum_chunk.z = simd_sum(o_chunk_rescaled.z);
-        simd_sum_chunk.w = simd_sum(o_chunk_rescaled.w);
+        simd_sum_chunk.x = simd_sum(o_chunk_thread_local_rescaled.x);
+        simd_sum_chunk.y = simd_sum(o_chunk_thread_local_rescaled.y);
+        simd_sum_chunk.z = simd_sum(o_chunk_thread_local_rescaled.z);
+        simd_sum_chunk.w = simd_sum(o_chunk_thread_local_rescaled.w);
 
+        // SIMD group leaders write to shared memory
         if (simd_lane_id == 0 && simd_group_id < num_simd_groups) {
             G_simd_group_v_sums[simd_group_id] = simd_sum_chunk;
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
+        // Thread 0 combines SIMD group sums and writes final output
         if (local_thread_idx == 0) {
             float4 o_final_chunk = float4(0.0f);
-            for (uint sg = 0; sg < num_simd_groups; ++sg)
+            for (uint sg = 0; sg < num_simd_groups; ++sg) {
                 o_final_chunk += G_simd_group_v_sums[sg];
+            }
 
-            float inv_d = (d_final_global > 1e-9f) ? (1.0f / d_final_global) : 0.0f;
-            uint out_base = global_item_idx * params.head_dim + h_idx;
-            if (h_idx < params.head_dim)     output_buffer[out_base + 0] = (half)(o_final_chunk.x * inv_d);
-            if (h_idx + 1 < params.head_dim) output_buffer[out_base + 1] = (half)(o_final_chunk.y * inv_d);
-            if (h_idx + 2 < params.head_dim) output_buffer[out_base + 2] = (half)(o_final_chunk.z * inv_d);
-            if (h_idx + 3 < params.head_dim) output_buffer[out_base + 3] = (half)(o_final_chunk.w * inv_d);
+            // Apply normalization factor and write to output
+            o_final_chunk *= inv_d;
+
+            uint out_base = global_item_idx * params.head_dim + h_chunk_idx;
+            if (h_chunk_idx < params.head_dim)     output_buffer[out_base] = (half)(o_final_chunk.x);
+            if (h_chunk_idx + 1 < params.head_dim) output_buffer[out_base + 1] = (half)(o_final_chunk.y);
+            if (h_chunk_idx + 2 < params.head_dim) output_buffer[out_base + 2] = (half)(o_final_chunk.z);
+            if (h_chunk_idx + 3 < params.head_dim) output_buffer[out_base + 3] = (half)(o_final_chunk.w);
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }

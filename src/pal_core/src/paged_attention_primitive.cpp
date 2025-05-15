@@ -420,22 +420,53 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
   size_t G_final_sum_exp_for_item_size = 1;
   size_t G_simd_group_v_sums_size = kMaxSimdGroupsPerThreadgroup * 4; // float4 per SIMD group
 
-  // Calculate sizes with alignment padding (16-byte alignment)
-  auto align_to_16_bytes = [](size_t size_in_floats) -> size_t {
-    size_t size_in_bytes = size_in_floats * sizeof(float);
-    return ((size_in_bytes + 15) & ~15) / sizeof(float); // Round up to nearest 16-byte boundary (in float units)
-  };
+  // Calculate threadgroup memory with correct alignment of each section
+  const uint32_t head_dim_cpp = params_struct.head_dim; // Use the value from params_struct
+  const size_t threads_per_tg_cpp = threads_per_item_group; // From earlier calculation
+  const uint32_t num_simd_groups_cpp = (threads_per_tg_cpp + 31u) / 32u; // Consistent with kernel
 
-  size_t tg_memory_floats =
-      q_shmem_size +
-      align_to_16_bytes(G_partial_max_scores_size) +
-      align_to_16_bytes(G_simd_reduced_maxes_size) +
-      align_to_16_bytes(G_simd_reduced_adjusted_sum_exps_size) +
-      align_to_16_bytes(G_final_max_for_item_size) +
-      align_to_16_bytes(G_final_sum_exp_for_item_size) +
-      align_to_16_bytes(G_simd_group_v_sums_size);
+  uintptr_t current_offset_bytes = 0;
 
-  size_t tg_memory_bytes = tg_memory_floats * sizeof(float);
+  // 1. q_shmem: head_dim_cpp floats
+  size_t q_shmem_section_bytes = head_dim_cpp * sizeof(float);
+  current_offset_bytes += q_shmem_section_bytes;
+
+  // 2. G_partial_max_scores: threads_per_tg_cpp floats
+  current_offset_bytes = (current_offset_bytes + 15u) & ~15u; // Align start of this section
+  size_t G_partial_max_scores_section_bytes = threads_per_tg_cpp * sizeof(float);
+  current_offset_bytes += G_partial_max_scores_section_bytes;
+
+  // 3. G_simd_reduced_maxes: num_simd_groups_cpp floats
+  current_offset_bytes = (current_offset_bytes + 15u) & ~15u;
+  size_t G_simd_reduced_maxes_section_bytes = num_simd_groups_cpp * sizeof(float);
+  current_offset_bytes += G_simd_reduced_maxes_section_bytes;
+
+  // 4. G_simd_reduced_adjusted_sum_exps: num_simd_groups_cpp floats
+  current_offset_bytes = (current_offset_bytes + 15u) & ~15u;
+  size_t G_simd_reduced_adjusted_sum_exps_section_bytes = num_simd_groups_cpp * sizeof(float);
+  current_offset_bytes += G_simd_reduced_adjusted_sum_exps_section_bytes;
+
+  // 5. G_final_max_for_item: 1 float
+  current_offset_bytes = (current_offset_bytes + 15u) & ~15u;
+  size_t G_final_max_for_item_section_bytes = 1 * sizeof(float);
+  current_offset_bytes += G_final_max_for_item_section_bytes;
+
+  // 6. G_final_sum_exp_for_item: 1 float
+  current_offset_bytes = (current_offset_bytes + 15u) & ~15u;
+  size_t G_final_sum_exp_for_item_section_bytes = 1 * sizeof(float);
+  current_offset_bytes += G_final_sum_exp_for_item_section_bytes;
+
+  // 7. G_simd_group_v_sums: num_simd_groups_cpp float4s
+  current_offset_bytes = (current_offset_bytes + 15u) & ~15u;
+  size_t G_simd_group_v_sums_section_bytes = num_simd_groups_cpp * sizeof(float) * 4; // sizeof(float4)
+  current_offset_bytes += G_simd_group_v_sums_section_bytes;
+
+  // The final total tg_memory_bytes is the current_offset_bytes,
+  // which is the end of the last allocated aligned section.
+  // It must also be a multiple of 16 for the total length.
+  size_t tg_memory_bytes = (current_offset_bytes + 15u) & ~15u;
+
+  spdlog::debug("[PAL Primitive] Calculated tg_memory_bytes (aligned sections): {}", tg_memory_bytes);
 
   // Validate against device's maximum threadgroup memory limit
   // We already got max_tg_memory_bytes from device_ptr earlier
