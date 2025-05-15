@@ -80,10 +80,10 @@ using namespace metal;
     uint        simd_lane_id                        [[thread_index_in_simdgroup]],
     uint        simd_group_id                       [[simdgroup_index_in_threadgroup]]
 ) {
-    // --- Create a local, corrected scale value using rsqrt for better performance ---
+    // --- 1/10: Calculate Inverse Sqrt Head Dim ---
     float inv_sqrt_head_dim_val = calculate_inv_sqrt_head_dim(params.head_dim);
 
-    // --- Basic input validation ---
+    // --- 2/10: Basic Input Validation ---
     // Early exit for degenerate case where head_dim is zero
     if (params.head_dim == 0) {
         // Zero the output and exit (no need for loop if head_dim is 0, but for safety if it's called)
@@ -91,18 +91,18 @@ using namespace metal;
         return;
     }
 
-    // --- Thread-Local Accumulators for Pass 1 (Online Softmax stats) ---
+    // --- 3/10: Thread-Local Accumulators for Online Softmax ---
     float m_local = -INFINITY; // Maximum score accumulator
     float d_local = 0.0f;      // Sum of scaled exponentials accumulator
 
     // Note: o_local (large array) is removed. Output O will be computed in Pass 2 using o_tile.
 
-    // --- Thread Identifiers ---
+    // --- 4/10: Thread Identifiers & SIMD Group Info ---
     uint global_item_idx = tg_pos_in_grid.x;    // Identifies the query-head item
     uint local_thread_idx = local_idx_in_tg;    // Thread ID within this group
     const uint num_simd_groups = max(1u, (tg_dim.x + kSimdLanesPerGroup - 1) / kSimdLanesPerGroup); // Calculate number of actual SIMD groups
 
-    // --- Carve the dynamic threadgroup buffer into logical sub-arrays ---
+    // --- 5/10: Threadgroup Memory Carving ---
     // Layout for Pass 1 and Pass 2 reductions.
     // q_shmem, G_partial_max_scores, G_simd_reduced_maxes, G_simd_reduced_adjusted_sum_exps,
     // G_final_max_for_item, G_final_sum_exp_for_item are primarily for Pass 1.
@@ -149,7 +149,7 @@ using namespace metal;
     threadgroup float* K_tile = nullptr; // Not actually allocated in tg memory
     threadgroup float* V_tile = nullptr; // Not actually allocated in tg memory
 
-    // --- Determine Q-vector pointer for this item ---
+    // --- 6/10: Q-Vector Pointer Calculation & Staging ---
     device const half* q_vector_item_ptr;
     if (params.num_q_heads > 1) {
         uint item_token_idx = global_item_idx / params.num_q_heads;
@@ -161,13 +161,13 @@ using namespace metal;
         q_vector_item_ptr = queries_in + (global_item_idx * params.head_dim);
     }
 
-    // --- Stage Q-vector into shared memory and pre-scale with inv_sqrt_head_dim_val ---
+    // --- 6.1/10: Stage Q-Vector into Shared Memory ---
     for (uint i = local_thread_idx; i < params.head_dim; i += tg_dim.x) {
         q_shmem[i] = (float)q_vector_item_ptr[i] * inv_sqrt_head_dim_val;
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    // --- Determine this item's overall history and sequence length ---
+    // --- 7/10: History & Sequence Length Setup ---
     uint token_idx_for_sideband_lookup;
     if (params.num_q_heads > 1) {
         token_idx_for_sideband_lookup = global_item_idx / params.num_q_heads;
@@ -208,7 +208,7 @@ using namespace metal;
         // Given host-side clamps, this state should ideally not be reached.
     }
 
-    // Initialize global softmax stats in shared memory
+    // --- 8/10: Initialize Global Softmax Stats ---
     if (local_thread_idx == 0) {
         (*tg_global_stats).x = -INFINITY; // m_global
         (*tg_global_stats).y = 0.0f; // s_global
@@ -216,11 +216,11 @@ using namespace metal;
     }
     threadgroup_barrier(mem_flags::mem_threadgroup); // Ensure initialized before use
 
-    // Per-thread, D-tiled output accumulator
+    // --- 9/10: Setup Output Accumulator ---
     // Use a fixed-size buffer, but the actual processing will be based on params.d_chunk_size_runtime
     float acc_tile_local[kDefaultAccTileChunkSize]; // Thread-local stack array for a chunk of head_dim
 
-    // Outer loop for D-tiling (processing head_dim in chunks)
+    // --- 10/10: Main Attention Computation (D-Tiling) ---
     for (uint d_base_offset = 0; d_base_offset < params.head_dim; d_base_offset += params.d_chunk_size_runtime) {
         uint current_d_chunk_len = min(min(params.d_chunk_size_runtime, kDefaultAccTileChunkSize),
                                        params.head_dim - d_base_offset);
@@ -230,7 +230,7 @@ using namespace metal;
             acc_tile_local[i] = 0.0f;
         }
 
-        // Main History Tiling Loop
+        // --- 10.1/10: History Tiling Loop ---
         if (item_effective_history_length > 0) {
             for (uint hist_tile_start = 0; hist_tile_start < item_effective_history_length; hist_tile_start += params.tile_size_T_runtime) {
                 uint current_hist_tile_actual_len = min(params.tile_size_T_runtime, item_effective_history_length - hist_tile_start);
@@ -238,7 +238,7 @@ using namespace metal;
                 /* Per-SIMD-group 32-byte (kSimdPaddingFloats-float) lane-shift for score_tile */
                 threadgroup float* score_tile = score_tile_base_all + simd_group_id * kSimdPaddingFloats;
 
-                // --- Phase 1: Compute and Stash Raw Scores for the current history tile ---
+                // --- 10.1.1/10: History Tile - Score Calculation & Stashing ---
                 if (local_thread_idx < current_hist_tile_actual_len) {
                     uint actual_hist_token_pos = hist_tile_start + local_thread_idx;
 
@@ -272,7 +272,7 @@ using namespace metal;
                 }
                 threadgroup_barrier(mem_flags::mem_threadgroup); // Ensure all raw scores for the tile are in score_tile
 
-                // --- Find m_local_tile (max score in current score_tile) ---
+                // --- 10.1.2/10: History Tile - Local Max (m_local_tile) Reduction ---
                 float current_thread_score_for_max_reduction = (local_thread_idx < current_hist_tile_actual_len) ? score_tile[local_thread_idx] : -INFINITY;
 
                 tg_partial_reduce_scratch[local_thread_idx] = current_thread_score_for_max_reduction;
@@ -294,7 +294,7 @@ using namespace metal;
                 threadgroup_barrier(mem_flags::mem_threadgroup);
                 m_local_tile_val = tg_simd_reduce_scratch[0]; // All threads get the correct m_local_tile_val for this tile
 
-                // --- Stash exp(score - m_local_tile_val) in score_tile ---
+                // --- 10.1.3/10: History Tile - Update Score Tile with Exponentiated Values ---
                 if (local_thread_idx < current_hist_tile_actual_len) {
                     score_tile[local_thread_idx] = exp(max(score_tile[local_thread_idx] - m_local_tile_val, params.log_exp_min_clamp));
                 } else {
@@ -302,7 +302,7 @@ using namespace metal;
                 }
                 threadgroup_barrier(mem_flags::mem_threadgroup); // Ensure all exp_vals are in score_tile
 
-                // --- Compute d_local_tile_total (sum of current score_tile) ---
+                // --- 10.1.4/10: History Tile - Local Sum (d_local_tile) Reduction ---
                 float thread_s_val_for_reduction = (local_thread_idx < current_hist_tile_actual_len) ? score_tile[local_thread_idx] : 0.0f;
 
                 // Perform SIMD reduction directly on register values (no barrier needed)
@@ -323,7 +323,7 @@ using namespace metal;
                 threadgroup_barrier(mem_flags::mem_threadgroup);
                 d_local_tile_total_val = tg_simd_exp_sums_scratch[0]; // All threads get d_local_tile_total_val
 
-                // --- Update m_global, s_global, and rescale acc_tile_local for current D-chunk ---
+                // --- 10.1.5/10: History Tile - Update Global Stats & Rescale Accumulator ---
                 // Default value if m_global doesn't change
                 float scale_factor_atomic = 1.0f;
 
@@ -351,7 +351,7 @@ using namespace metal;
 
                 // TODO: Consider Kahan summation for s_global in a future optimization
 
-                // --- Accumulate Weighted V into acc_tile_local (for current D-chunk: d_base_offset to d_base_offset + current_d_chunk_len) ---
+                // --- 10.1.6/10: History Tile - Weighted V Accumulation ---
                 if (local_thread_idx < current_hist_tile_actual_len) {
                     uint actual_hist_token_pos = hist_tile_start + local_thread_idx;
 
@@ -396,7 +396,7 @@ using namespace metal;
             } // End history tiling loop
         } // End if history > 0
 
-        // Inside D-tiling loop, AFTER history tiling loop
+        // --- 10.2/10: D-Chunk - Final Normalization & Output Write ---
         // acc_tile_local holds unnormalized sum for current D-chunk
         // s_global is the final denominator for the entire item
 
