@@ -144,6 +144,20 @@ using namespace metal;
     current_offset = (current_offset + 63u) & ~63u;
     threadgroup float4* G_simd_group_v_sums = (threadgroup float4*)current_offset; // num_simd_groups float4s (for Pass 2 o_tile reduction)
 
+    // K/V and score tiles for history processing
+    current_offset = (current_offset + 63u) & ~63u; // Align start of K_tile
+    threadgroup float* K_tile = (threadgroup float*)current_offset;
+                               // Size: params.tile_size_T_runtime * params.head_dim floats
+
+    // V_tile reuses K_tile's memory space
+    threadgroup float* V_tile = K_tile;
+
+    // score_tile starts after K_tile's memory region
+    current_offset = (uintptr_t)(K_tile + (ulong)params.tile_size_T_runtime * (ulong)params.head_dim);
+    current_offset = (current_offset + 63u) & ~63u; // Align start of score_tile
+    threadgroup float* score_tile = (threadgroup float*)current_offset;
+                                  // Size: params.tile_size_T_runtime floats
+
     // --- Determine Q-vector pointer for this item ---
     device const half* q_vector_item_ptr;
     if (params.num_q_heads > 1) {
@@ -189,269 +203,262 @@ using namespace metal;
     uint item_effective_history_length = min(item_current_q_token_logical_pos,
                                          item_actual_sequence_length);
 
-    // --- PASS 1: Calculate m_final_global and d_final_global ---
-    if (item_effective_history_length == 0) {
-        // If no history, m_final_global = 0, d_final_global = 0 (or 1 to avoid div by zero, but 0 means no contribution).
-        // Output will be zeroed in Pass 2.
-        if (local_thread_idx == 0) {
-            *G_final_max_for_item = 0.0f;
-            *G_final_sum_exp_for_item = 0.0f; // Or a safe non-zero like 1.0f if inv_d is used later
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup); // Ensure all threads see this before potentially exiting/starting Pass 2
-    } else {
-        // --- Distribute history tokens among threads in the group for Pass 1---
-    uint num_hist_tokens_per_thread =
-        (item_effective_history_length + tg_dim.x - 1) / tg_dim.x;
-    uint hist_start_idx = local_thread_idx * num_hist_tokens_per_thread;
-    uint hist_end_idx = min((local_thread_idx + 1) * num_hist_tokens_per_thread,
-                          item_effective_history_length);
+    // Ensure tile_size_T_runtime is valid and not exceeding a practical limit for K_tile/V_tile/score_tile arrays.
+    // This complements C++ side checks. Max of 512 for T is a generous upper bound for practical TG mem.
+    if (params.tile_size_T_runtime == 0 || params.tile_size_T_runtime > 512) {
+        // This indicates a misconfiguration from the host.
+        // For now, we can't easily "error out" and return an error code.
+        // If this happens, the kernel might produce incorrect results or behave unpredictably.
+        // A proper solution would be an error flag written to output, or ensure host never sends this.
+        // Given host-side clamps, this state should ideally not be reached.
+    }
 
-        // --- Pass 1: History scan for m_local and d_local ---
-    for (uint hist_token_idx = hist_start_idx; hist_token_idx < hist_end_idx; ++hist_token_idx) {
-        uint target_historical_logical_token_pos = hist_token_idx;
-        uint logical_block_idx = target_historical_logical_token_pos / params.tokens_per_page;
-        uint token_slot_in_page = target_historical_logical_token_pos % params.tokens_per_page;
+    // Initialize global stats and thread-local D-tiled output accumulator
+    float m_global = -INFINITY;
+    float s_global = 0.0f;
 
-            if (logical_block_idx >= params.max_logical_blocks_per_seq) break;
+    // Per-thread, D-tiled output accumulator
+    // Use existing kHeadDimProcessingChunk constant instead of declaring a new one
+    float acc_tile_local[kHeadDimProcessingChunk]; // Thread-local stack array for a chunk of head_dim
 
-            uint page_table_flat_idx = item_seq_idx_in_batch * params.max_logical_blocks_per_seq + logical_block_idx;
-        uint physical_page_id = page_table_in[page_table_flat_idx];
+    // Outer loop for D-tiling (processing head_dim in chunks)
+    for (uint d_base_offset = 0; d_base_offset < params.head_dim; d_base_offset += kHeadDimProcessingChunk) {
+        uint current_d_chunk_len = min(kHeadDimProcessingChunk, params.head_dim - d_base_offset);
 
-            if (physical_page_id >= params.num_physical_pages_in_pool) continue;
-
-            uint q_head_for_kv_map_within_item = (params.num_q_heads > 1) ? (global_item_idx % params.num_q_heads) : 0;
-        uint target_kv_head_idx = 0;
-        if (params.num_kv_heads > 0) {
-                if (params.num_q_heads > params.num_kv_heads) { // GQA
-                    target_kv_head_idx = q_head_for_kv_map_within_item / (params.num_q_heads / params.num_kv_heads);
-                } else { // MHA or MQA (num_q_heads <= num_kv_heads)
-                target_kv_head_idx = q_head_for_kv_map_within_item;
-            }
-                if (target_kv_head_idx >= params.num_kv_heads) target_kv_head_idx %= params.num_kv_heads; // Safety
-            }
-
-            ulong k_base_offset = (ulong)physical_page_id * params.tokens_per_page * params.num_kv_heads * params.head_dim +
-                                  (ulong)token_slot_in_page * params.num_kv_heads * params.head_dim +
-                                  (ulong)target_kv_head_idx * params.head_dim;
-            device const half* k_vector_ptr = k_cache_pool_in + k_base_offset;
-
-        float current_score_fp32 = 0.0f;
-
-        if (params.head_dim > 0) {
-            // C++ already validates params.head_dim % 4 == 0, so we can always use vectorized path
-            device const packed_half4* k_ptr_h4 = reinterpret_cast<device const packed_half4*>(k_vector_ptr);
-            for (uint i = 0; i < params.head_dim / 4; ++i) {
-                float4 k_vec_f4 = float4(k_ptr_h4[i]);
-                float4 q_vec_f4 = { q_shmem[i*4+0], q_shmem[i*4+1], q_shmem[i*4+2], q_shmem[i*4+3] };
-                current_score_fp32 += dot(q_vec_f4, k_vec_f4);
-            }
+        // Initialize local accumulator tile for this d_chunk
+        for (uint i = 0; i < current_d_chunk_len; ++i) {
+            acc_tile_local[i] = 0.0f;
         }
 
-        float new_m_local = max(m_local, current_score_fp32);
-            float alpha = fast::exp(max(m_local - new_m_local, params.log_exp_min_clamp));
-        float exponent_for_p = current_score_fp32 - new_m_local;
-            float p_val = fast::exp(max(exponent_for_p, params.log_exp_min_clamp));
+        // Main History Tiling Loop
+        if (item_effective_history_length > 0) {
+            for (uint hist_tile_start = 0; hist_tile_start < item_effective_history_length; hist_tile_start += params.tile_size_T_runtime) {
+                uint current_hist_tile_actual_len = min(params.tile_size_T_runtime, item_effective_history_length - hist_tile_start);
 
-        d_local = d_local * alpha + p_val;
-        m_local = new_m_local;
-        } // End of Pass 1 history scan loop
+                // --- Phase 1: Compute and Stash Raw Scores for the current history tile ---
+                if (local_thread_idx < current_hist_tile_actual_len) {
+                    uint actual_hist_token_pos = hist_tile_start + local_thread_idx;
 
-    // --- Threadgroup Reduction for m_local (to find m_final_global) ---
-        G_partial_max_scores[local_thread_idx] = m_local;
-    threadgroup_barrier(mem_flags::mem_threadgroup);
+                    // Get K-vector pointer for actual_hist_token_pos
+                    // (This is the existing complex logic involving page_table, seq_idx, kv_head_idx etc.)
+                    uint logical_block_idx_k = actual_hist_token_pos / params.tokens_per_page;
+                    uint token_slot_in_page_k = actual_hist_token_pos % params.tokens_per_page;
 
-        float simd_max_m = simd_max(m_local);
-    if (simd_lane_id == 0 && simd_group_id < num_simd_groups) {
-        G_simd_reduced_maxes[simd_group_id] = simd_max_m;
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
+                    // Default to a state that would lead to zero contribution if checks fail
+                    float score_val = -INFINITY;
 
-        float m_final_global_val = -INFINITY; // Renamed to avoid clash with later variable
-    if (local_thread_idx == 0) {
-            m_final_global_val = G_simd_reduced_maxes[0];
-            for (uint i = 1; i < num_simd_groups; ++i) {
-                m_final_global_val = max(m_final_global_val, G_simd_reduced_maxes[i]);
-            }
-            if (m_final_global_val == -INFINITY) m_final_global_val = 0.0f;
-            *G_final_max_for_item = m_final_global_val;
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-        m_final_global_val = *G_final_max_for_item;
+                    if (logical_block_idx_k < params.max_logical_blocks_per_seq) {
+                        uint page_table_flat_idx_k = item_seq_idx_in_batch * params.max_logical_blocks_per_seq + logical_block_idx_k;
+                        uint physical_page_id_k = page_table_in[page_table_flat_idx_k];
 
-        // --- Rescale d_local and Reduce d_local (for d_final_global) ---
-        float d_rescale_exponent = m_local - m_final_global_val; // Use thread's m_local and final global m
-        float d_local_rescaled = d_local * fast::exp(d_rescale_exponent);
+                        if (physical_page_id_k < params.num_physical_pages_in_pool) {
+                            uint q_head_for_kv_map_k = (params.num_q_heads > 1) ? (global_item_idx % params.num_q_heads) : 0;
+                            uint target_kv_head_idx_k = 0;
+                            if (params.num_kv_heads > 0) {
+                                if (params.num_q_heads > params.num_kv_heads) { // GQA
+                                    target_kv_head_idx_k = q_head_for_kv_map_k / (params.num_q_heads / params.num_kv_heads);
+                                } else { // MHA or MQA
+                                    target_kv_head_idx_k = q_head_for_kv_map_k;
+                                }
+                                if (target_kv_head_idx_k >= params.num_kv_heads) target_kv_head_idx_k %= params.num_kv_heads;
+                            }
 
-    float simd_sum_d_rescaled = simd_sum(d_local_rescaled);
-    if (simd_lane_id == 0 && simd_group_id < num_simd_groups) {
-        G_simd_reduced_adjusted_sum_exps[simd_group_id] = simd_sum_d_rescaled;
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
+                            ulong k_base_offset_val = (ulong)physical_page_id_k * params.tokens_per_page * params.num_kv_heads * params.head_dim +
+                                                   (ulong)token_slot_in_page_k * params.num_kv_heads * params.head_dim +
+                                                   (ulong)target_kv_head_idx_k * params.head_dim;
+                            device const half* k_vector_ptr_val = k_cache_pool_in + k_base_offset_val;
 
-        float d_final_global_val = 0.0f; // Renamed
-    if (local_thread_idx == 0) {
-        for (uint i = 0; i < num_simd_groups; ++i) {
-                d_final_global_val += G_simd_reduced_adjusted_sum_exps[i];
-            }
-            *G_final_sum_exp_for_item = d_final_global_val;
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-        // d_final_global_val is now in G_final_sum_exp_for_item, readable by all threads.
-    } // End of if(item_effective_history_length > 0) for Pass 1
-
-    // All threads read the finalized m_final_global and d_final_global
-    float m_final_global = *G_final_max_for_item;
-    float d_final_global = *G_final_sum_exp_for_item;
-    float inv_d_final_global = (d_final_global > 1e-9f) ? (1.0f / d_final_global) : 0.0f;
-
-    // --- PASS 2: Compute O in tiles ---
-    // Thread-local tile for accumulating V contributions for a head_dim chunk
-    thread float o_tile[kHeadDimProcessingChunk];
-
-    if (item_effective_history_length == 0) { // If no history, output must be zero
-        for (uint h_offset = 0; h_offset < params.head_dim; h_offset += kHeadDimProcessingChunk) {
-            if (local_thread_idx == 0) { // Only one thread needs to write zeros for the whole chunk
-                for (uint i = 0; i < kHeadDimProcessingChunk; ++i) {
-                    uint dim_idx = h_offset + i;
-                    if (dim_idx < params.head_dim) {
-                         output_buffer[global_item_idx * params.head_dim + dim_idx] = 0.0h;
-                    }
-                }
-            }
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup); // ensure writes complete if other threads skip Pass 2 loop
-        return; // Exit after zeroing
-    }
-
-
-    // Loop over head_dim in chunks of kHeadDimProcessingChunk
-    for (uint h_offset = 0; h_offset < params.head_dim; h_offset += kHeadDimProcessingChunk) {
-        // Initialize o_tile for this chunk
-        for (uint i = 0; i < kHeadDimProcessingChunk; ++i) {
-            o_tile[i] = 0.0f;
-        }
-
-        // Pass 2: Re-scan history to accumulate V into o_tile
-        // Each thread processes its assigned history tokens
-        uint num_hist_tokens_per_thread_pass2 = (item_effective_history_length + tg_dim.x - 1) / tg_dim.x;
-        uint hist_start_idx_pass2 = local_thread_idx * num_hist_tokens_per_thread_pass2;
-        uint hist_end_idx_pass2 = min((local_thread_idx + 1) * num_hist_tokens_per_thread_pass2, item_effective_history_length);
-
-        for (uint hist_token_idx = hist_start_idx_pass2; hist_token_idx < hist_end_idx_pass2; ++hist_token_idx) {
-            uint target_historical_logical_token_pos = hist_token_idx;
-            uint logical_block_idx = target_historical_logical_token_pos / params.tokens_per_page;
-            uint token_slot_in_page = target_historical_logical_token_pos % params.tokens_per_page;
-
-            if (logical_block_idx >= params.max_logical_blocks_per_seq) break;
-
-            uint page_table_flat_idx = item_seq_idx_in_batch * params.max_logical_blocks_per_seq + logical_block_idx;
-            uint physical_page_id = page_table_in[page_table_flat_idx];
-
-            if (physical_page_id >= params.num_physical_pages_in_pool) continue;
-
-            uint q_head_for_kv_map_within_item = (params.num_q_heads > 1) ? (global_item_idx % params.num_q_heads) : 0;
-            uint target_kv_head_idx = 0;
-            if (params.num_kv_heads > 0) {
-                 if (params.num_q_heads > params.num_kv_heads) { // GQA
-                    target_kv_head_idx = q_head_for_kv_map_within_item / (params.num_q_heads / params.num_kv_heads);
-                } else { // MHA or MQA
-                    target_kv_head_idx = q_head_for_kv_map_within_item;
-                }
-                if (target_kv_head_idx >= params.num_kv_heads) target_kv_head_idx %= params.num_kv_heads; // Safety
-            }
-
-            ulong k_base_offset = (ulong)physical_page_id * params.tokens_per_page * params.num_kv_heads * params.head_dim +
-                                  (ulong)token_slot_in_page * params.num_kv_heads * params.head_dim +
-                                  (ulong)target_kv_head_idx * params.head_dim;
-            device const half* k_vector_ptr = k_cache_pool_in + k_base_offset;
-
-            ulong v_base_offset = (ulong)physical_page_id * params.tokens_per_page * params.num_kv_heads * params.head_dim +
-                                  (ulong)token_slot_in_page * params.num_kv_heads * params.head_dim +
-                                  (ulong)target_kv_head_idx * params.head_dim;
-            device const half* v_vector_full_ptr = v_cache_pool_in + v_base_offset;
-
-
-            // Compute Q·K score (already scaled as q_shmem is pre-scaled)
-            float current_score_fp32 = 0.0f;
-
-            if (params.head_dim > 0) {
-                // C++ already validates params.head_dim % 4 == 0, so we can always use vectorized path
-                device const packed_half4* k_ptr_h4 = reinterpret_cast<device const packed_half4*>(k_vector_ptr);
-                for (uint i = 0; i < params.head_dim / 4; ++i) {
-                    float4 k_vec_f4 = float4(k_ptr_h4[i]);
-                    float4 q_vec_f4 = { q_shmem[i*4+0], q_shmem[i*4+1], q_shmem[i*4+2], q_shmem[i*4+3] };
-                    current_score_fp32 += dot(q_vec_f4, k_vec_f4);
-                }
-            }
-
-            // Calculate final attention probability p_val = fast::exp(score - m_final) / d_final
-            float exp_score_minus_m_final = fast::exp(max(current_score_fp32 - m_final_global, params.log_exp_min_clamp));
-            float p_attn_weight = exp_score_minus_m_final * inv_d_final_global;
-
-
-            // Accumulate V contributions into o_tile for the current head_dim chunk
-            // V vector pointer for the current h_offset chunk
-            device const half* v_vector_chunk_ptr = v_vector_full_ptr + h_offset;
-
-            // We know kHeadDimProcessingChunk is 64 which is a multiple of 4
-            // and that params.head_dim is a multiple of 4
-            // We should still keep the boundary checks for the last chunk
-
-            // Use vectorized loads in 4-element chunks when possible
-            for (uint i = 0; i < kHeadDimProcessingChunk / 4; ++i) {
-                if (h_offset + i * 4 + 3 < params.head_dim) { // Boundary check for complete vector
-                    float4 v_chunk_f4 = float4(reinterpret_cast<device const packed_half4*>(v_vector_chunk_ptr)[i]);
-                    o_tile[i*4+0] += p_attn_weight * v_chunk_f4.x;
-                    o_tile[i*4+1] += p_attn_weight * v_chunk_f4.y;
-                    o_tile[i*4+2] += p_attn_weight * v_chunk_f4.z;
-                    o_tile[i*4+3] += p_attn_weight * v_chunk_f4.w;
-                } else {
-                    // Handle tail case (last partial chunk)
-                    for(uint j=0; j < 4; ++j) {
-                        if (h_offset + i * 4 + j < params.head_dim) {
-                            o_tile[i*4+j] += p_attn_weight * (float)v_vector_chunk_ptr[i*4+j];
+                            // Compute QK dot product (vectorized, assuming head_dim % 4 == 0 from C++ validation)
+                            score_val = 0.0f; // Reset for actual computation
+                            for (uint d_qk = 0; d_qk < params.head_dim; d_qk += 4) {
+                                float4 q_chunk = float4(q_shmem[d_qk], q_shmem[d_qk+1], q_shmem[d_qk+2], q_shmem[d_qk+3]);
+                                float4 k_chunk = float4((float)k_vector_ptr_val[d_qk], (float)k_vector_ptr_val[d_qk+1],
+                                                        (float)k_vector_ptr_val[d_qk+2], (float)k_vector_ptr_val[d_qk+3]);
+                                score_val += dot(q_chunk, k_chunk);
+                            }
                         }
                     }
+                    score_tile[local_thread_idx] = score_val; // Stash the raw score
+                } else {
+                    // Threads outside current_hist_tile_actual_len write -INF to their score_tile slot for padding
+                    score_tile[local_thread_idx] = -INFINITY;
                 }
+                threadgroup_barrier(mem_flags::mem_threadgroup); // Ensure all raw scores for the tile are in score_tile
+
+                // --- Find m_local_tile (max score in current score_tile) ---
+                float current_thread_score_for_max_reduction = (local_thread_idx < current_hist_tile_actual_len) ? score_tile[local_thread_idx] : -INFINITY;
+
+                G_partial_max_scores[local_thread_idx] = current_thread_score_for_max_reduction;
+                threadgroup_barrier(mem_flags::mem_threadgroup); // Ensure all G_partial_max_scores are written
+
+                float simd_max_m_tile_val = simd_max(G_partial_max_scores[local_thread_idx]);
+                if (simd_lane_id == 0) { G_simd_reduced_maxes[simd_group_id] = simd_max_m_tile_val; }
+                threadgroup_barrier(mem_flags::mem_threadgroup); // Ensure G_simd_reduced_maxes written
+
+                float m_local_tile_val = -INFINITY;
+                if (local_thread_idx == 0) {
+                    m_local_tile_val = (current_hist_tile_actual_len > 0) ? G_simd_reduced_maxes[0] : 0.0f; // Default to 0 if tile empty
+                    for (uint sg_idx = 1; sg_idx < num_simd_groups; ++sg_idx) {
+                        m_local_tile_val = max(m_local_tile_val, G_simd_reduced_maxes[sg_idx]);
+                    }
+                    if (m_local_tile_val == -INFINITY && current_hist_tile_actual_len > 0) m_local_tile_val = 0.0f;
+                    *G_final_max_for_item = m_local_tile_val; // Use G_final_max_for_item to broadcast m_local_tile_val
+                }
+                threadgroup_barrier(mem_flags::mem_threadgroup);
+                m_local_tile_val = *G_final_max_for_item; // All threads get the correct m_local_tile_val for this tile
+
+                // --- Stash exp(score - m_local_tile_val) in score_tile ---
+                if (local_thread_idx < current_hist_tile_actual_len) {
+                    score_tile[local_thread_idx] = exp(max(score_tile[local_thread_idx] - m_local_tile_val, params.log_exp_min_clamp));
+                } else {
+                    score_tile[local_thread_idx] = 0.0f; // Non-contributing part of the tile
+                }
+                threadgroup_barrier(mem_flags::mem_threadgroup); // Ensure all exp_vals are in score_tile
+
+                // --- Compute d_local_tile_total (sum of current score_tile) ---
+                float thread_s_val_for_reduction = (local_thread_idx < current_hist_tile_actual_len) ? score_tile[local_thread_idx] : 0.0f;
+
+                // Repurpose G_partial_max_scores for partial sums
+                G_partial_max_scores[local_thread_idx] = thread_s_val_for_reduction;
+                threadgroup_barrier(mem_flags::mem_threadgroup); // Ensure G_partial_max_scores written
+
+                // Repurpose G_simd_reduced_maxes for SIMD sums
+                float simd_sum_d_tile_val = simd_sum(G_partial_max_scores[local_thread_idx]);
+                if (simd_lane_id == 0) { G_simd_reduced_maxes[simd_group_id] = simd_sum_d_tile_val; }
+                threadgroup_barrier(mem_flags::mem_threadgroup); // Ensure G_simd_reduced_maxes written
+
+                float d_local_tile_total_val = 0.0f;
+                if (local_thread_idx == 0) {
+                    for (uint sg_idx = 0; sg_idx < num_simd_groups; ++sg_idx) {
+                        d_local_tile_total_val += G_simd_reduced_maxes[sg_idx];
+                    }
+                    // Use G_final_sum_exp_for_item to broadcast d_local_tile_total_val
+                    *G_final_sum_exp_for_item = d_local_tile_total_val;
+                }
+                threadgroup_barrier(mem_flags::mem_threadgroup);
+                d_local_tile_total_val = *G_final_sum_exp_for_item; // All threads get d_local_tile_total_val
+
+                // --- Update m_global, s_global, and rescale acc_tile_local for current D-chunk ---
+                float scale_factor_for_acc_and_s = 1.0f; // Default if m_global doesn't change
+
+                if (m_local_tile_val > m_global) {
+                    scale_factor_for_acc_and_s = exp(max(m_global - m_local_tile_val, params.log_exp_min_clamp));
+                    m_global = m_local_tile_val; // Update thread-local m_global
+                }
+
+#ifdef DEBUG
+                if (!isfinite(scale_factor_for_acc_and_s)) {
+                    // Set to a safe value to prevent NaN propagation
+                    scale_factor_for_acc_and_s = 0.0f;
+                }
+#endif
+
+                // Update thread-local s_global
+                s_global = s_global * scale_factor_for_acc_and_s +
+                           (d_local_tile_total_val * exp(max(m_local_tile_val - m_global, params.log_exp_min_clamp)));
+                           // Note: if m_global was just updated to m_local_tile_val, then exp(m_local_tile_val - m_global) is exp(0)=1.
+                           // If m_local_tile_val <= m_global, then scale_factor_for_acc_and_s was 1.0.
+
+                // Rescale the current D-chunk in acc_tile_local by scale_factor_for_acc_and_s
+                // This loop is over the 'current_d_chunk_len' defined by the outer D-tiling loop.
+                for (uint i = 0; i < current_d_chunk_len; ++i) { // current_d_chunk_len from outer d_base_offset loop
+                    acc_tile_local[i] *= scale_factor_for_acc_and_s;
+                }
+
+                // --- Accumulate Weighted V into acc_tile_local (for current D-chunk: d_base_offset to d_base_offset + current_d_chunk_len) ---
+                if (local_thread_idx < current_hist_tile_actual_len) {
+                    uint actual_hist_token_pos = hist_tile_start + local_thread_idx;
+
+                    // Get V-vector pointer (direct read from v_cache_pool_in)
+                    uint logical_block_idx_v = actual_hist_token_pos / params.tokens_per_page;
+                    // No need to re-check page table validity if K was valid from same logical_block_idx
+                    // Assuming K and V pages are consistent.
+                    uint token_slot_in_page_v = actual_hist_token_pos % params.tokens_per_page;
+                    uint q_head_for_kv_map_v = (params.num_q_heads > 1) ? (global_item_idx % params.num_q_heads) : 0;
+                    uint target_kv_head_idx_v = 0; // Calculate as done for K
+                    if (params.num_kv_heads > 0) {
+                        if (params.num_q_heads > params.num_kv_heads) {
+                            target_kv_head_idx_v = q_head_for_kv_map_v / (params.num_q_heads / params.num_kv_heads);
+                        } else {
+                            target_kv_head_idx_v = q_head_for_kv_map_v;
+                        }
+                        if (target_kv_head_idx_v >= params.num_kv_heads) target_kv_head_idx_v %= params.num_kv_heads;
+                    }
+                    ulong v_base_offset_val = (ulong)page_table_in[item_seq_idx_in_batch * params.max_logical_blocks_per_seq + logical_block_idx_v] * params.tokens_per_page * params.num_kv_heads * params.head_dim +
+                                           (ulong)token_slot_in_page_v * params.num_kv_heads * params.head_dim +
+                                           (ulong)target_kv_head_idx_v * params.head_dim;
+                    device const half* v_vector_ptr_val = v_cache_pool_in + v_base_offset_val;
+
+                    // Calculate final weight component: exp(raw_score - m_global)
+                    // score_tile[local_thread_idx] = exp(raw_score - m_local_tile_val)
+                    // Need to multiply by exp(m_local_tile_val - m_global)
+                    float w_numerator_global_scaled = score_tile[local_thread_idx] *
+                                                     exp(max(m_local_tile_val - m_global, params.log_exp_min_clamp));
+
+                    // Accumulate into the D-chunk (acc_tile_local)
+                    // current_d_chunk_len and d_base_offset are from the outer D-tiling loop.
+                    for (uint d_idx_in_chunk = 0; d_idx_in_chunk < current_d_chunk_len; ++d_idx_in_chunk) {
+                        uint actual_d_dim_idx = d_base_offset + d_idx_in_chunk;
+                        // Outer D-loop guarantees the chunk fits within head_dim
+                        float v_comp = (float)v_vector_ptr_val[actual_d_dim_idx]; // Cast to float once
+                        acc_tile_local[d_idx_in_chunk] += w_numerator_global_scaled * v_comp;
+                    }
+                }
+
+                threadgroup_barrier(mem_flags::mem_threadgroup); // End of history tile processing
+            } // End history tiling loop
+        } // End if history > 0
+
+        // Inside D-tiling loop, AFTER history tiling loop
+        // acc_tile_local holds unnormalized sum for current D-chunk
+        // s_global is the final denominator for the entire item
+
+        float inv_s_global = (s_global > 1e-9f) ? (1.0f / s_global) : 0.0f;
+
+        // Normalize the current acc_tile_local D-chunk
+        for (uint i = 0; i < current_d_chunk_len; ++i) {
+            acc_tile_local[i] *= inv_s_global;
+        }
+
+        // Reduce the now-normalized acc_tile_local D-chunk across the threadgroup and write to output_buffer
+        // This uses the G_simd_group_v_sums scratch space and logic from TDD-8.1
+        for (uint i = 0; i < current_d_chunk_len; i += 4) { // Iterate over float4 chunks in acc_tile_local
+            float4 chunk_to_write = float4(0.0f);
+            // Safe loading from acc_tile_local into chunk_to_write
+            if (i < current_d_chunk_len)     chunk_to_write.x = acc_tile_local[i+0];
+            if (i+1 < current_d_chunk_len) chunk_to_write.y = acc_tile_local[i+1];
+            if (i+2 < current_d_chunk_len) chunk_to_write.z = acc_tile_local[i+2];
+            if (i+3 < current_d_chunk_len) chunk_to_write.w = acc_tile_local[i+3];
+
+            // SIMD-group reduction of the (now final, normalized) values in chunk_to_write
+            float4 reduced_simd_group_final_chunk;
+            reduced_simd_group_final_chunk.x = simd_sum(chunk_to_write.x);
+            reduced_simd_group_final_chunk.y = simd_sum(chunk_to_write.y);
+            reduced_simd_group_final_chunk.z = simd_sum(chunk_to_write.z);
+            reduced_simd_group_final_chunk.w = simd_sum(chunk_to_write.w);
+
+            if (simd_lane_id == 0) {
+                G_simd_group_v_sums[simd_group_id] = reduced_simd_group_final_chunk;
             }
-        } // End of Pass 2 history scan for this o_tile
+            threadgroup_barrier(mem_flags::mem_threadgroup);
 
-        // --- Reduce o_tile across threadgroup and write to output ---
-        // This reduction sums the o_tile contributions from all threads for the current h_offset chunk.
-        // The result is already normalized as p_attn_weight included inv_d_final_global.
-        for (uint h_chunk_idx_in_tile = 0; h_chunk_idx_in_tile < kHeadDimProcessingChunk; h_chunk_idx_in_tile += 4) {
-            float4 o_chunk_thread_local = float4(0.0f);
-            // Check bounds against kHeadDimProcessingChunk and actual params.head_dim for this specific tile processing.
-            if (h_chunk_idx_in_tile < kHeadDimProcessingChunk)     o_chunk_thread_local.x = o_tile[h_chunk_idx_in_tile];
-            if (h_chunk_idx_in_tile + 1 < kHeadDimProcessingChunk) o_chunk_thread_local.y = o_tile[h_chunk_idx_in_tile + 1];
-            if (h_chunk_idx_in_tile + 2 < kHeadDimProcessingChunk) o_chunk_thread_local.z = o_tile[h_chunk_idx_in_tile + 2];
-            if (h_chunk_idx_in_tile + 3 < kHeadDimProcessingChunk) o_chunk_thread_local.w = o_tile[h_chunk_idx_in_tile + 3];
+            if (local_thread_idx == 0) {
+                float4 final_output_chunk = float4(0.0f);
+                for (uint sg_idx = 0; sg_idx < num_simd_groups; ++sg_idx) {
+                    final_output_chunk += G_simd_group_v_sums[sg_idx];
+                }
 
-            float4 simd_sum_o_chunk;
-            simd_sum_o_chunk.x = simd_sum(o_chunk_thread_local.x);
-            simd_sum_o_chunk.y = simd_sum(o_chunk_thread_local.y);
-            simd_sum_o_chunk.z = simd_sum(o_chunk_thread_local.z);
-            simd_sum_o_chunk.w = simd_sum(o_chunk_thread_local.w);
-
-            if (simd_lane_id == 0 && simd_group_id < num_simd_groups) {
-                G_simd_group_v_sums[simd_group_id] = simd_sum_o_chunk;
+                uint output_base_idx = global_item_idx * params.head_dim + d_base_offset + i;
+                if (i < current_d_chunk_len)     output_buffer[output_base_idx + 0] = (half)final_output_chunk.x;
+                if (i+1 < current_d_chunk_len) output_buffer[output_base_idx + 1] = (half)final_output_chunk.y;
+                if (i+2 < current_d_chunk_len) output_buffer[output_base_idx + 2] = (half)final_output_chunk.z;
+                if (i+3 < current_d_chunk_len) output_buffer[output_base_idx + 3] = (half)final_output_chunk.w;
+            }
+            threadgroup_barrier(mem_flags::mem_threadgroup); // Sync before next i (float4 chunk of current d_chunk)
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
+    } // End of D-tiling loop
 
-        if (local_thread_idx == 0) {
-                float4 o_final_chunk_summed = float4(0.0f);
-            for (uint sg = 0; sg < num_simd_groups; ++sg) {
-                    o_final_chunk_summed += G_simd_group_v_sums[sg];
-                }
-
-                // Write final output for this chunk of head_dim
-                uint out_base = global_item_idx * params.head_dim + h_offset + h_chunk_idx_in_tile;
-                if (h_offset + h_chunk_idx_in_tile < params.head_dim)     output_buffer[out_base]     = (half)(o_final_chunk_summed.x);
-                if (h_offset + h_chunk_idx_in_tile + 1 < params.head_dim) output_buffer[out_base + 1] = (half)(o_final_chunk_summed.y);
-                if (h_offset + h_chunk_idx_in_tile + 2 < params.head_dim) output_buffer[out_base + 2] = (half)(o_final_chunk_summed.z);
-                if (h_offset + h_chunk_idx_in_tile + 3 < params.head_dim) output_buffer[out_base + 3] = (half)(o_final_chunk_summed.w);
-            }
-            threadgroup_barrier(mem_flags::mem_threadgroup); // Ensure writes complete before next tile iter or exit
-        }
-    } // End of h_offset loop for Pass 2
+    // The D-tiling loop now handles writing the computed output
+    // No need for extra zero-out pass here
 } // End of kernel
