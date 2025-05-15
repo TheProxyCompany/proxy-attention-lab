@@ -52,7 +52,7 @@ def paged_attention(
     Returns:
         The attention output array.
     """
-    output_array = cpp_paged_attention_kernel(
+    return cpp_paged_attention_kernel(
         queries,
         k_cache_pool,
         v_cache_pool,
@@ -62,4 +62,3 @@ def paged_attention(
         query_token_offset,
         stream=stream,
     )
-    return output_array

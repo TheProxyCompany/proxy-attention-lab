@@ -39,6 +39,39 @@ namespace mx = mlx::core;
 
 namespace pal::cpp {
 
+struct CoreDims {
+    uint32_t head_dim{0};
+    uint32_t num_q_heads{0};
+    uint32_t tokens_per_page{0};
+    uint32_t num_kv_heads{0};
+    size_t num_items_to_process{0};
+    size_t query_token_count{0};
+};
+
+struct ThreadgroupMemoryLayout {
+    size_t q_shmem_bytes{0};
+    size_t partial_reduce_scratch_bytes{0};
+    size_t simd_reduced_maxes_bytes{0};
+    size_t simd_reduced_adjusted_sum_exps_bytes{0};
+    size_t global_stats_bytes{0};
+    size_t s_global_compensation_bytes{0};
+    size_t simd_v_chunk_sums_bytes{0};
+    size_t score_tile_bytes{0};
+    size_t final_guard_bytes{0};
+    size_t total_bytes{0};
+
+    size_t fixed_components_sum_for_t_calc() const {
+        // Sum of q_shmem + all 6 scratch arrays (everything except score_tile and final_guard)
+        return q_shmem_bytes +
+               partial_reduce_scratch_bytes +
+               simd_reduced_maxes_bytes +
+               simd_reduced_adjusted_sum_exps_bytes +
+               global_stats_bytes +
+               s_global_compensation_bytes +
+               simd_v_chunk_sums_bytes;
+    }
+};
+
 // Expected size for PagedAttentionParams: 8 uint32_t (32 bytes) + 1 float (4 bytes) = 36 bytes.
 // alignas(16) means total size is 48, as it's padded to multiple of 16.
 // Note: We use 64-byte alignment for threadgroup memory, but the struct itself remains 16-byte aligned.
@@ -135,6 +168,63 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
   int num_kv_heads_;
   int head_dim_;
   int tokens_per_page_;
+
+  // Helper method declarations
+  static CoreDims validate_inputs_and_populate_initial_params(
+      const std::vector<mx::array>& inputs,
+      int primitive_tokens_per_page // To access PagedAttentionPrimitive's construction param
+  );
+
+  static void populate_remaining_attention_params(
+      PagedAttentionParams& params, // Pass by ref to populate (already has core dims from previous step)
+      const CoreDims& extracted_core_dims, // Dimensions from previous helper
+      const mx::array& k_pool_arr, // For num_physical_pages_in_pool
+      const mx::array& page_table_arr, // For max_logical_blocks_per_seq, num_sequences_in_batch
+      MTL::Device* mtl_device_ptr, // For maxThreadgroupMemoryLength
+      size_t threads_per_item_group_for_dispatch // For num_simd_groups in tile_size_T calc
+  );
+
+  static ThreadgroupMemoryLayout calculate_threadgroup_memory_breakdown_and_total(
+      const PagedAttentionParams& params,
+      size_t threads_per_group
+  );
+
+  /**
+   * @brief Implements vector-Jacobian product for backpropagation.
+   *
+   * @param primals Original input arrays
+   * @param cotangents Gradients of the output
+   * @param argnums Indices of arguments to compute gradients for
+   * @param outputs Original outputs from the forward pass
+   * @return Vector of gradients for the requested inputs
+   */
+  std::vector<mx::array> vjp(const std::vector<mx::array>& primals,
+                             const std::vector<mx::array>& cotangents,
+                             const std::vector<int>& argnums,
+                             const std::vector<mx::array>& outputs) override;
+
+  /**
+   * @brief Implements Jacobian-vector product for forward differentiation.
+   *
+   * @param primals Original input arrays
+   * @param tangents Directional derivatives of inputs
+   * @param argnums Indices of arguments to compute derivatives for
+   * @return Vector of directional derivatives of outputs
+   */
+  std::vector<mx::array> jvp(const std::vector<mx::array>& primals,
+                             const std::vector<mx::array>& tangents,
+                             const std::vector<int>& argnums) override;
+
+  /**
+   * @brief Implements vectorized mapping for batched execution.
+   *
+   * @param inputs Input arrays
+   * @param axes Axes along which to vectorize
+   * @return Pair of output arrays and corresponding axes
+   */
+  std::pair<std::vector<mx::array>, std::vector<int>> vmap(
+      const std::vector<mx::array>& inputs,
+      const std::vector<int>& axes) override;
 
   /**
    * @brief Validates inputs and extracts initial parameters for the attention operation.
@@ -341,43 +431,6 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
       size_t total_tg_memory_bytes,
       size_t items_to_process_count,
       size_t threads_per_group_count);
-
-  /**
-   * @brief Implements vector-Jacobian product for backpropagation.
-   *
-   * @param primals Original input arrays
-   * @param cotangents Gradients of the output
-   * @param argnums Indices of arguments to compute gradients for
-   * @param outputs Original outputs from the forward pass
-   * @return Vector of gradients for the requested inputs
-   */
-  std::vector<mx::array> vjp(const std::vector<mx::array>& primals,
-                             const std::vector<mx::array>& cotangents,
-                             const std::vector<int>& argnums,
-                             const std::vector<mx::array>& outputs) override;
-
-  /**
-   * @brief Implements Jacobian-vector product for forward differentiation.
-   *
-   * @param primals Original input arrays
-   * @param tangents Directional derivatives of inputs
-   * @param argnums Indices of arguments to compute derivatives for
-   * @return Vector of directional derivatives of outputs
-   */
-  std::vector<mx::array> jvp(const std::vector<mx::array>& primals,
-                             const std::vector<mx::array>& tangents,
-                             const std::vector<int>& argnums) override;
-
-  /**
-   * @brief Implements vectorized mapping for batched execution.
-   *
-   * @param inputs Input arrays
-   * @param axes Axes along which to vectorize
-   * @return Pair of output arrays and corresponding axes
-   */
-  std::pair<std::vector<mx::array>, std::vector<int>> vmap(
-      const std::vector<mx::array>& inputs,
-      const std::vector<int>& axes) override;
 };
 
 }  // namespace pal::cpp

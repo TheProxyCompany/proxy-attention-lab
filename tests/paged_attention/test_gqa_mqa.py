@@ -162,7 +162,7 @@ def test_invalid_gqa_configuration() -> None:
     py_query_to_seq_map = mx.array([0, 0, 0], dtype=mx.int32)
     py_query_token_offset = mx.array([0, 0, 0], dtype=mx.int32)
 
-    with pytest.raises((RuntimeError, ValueError), match="num_q_heads must be an integer multiple of num_kv_heads"):
+    with pytest.raises((RuntimeError, ValueError), match="num_q_heads .* must be an integer multiple of num_kv_heads"):
         output_arr = paged_attention(
             py_queries,
             py_k_cache_pool,

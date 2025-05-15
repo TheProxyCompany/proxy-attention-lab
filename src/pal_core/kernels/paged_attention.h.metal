@@ -177,7 +177,6 @@ static inline void update_softmax_stats_kahan(
 
     float term_to_add = d_local_tile_from_reduction * exp(max(m_local_tile_from_reduction - m_new, kernel_params.log_exp_min_clamp));
 
-    // Kahan Sum for: s_new_final = s_new_uncompensated + term_to_add
     float y_kahan = term_to_add - c_s_new; // c_s_new is compensation from *previous* Kahan steps on s_new_uncompensated
     float t_kahan = s_new_uncompensated + y_kahan;
     c_s_new = (t_kahan - s_new_uncompensated) - y_kahan; // New compensation for *next* addition

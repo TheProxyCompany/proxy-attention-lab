@@ -86,16 +86,12 @@ using namespace metal;
     // --- 2/10: Basic Input Validation ---
     // Early exit for degenerate case where head_dim is zero
     if (params.head_dim == 0) {
-        // Zero the output and exit (no need for loop if head_dim is 0, but for safety if it's called)
-        // Output buffer is implicitly zero if no writes occur, but explicit zeroing can be done if needed.
         return;
     }
 
     // --- 3/10: Thread-Local Accumulators for Online Softmax ---
     float m_local = -INFINITY; // Maximum score accumulator
     float d_local = 0.0f;      // Sum of scaled exponentials accumulator
-
-    // Note: o_local (large array) is removed. Output O will be computed in Pass 2 using o_tile.
 
     // --- 4/10: Thread Identifiers & SIMD Group Info ---
     uint global_item_idx = tg_pos_in_grid.x;    // Identifies the query-head item
@@ -197,16 +193,6 @@ using namespace metal;
     uint item_actual_sequence_length = (uint)sequence_lengths_in[item_seq_idx_in_batch];
     uint item_effective_history_length = min(item_current_q_token_logical_pos,
                                          item_actual_sequence_length);
-
-    // Ensure tile_size_T_runtime is valid and not exceeding a practical limit for K_tile/V_tile/score_tile arrays.
-    // This complements C++ side checks. Max of kMaxTileSizeRuntimeSafetyCap for T is a generous upper bound for practical TG mem.
-    if (params.tile_size_T_runtime == 0 || params.tile_size_T_runtime > kMaxTileSizeRuntimeSafetyCap) {
-        // This indicates a misconfiguration from the host.
-        // For now, we can't easily "error out" and return an error code.
-        // If this happens, the kernel might produce incorrect results or behave unpredictably.
-        // A proper solution would be an error flag written to output, or ensure host never sends this.
-        // Given host-side clamps, this state should ideally not be reached.
-    }
 
     // --- 8/10: Initialize Global Softmax Stats ---
     if (local_thread_idx == 0) {
@@ -324,8 +310,6 @@ using namespace metal;
                 d_local_tile_total_val = tg_simd_exp_sums_scratch[0]; // All threads get d_local_tile_total_val
 
                 // --- 10.1.5/10: History Tile - Update Global Stats & Rescale Accumulator ---
-                // Default value if m_global doesn't change
-                float scale_factor_atomic = 1.0f;
 
                 // Thread 0 will handle the update of m_global and s_global in a single atomic operation
                 if (local_thread_idx == 0) {
