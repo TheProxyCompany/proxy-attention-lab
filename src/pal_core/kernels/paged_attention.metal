@@ -64,7 +64,7 @@ using namespace metal;
  *     - Each thread initializes a local o_tile[kHeadDimProcessingChunk].
  *     - Re-scan history:
  *       - Compute Q·K score.
- *       - Calculate attention weight p = exp(score - m_final_global) / d_final_global.
+ *       - Calculate attention weight p = fast::exp(score - m_final_global) / d_final_global.
  *       - Accumulate V contributions into o_tile: o_tile += p * V_chunk.
  *     - Reduce o_tile across the threadgroup and write to output buffer.
  */
@@ -121,27 +121,27 @@ using namespace metal;
     threadgroup float* q_shmem = tg_mem;  // head_dim floats
 
     uintptr_t current_offset = (uintptr_t)(q_shmem + params.head_dim);
-    current_offset = (current_offset + 15u) & ~15u;
+    current_offset = (current_offset + 63u) & ~63u;
     threadgroup float* G_partial_max_scores = (threadgroup float*)current_offset;  // threads_per_tg floats
 
     current_offset = (uintptr_t)(G_partial_max_scores + tg_dim.x);
-    current_offset = (current_offset + 15u) & ~15u;
+    current_offset = (current_offset + 63u) & ~63u;
     threadgroup float* G_simd_reduced_maxes = (threadgroup float*)current_offset; // num_simd_groups floats
 
     current_offset = (uintptr_t)(G_simd_reduced_maxes + num_simd_groups);
-    current_offset = (current_offset + 15u) & ~15u;
+    current_offset = (current_offset + 63u) & ~63u;
     threadgroup float* G_simd_reduced_adjusted_sum_exps = (threadgroup float*)current_offset; // num_simd_groups floats
 
     current_offset = (uintptr_t)(G_simd_reduced_adjusted_sum_exps + num_simd_groups);
-    current_offset = (current_offset + 15u) & ~15u;
+    current_offset = (current_offset + 63u) & ~63u;
     threadgroup float* G_final_max_for_item = (threadgroup float*)current_offset; // 1 float
 
     current_offset = (uintptr_t)(G_final_max_for_item + 1);
-    current_offset = (current_offset + 15u) & ~15u;
+    current_offset = (current_offset + 63u) & ~63u;
     threadgroup float* G_final_sum_exp_for_item = (threadgroup float*)current_offset; // 1 float
 
     current_offset = (uintptr_t)(G_final_sum_exp_for_item + 1);
-    current_offset = (current_offset + 15u) & ~15u;
+    current_offset = (current_offset + 63u) & ~63u;
     threadgroup float4* G_simd_group_v_sums = (threadgroup float4*)current_offset; // num_simd_groups float4s (for Pass 2 o_tile reduction)
 
     // --- Determine Q-vector pointer for this item ---
@@ -236,27 +236,21 @@ using namespace metal;
             device const half* k_vector_ptr = k_cache_pool_in + k_base_offset;
 
         float current_score_fp32 = 0.0f;
-            bool use_vectorized_load_h4 = (params.head_dim % 4 == 0);
 
         if (params.head_dim > 0) {
-                if (use_vectorized_load_h4) {
-                    device const packed_half4* k_ptr_h4 = reinterpret_cast<device const packed_half4*>(k_vector_ptr);
-                for (uint i = 0; i < params.head_dim / 4; ++i) {
-                    float4 k_vec_f4 = float4(k_ptr_h4[i]);
-                        float4 q_vec_f4 = { q_shmem[i*4+0], q_shmem[i*4+1], q_shmem[i*4+2], q_shmem[i*4+3] };
-                        current_score_fp32 += dot(q_vec_f4, k_vec_f4);
-                }
-            } else {
-                for (uint i = 0; i < params.head_dim; ++i) {
-                    current_score_fp32 += q_shmem[i] * (float)k_vector_ptr[i];
-                }
+            // C++ already validates params.head_dim % 4 == 0, so we can always use vectorized path
+            device const packed_half4* k_ptr_h4 = reinterpret_cast<device const packed_half4*>(k_vector_ptr);
+            for (uint i = 0; i < params.head_dim / 4; ++i) {
+                float4 k_vec_f4 = float4(k_ptr_h4[i]);
+                float4 q_vec_f4 = { q_shmem[i*4+0], q_shmem[i*4+1], q_shmem[i*4+2], q_shmem[i*4+3] };
+                current_score_fp32 += dot(q_vec_f4, k_vec_f4);
             }
         }
 
         float new_m_local = max(m_local, current_score_fp32);
-            float alpha = exp(m_local - new_m_local);
+            float alpha = fast::exp(max(m_local - new_m_local, params.log_exp_min_clamp));
         float exponent_for_p = current_score_fp32 - new_m_local;
-            float p_val = exp(exponent_for_p);
+            float p_val = fast::exp(max(exponent_for_p, params.log_exp_min_clamp));
 
         d_local = d_local * alpha + p_val;
         m_local = new_m_local;
@@ -286,7 +280,7 @@ using namespace metal;
 
         // --- Rescale d_local and Reduce d_local (for d_final_global) ---
         float d_rescale_exponent = m_local - m_final_global_val; // Use thread's m_local and final global m
-        float d_local_rescaled = d_local * exp(d_rescale_exponent);
+        float d_local_rescaled = d_local * fast::exp(d_rescale_exponent);
 
     float simd_sum_d_rescaled = simd_sum(d_local_rescaled);
     if (simd_lane_id == 0 && simd_group_id < num_simd_groups) {
@@ -379,25 +373,19 @@ using namespace metal;
 
             // Compute Q·K score (already scaled as q_shmem is pre-scaled)
             float current_score_fp32 = 0.0f;
-            bool use_vectorized_load_h4_pass2 = (params.head_dim % 4 == 0);
 
             if (params.head_dim > 0) {
-                if (use_vectorized_load_h4_pass2) {
-                    device const packed_half4* k_ptr_h4 = reinterpret_cast<device const packed_half4*>(k_vector_ptr);
-                    for (uint i = 0; i < params.head_dim / 4; ++i) {
-                        float4 k_vec_f4 = float4(k_ptr_h4[i]);
-                        float4 q_vec_f4 = { q_shmem[i*4+0], q_shmem[i*4+1], q_shmem[i*4+2], q_shmem[i*4+3] };
-                        current_score_fp32 += dot(q_vec_f4, k_vec_f4);
-                    }
-                } else { // Scalar
-                    for (uint i = 0; i < params.head_dim; ++i) {
-                        current_score_fp32 += q_shmem[i] * (float)k_vector_ptr[i];
-                    }
+                // C++ already validates params.head_dim % 4 == 0, so we can always use vectorized path
+                device const packed_half4* k_ptr_h4 = reinterpret_cast<device const packed_half4*>(k_vector_ptr);
+                for (uint i = 0; i < params.head_dim / 4; ++i) {
+                    float4 k_vec_f4 = float4(k_ptr_h4[i]);
+                    float4 q_vec_f4 = { q_shmem[i*4+0], q_shmem[i*4+1], q_shmem[i*4+2], q_shmem[i*4+3] };
+                    current_score_fp32 += dot(q_vec_f4, k_vec_f4);
                 }
             }
 
-            // Calculate final attention probability p_val = exp(score - m_final) / d_final
-            float exp_score_minus_m_final = exp(current_score_fp32 - m_final_global);
+            // Calculate final attention probability p_val = fast::exp(score - m_final) / d_final
+            float exp_score_minus_m_final = fast::exp(max(current_score_fp32 - m_final_global, params.log_exp_min_clamp));
             float p_attn_weight = exp_score_minus_m_final * inv_d_final_global;
 
 
@@ -405,29 +393,24 @@ using namespace metal;
             // V vector pointer for the current h_offset chunk
             device const half* v_vector_chunk_ptr = v_vector_full_ptr + h_offset;
 
-            bool use_vectorized_v_load_h4 = (kHeadDimProcessingChunk % 4 == 0) && (h_offset % 4 == 0) && (params.head_dim >= h_offset + 4);
+            // We know kHeadDimProcessingChunk is 64 which is a multiple of 4
+            // and that params.head_dim is a multiple of 4
+            // We should still keep the boundary checks for the last chunk
 
-
-            if (use_vectorized_v_load_h4) {
-                for (uint i = 0; i < kHeadDimProcessingChunk / 4; ++i) {
-                     if (h_offset + i * 4 + 3 < params.head_dim) { // Boundary check
-                        float4 v_chunk_f4 = float4(reinterpret_cast<device const packed_half4*>(v_vector_chunk_ptr)[i]);
-                        o_tile[i*4+0] += p_attn_weight * v_chunk_f4.x;
-                        o_tile[i*4+1] += p_attn_weight * v_chunk_f4.y;
-                        o_tile[i*4+2] += p_attn_weight * v_chunk_f4.z;
-                        o_tile[i*4+3] += p_attn_weight * v_chunk_f4.w;
-                     } else {
-                        for(uint j=0; j < 4; ++j) {
-                            if (h_offset + i * 4 + j < params.head_dim) {
-                                o_tile[i*4+j] += p_attn_weight * (float)v_vector_chunk_ptr[i*4+j];
-                            }
+            // Use vectorized loads in 4-element chunks when possible
+            for (uint i = 0; i < kHeadDimProcessingChunk / 4; ++i) {
+                if (h_offset + i * 4 + 3 < params.head_dim) { // Boundary check for complete vector
+                    float4 v_chunk_f4 = float4(reinterpret_cast<device const packed_half4*>(v_vector_chunk_ptr)[i]);
+                    o_tile[i*4+0] += p_attn_weight * v_chunk_f4.x;
+                    o_tile[i*4+1] += p_attn_weight * v_chunk_f4.y;
+                    o_tile[i*4+2] += p_attn_weight * v_chunk_f4.z;
+                    o_tile[i*4+3] += p_attn_weight * v_chunk_f4.w;
+                } else {
+                    // Handle tail case (last partial chunk)
+                    for(uint j=0; j < 4; ++j) {
+                        if (h_offset + i * 4 + j < params.head_dim) {
+                            o_tile[i*4+j] += p_attn_weight * (float)v_vector_chunk_ptr[i*4+j];
                         }
-                    }
-                }
-            } else { // Scalar V accumulation
-                for (uint i = 0; i < kHeadDimProcessingChunk; ++i) {
-                    if (h_offset + i < params.head_dim) { // Boundary for current head_dim element
-                        o_tile[i] += p_attn_weight * (float)v_vector_chunk_ptr[i];
                     }
                 }
             }
