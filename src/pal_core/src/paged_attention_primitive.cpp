@@ -390,7 +390,7 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
   // log(5.96046e-08) ≈ -16.6355
   const float fp16_denorm_min_val = 5.9604644775390625e-08f; // 2^-24
   // Add a safety margin by making it more negative (-1.0f extra)
-  params_struct.log_exp_min_clamp = logf(fp16_denorm_min_val) - 1.0f;
+  params_struct.log_exp_min_clamp = logf(fp16_denorm_min_val);
 
   spdlog::debug(
       "[PAL Primitive] Setting max_accum_tile_runtime (kernel's tile capacity) to: {}",
