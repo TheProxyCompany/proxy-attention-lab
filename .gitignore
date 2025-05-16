@@ -182,3 +182,4 @@ build/
 **/.claude/settings.local.json
 .claude/
 CLAUDE.md
+.DS_Store

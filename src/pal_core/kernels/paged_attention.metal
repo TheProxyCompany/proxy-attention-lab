@@ -468,13 +468,8 @@ using namespace metal;
                     // V-vector for this history token is loaded in the V_tile with padded stride
                     threadgroup const float* v_vector_from_tile = V_tile + (local_thread_idx * padded_head_dim_hoisted);
 
-                    // Calculate final weight component: exp(raw_score - m_global)
-                    // thread_exp_val = exp(raw_score - m_local_tile_val)
-                    // Need to multiply by exp(m_local_tile_val - m_global_current_iter_atomic)
-                    // Using m_global_current_iter_atomic that was read after the sync barrier
-                    // This effectively gives us: exp(raw_score - m_global_current_iter_atomic)
                     float weight_term = thread_exp_val; // Already float
-                    float exp_term = exp(max(m_local_tile_val - m_global_current_iter_atomic, params.log_exp_min_clamp));
+                    float exp_term = exp(m_local_tile_val - m_global_current_iter_atomic);
                     float final_p_attn_weight_numerator = weight_term * exp_term; // float * float = float
 
                     // Accumulate into the full acc_tile_local in float4 chunks for efficiency
