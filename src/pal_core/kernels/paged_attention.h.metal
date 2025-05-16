@@ -24,7 +24,6 @@ using namespace metal;
 // --- Kernel Configuration Constants ---
 constant static const uint kMaxHeadDimMetal = 256;
 constant static const uint kMaxHeadDimForFusedPath = 256; // Max head_dim for the fused path
-constant static const uint kPaddingFloatsPerRow = 8; // For 32-byte padding to avoid bank conflicts
 constant static const uint kDefaultAccTileChunkSize = 64;
 constant static const uint kMaxAccumulationTile = 64;
 
@@ -151,9 +150,9 @@ constant static const float kEpsilonForZeroGuard = 1e-9f;
     uint num_kv_heads = kernel_params.num_kv_heads;
 
     // Compute steps separately using ulong to avoid overflow
-    ulong page_offset = (ulong)physical_page_id * tokens_per_page * num_kv_heads * head_dim;
-    ulong token_offset = (ulong)token_slot_in_page * num_kv_heads * head_dim;
-    ulong head_offset = (ulong)target_kv_head_idx * head_dim;
+    ulong page_offset = (ulong)physical_page_id * (ulong)tokens_per_page * (ulong)num_kv_heads * (ulong)head_dim;
+    ulong token_offset = (ulong)token_slot_in_page * (ulong)num_kv_heads * (ulong)head_dim;
+    ulong head_offset = (ulong)target_kv_head_idx * (ulong)head_dim;
 
     // Combine offsets
     ulong total_offset = page_offset + token_offset + head_offset;

@@ -59,6 +59,10 @@ namespace mx = mlx::core;
 
 namespace pal::cpp {
 
+// Define constants for log_exp_min_clamp calculation
+constexpr static float kFp16DenormMinVal = 5.9604644775390625e-08f; // 2^-24
+constexpr static float kLogFp16DenormMinVal = -16.63553237915039f; // logf(kFp16DenormMinVal)
+
 // Definition of the calculate_threadgroup_memory_breakdown_and_total helper method
 ThreadgroupMemoryLayout PagedAttentionPrimitive::calculate_threadgroup_memory_breakdown_and_total(
     const PagedAttentionParams& params,
@@ -122,9 +126,9 @@ ThreadgroupMemoryLayout PagedAttentionPrimitive::calculate_threadgroup_memory_br
     spdlog::trace("[PAL TGMemCalc] simd_v_chunk_sums: {} bytes, offset: {}",
                  layout.simd_v_chunk_sums_bytes, tg_mem_current_offset_bytes);
 
-    // Fixed scratch memory for Q and reductions (not including k_tile, score_tile or final guard)
+    // Fixed scratch memory for Q and reductions (not including k_tile, v_tile or final guard)
     size_t fixed_scratch_bytes = (tg_mem_current_offset_bytes + kAlignmentMask) & ~kAlignmentMask;
-    spdlog::debug("[PAL TGMemCalc] Fixed scratch memory (excluding k_tile and score tile): {} bytes", fixed_scratch_bytes);
+    spdlog::debug("[PAL TGMemCalc] Fixed scratch memory (excluding k_tile and v_tile): {} bytes", fixed_scratch_bytes);
 
     // 8. K Tile memory - for caching K vectors with padding for bank conflict avoidance
     tg_mem_current_offset_bytes = (tg_mem_current_offset_bytes + kAlignmentMask) & ~kAlignmentMask;
@@ -349,40 +353,8 @@ void PagedAttentionPrimitive::populate_remaining_attention_params(
     constexpr uint32_t kMaxAccumulationTile = 64;
     params.max_accum_tile_runtime = kMaxAccumulationTile;
 
-    // --- Calculate d_chunk_size_runtime for processing head_dim in chunks ---
-    // Default d_chunk_size, ensuring it's valid and <= head_dim
-    constexpr uint32_t kDefaultAccTileChunkSizeInCPP = 64;
-    uint32_t requested_d_chunk_size = kDefaultAccTileChunkSizeInCPP;
-    params.d_chunk_size_runtime = std::min(requested_d_chunk_size, params.head_dim);
-
-    if (params.d_chunk_size_runtime == 0 && params.head_dim > 0) { // If head_dim itself is < 64 but > 0
-        params.d_chunk_size_runtime = params.head_dim;
-    }
-
-    // Ensure it's a multiple of 4 if > 0, for vector processing within the chunk
-    if (params.d_chunk_size_runtime > 0 && params.d_chunk_size_runtime % 4 != 0) {
-        // Round down to nearest multiple of 4 to not exceed head_dim if chunk was head_dim
-        params.d_chunk_size_runtime = (params.d_chunk_size_runtime / 4u) * 4u;
-        if (params.d_chunk_size_runtime == 0 && params.head_dim > 0) { // If rounding made it 0
-            params.d_chunk_size_runtime = std::min(4u, params.head_dim); // Smallest valid multiple of 4
-        }
-    }
-
-    if (params.head_dim > 0 && params.d_chunk_size_runtime == 0) { // Final safety if head_dim > 0 but chunk is 0
-        params.d_chunk_size_runtime = std::min(4u, params.head_dim);
-    }
-
-    // Clamp to maximum size supported by Metal kernel's stack array
-    params.d_chunk_size_runtime = std::min(params.d_chunk_size_runtime, kDefaultAccTileChunkSizeInCPP);
-
-    spdlog::debug("[PAL Primitive] Setting d_chunk_size_runtime to: {}", params.d_chunk_size_runtime);
-
-    // --- Calculate log_exp_min_clamp based on float16 denormalized minimum ---
-    // Smallest positive half float subnormal: 2^-24 ≈ 5.96046e-08
-    // log(5.96046e-08) ≈ -16.6355
-    const float fp16_denorm_min_val = 5.9604644775390625e-08f; // 2^-24
-    // Add a safety margin by making it more negative (-1.0f extra)
-    params.log_exp_min_clamp = logf(fp16_denorm_min_val);
+    // Use the constexpr static value defined at the top of the file
+    params.log_exp_min_clamp = kLogFp16DenormMinVal;
 
     spdlog::debug("[PAL Primitive] Setting log_exp_min_clamp (based on fp16_denorm_min): {}", params.log_exp_min_clamp);
 }

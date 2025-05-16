@@ -36,6 +36,13 @@ using float32_t = float;
  * consistent parameter passing. The structure is explicitly aligned to 16 bytes
  * to match Metal's buffer requirements for optimal performance.
  */
+// Shared constants between C++ and Metal
+#ifdef __METAL_VERSION__
+constant static const uint kPaddingFloatsPerRow = 8; // For 32-byte padding to avoid bank conflicts
+#else
+constexpr static const uint32_t kPaddingFloatsPerRow = 8; // For 32-byte padding to avoid bank conflicts
+#endif
+
 struct alignas(16) PagedAttentionParams {
   uint32_t num_q_heads;                   // Number of query heads
   uint32_t num_kv_heads;                  // Number of key/value heads
@@ -46,7 +53,6 @@ struct alignas(16) PagedAttentionParams {
   uint32_t num_sequences_in_batch;        // Number of sequences in batch
   uint32_t max_accum_tile_runtime;        // Runtime V-accum tile size
   uint32_t tile_size_T_runtime;           // Runtime tile size T for history processing
-  uint32_t d_chunk_size_runtime;          // Runtime chunk size for processing head_dim
   float    log_exp_min_clamp;             // Minimum value for exponent in exp function
 };
 
@@ -57,7 +63,7 @@ static_assert(std::is_standard_layout_v<PagedAttentionParams>,
               "PagedAttentionParams must be a standard-layout type.");
 static_assert(alignof(PagedAttentionParams) == 16,
               "PagedAttentionParams must have 16-byte alignment.");
-// 10 uint32_t (40 bytes) + 1 float (4 bytes) = 44 data bytes.
+// 9 uint32_t (36 bytes) + 1 float (4 bytes) = 40 data bytes.
 // alignas(16) means total size is 48, as it's padded to multiple of 16.
 static_assert(sizeof(PagedAttentionParams) == 48,
               "C++ sizeof(PagedAttentionParams) expected to be 48 bytes.");
