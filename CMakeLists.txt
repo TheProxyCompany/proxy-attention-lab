@@ -16,9 +16,17 @@ if (CCACHE_PROGRAM)
 endif()
 
 if(APPLE)
-  set(CMAKE_BUILD_PARALLEL_LEVEL $(sysctl -n hw.physicalcpu))
+  execute_process(
+    COMMAND sysctl -n hw.physicalcpu
+    OUTPUT_VARIABLE CMAKE_BUILD_PARALLEL_LEVEL
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+  )
 elseif(UNIX)
-  set(CMAKE_BUILD_PARALLEL_LEVEL $(nproc))
+  execute_process(
+    COMMAND nproc
+    OUTPUT_VARIABLE CMAKE_BUILD_PARALLEL_LEVEL
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+  )
 elseif(WIN32)
   set(CMAKE_BUILD_PARALLEL_LEVEL $ENV{NUMBER_OF_PROCESSORS})
 else()

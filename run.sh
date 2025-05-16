@@ -7,7 +7,7 @@ trap 'echo "ERROR: Script failed at line $LINENO"' ERR
 # --- Configuration ---
 VENV_DIR=".venv" # Assumes virtualenv is in project root
 BUILD_DIR="build" # CMake build directory (relative to project root)
-CLEAN_BUILD=${CLEAN_BUILD:-true} # Set to true to force clean build: CLEAN_BUILD=true ./scripts/run.sh
+CLEAN_BUILD=${CLEAN_BUILD:-true} # Set to true to force clean build: CLEAN_BUILD=true ./run.sh
 UV_EXECUTABLE_PATH="$(which uv)" # Store the path to uv executable
 PYTEST_EXE="${VENV_DIR}/bin/pytest"
 DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"

@@ -214,10 +214,8 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
    */
   static inline void validate_and_extract_initial_params(
       const std::vector<mx::array>& inputs,
-      PagedAttentionParams& params,
-      int primitive_num_q_heads_member,
-      int primitive_head_dim_member,
-      int primitive_tokens_per_page_member) {
+      PagedAttentionParams& params
+  ) {
     // Validate input count
     if (inputs.size() != 7) {
       throw std::invalid_argument(
@@ -259,15 +257,6 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
 
     // Extract and validate tokens_per_page from KV pool
     int tokens_per_page_from_k_pool = k_pool.shape(1);
-    if (primitive_tokens_per_page_member > 0 &&
-        primitive_tokens_per_page_member != tokens_per_page_from_k_pool) {
-      std::string error_msg =
-          "[PagedAttentionPrimitive] Mismatch: tokens_per_page at construction (" +
-          std::to_string(primitive_tokens_per_page_member) +
-          ") does not match k_pool.shape(1) (" +
-          std::to_string(tokens_per_page_from_k_pool) + ")";
-      throw std::invalid_argument(error_msg);
-    }
 
     // Extract parameters from KV pool shape
     params.tokens_per_page = tokens_per_page_from_k_pool;
@@ -302,14 +291,14 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
 
     // Check query format and set num_q_heads
     if (q.ndim() == 3) {
-      if (q.shape(2) != params.head_dim) {
+      if (static_cast<uint32_t>(q.shape(2)) != params.head_dim) {
         throw std::invalid_argument(
             "[PagedAttentionPrimitive] For 3D query input [NumTokens, NumQHeads, "
             "HeadDim], the HeadDim must match K/V head_dim.");
       }
       params.num_q_heads = q.shape(1);
     } else if (q.ndim() == 2) {
-      if (q.shape(1) != params.head_dim) {
+      if (static_cast<uint32_t>(q.shape(1)) != params.head_dim) {
         throw std::invalid_argument(
             "[PagedAttentionPrimitive] For 2D query input [NumDispatchThreads, "
             "HeadDim], the HeadDim must match K/V head_dim.");

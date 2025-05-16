@@ -151,9 +151,8 @@ static void populate_remaining_attention_params(
     params.num_physical_pages_in_pool = k_pool_arr.shape(0);
     params.num_sequences_in_batch = page_table_arr.shape(0);
 
-    // --- Calculate fixed TG memory part using calculate_threadgroup_memory_breakdown_and_total ---
-    PagedAttentionParams params_for_fixed_sizing = params; // Copy current params (has head_dim etc.)
-    params_for_fixed_sizing.tile_size_T_runtime = 0; // Set to 0 so score_tile_bytes will be 0
+    PagedAttentionParams params_for_fixed_sizing = params;
+    params_for_fixed_sizing.tile_size_T_runtime = 0;
 
     // Get the memory layout with a zero tile size
     ThreadgroupMemoryLayout fixed_layout_info =
@@ -172,23 +171,13 @@ static void populate_remaining_attention_params(
 
     // --- Calculate tile_size_T_runtime with precise fixed memory size ---
     size_t max_tg_memory_bytes_val = mtl_device_ptr->maxThreadgroupMemoryLength();
-    size_t available_mem_for_dynamic_tiles = (max_tg_memory_bytes_val > precise_fixed_tg_mem_bytes) ?
-                                           (max_tg_memory_bytes_val - precise_fixed_tg_mem_bytes - kFinalTgMemoryPaddingGuardBytes) : 0;
-
-    // Calculate number of SIMD groups (padding is not needed for score_tile with fused pass)
-    const size_t num_simd_groups_cpp = (threads_per_item_group_for_dispatch + 31u) / 32u; // Consistent with kernel
-
-    size_t score_data_floats = params.tile_size_T_runtime; // Initial value will be updated below
-    size_t pad_total_floats = 0; // No padding needed for score_tile with fused pass
-
-    // --- O3's Robust Tile Size Calculation ---
 
     // 1. Gather constants once
-    const size_t tg_limit = max_tg_memory_bytes_val; // Already have this as max_tg_memory_bytes_val
-    const size_t guard = kFinalTgMemoryPaddingGuardBytes; // Should be 32 (defined in .hpp)
+    const size_t tg_limit = max_tg_memory_bytes_val;
+    const size_t guard = kFinalTgMemoryPaddingGuardBytes;
     const uint32_t practical_max_T = 256;
-    const uint32_t min_T_soft = 8;   // Increased from 4 to 8 for better utilization
-    const uint32_t align_val = 4;    // Keep tiles 4-aligned
+    const uint32_t min_T_soft = 8;
+    const uint32_t align_val = 4;
 
     // 2. Compute the fixed part
     size_t fixed_mem = precise_fixed_tg_mem_bytes;
@@ -197,8 +186,6 @@ static void populate_remaining_attention_params(
     }
 
     // 3. Compute "bytes per history token" for dynamic tiles (K_tile + V_tile) with padding
-    // score_tile no longer needed in threadgroup memory for fused pass
-    // Use pad_floats_per_row from params, which is now set
     uint32_t padded_head_dim_for_tile_calc = params.head_dim + params.pad_floats_per_row;
 
     size_t bytes_per_token_in_tile = (padded_head_dim_for_tile_calc * sizeof(float)) /*K_tile_padded*/ +
@@ -285,18 +272,13 @@ static void populate_remaining_attention_params(
     spdlog::debug("[PAL Primitive] Setting log_exp_min_clamp (based on fp16_denorm_min): {}", params.log_exp_min_clamp);
 }
 
-// Definition of the validate_inputs_and_populate_initial_params helper method
-static CoreDims validate_inputs_and_populate_initial_params(
-    const std::vector<mx::array>& inputs,
-    int primitive_tokens_per_page
-) {
+static CoreDims validate_inputs_and_populate_initial_params(const std::vector<mx::array>& inputs) {
     if (inputs.size() != 7) {
         throw std::invalid_argument(
             "[PAL Primitive Validate] Expected 7 inputs, received " + std::to_string(inputs.size()));
     }
     const auto& q = inputs[0];
     const auto& k_pool = inputs[1];
-    const auto& v_pool = inputs[2]; // Assuming v_pool is inputs[2]
     const auto& page_table = inputs[3];
     const auto& sequence_lengths = inputs[4];
     const auto& query_to_seq_map = inputs[5];
@@ -317,12 +299,6 @@ static CoreDims validate_inputs_and_populate_initial_params(
         throw std::invalid_argument("[PAL Primitive Validate] k_pool must be 4D [NumPages, TokensPerPage, NumKVHeads, HeadDim].");
     }
     dims.tokens_per_page = k_pool.shape(1);
-    if (primitive_tokens_per_page > 0 && primitive_tokens_per_page != static_cast<int>(dims.tokens_per_page)) {
-         // Cast dims.tokens_per_page to int for comparison if primitive_tokens_per_page is int
-        throw std::invalid_argument("[PAL Primitive Validate] Mismatch: tokens_per_page at construction (" +
-                                   std::to_string(primitive_tokens_per_page) + ") vs. k_pool.shape(1) (" +
-                                   std::to_string(dims.tokens_per_page) + ").");
-    }
     dims.num_kv_heads = k_pool.shape(2);
     dims.head_dim = k_pool.shape(3);
 
@@ -417,11 +393,17 @@ PagedAttentionPrimitive::PagedAttentionPrimitive(
       num_q_heads_, num_kv_heads_, head_dim_, tokens_per_page_);
 }
 
-void PagedAttentionPrimitive::eval_cpu(const std::vector<mx::array>& inputs,
-                                       mx::array& out) {
-  spdlog::debug(
-      "[PAL Primitive] PagedAttentionPrimitive::eval_cpu called (not "
-      "supported).");
+void PagedAttentionPrimitive::eval_cpu(const std::vector<mx::array>& inputs, mx::array& out) {
+  if (inputs.size() != 7) {
+    throw std::invalid_argument(
+        "[PagedAttentionPrimitive] Expected 7 inputs, received " + std::to_string(inputs.size()));
+  }
+
+  if (out.ndim() != 3) {
+    throw std::invalid_argument(
+        "[PagedAttentionPrimitive] Output must be 3D [NumItems, NumQHeads, HeadDim].");
+  }
+
   throw std::runtime_error(
       "[PagedAttentionPrimitive] CPU evaluation is not supported for paged "
       "attention.");
@@ -496,20 +478,8 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
 
   // Create and populate PagedAttentionParams struct
   PagedAttentionParams params_struct;
-
-  // Parameter structure size and layout is verified by static_assert
-
-  // Extract inputs for later reference - these are needed after the validation
-  const auto& q = inputs[0];
-  const auto& k_pool = inputs[1];
-  const auto& v_pool = inputs[2];
-  const auto& page_table = inputs[3];
-  const auto& sequence_lengths = inputs[4];
-  const auto& query_to_seq_map = inputs[5];
-  const auto& query_token_offset = inputs[6];
-
   // Call helper to validate inputs and get core dimensions
-  CoreDims core_dims = validate_inputs_and_populate_initial_params(inputs, this->tokens_per_page_);
+  CoreDims core_dims = validate_inputs_and_populate_initial_params(inputs);
 
   // Early exit if no items to process
   if (core_dims.num_items_to_process == 0) {

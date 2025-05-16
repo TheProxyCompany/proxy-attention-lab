@@ -12,9 +12,42 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS ON)
 
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -O0 -Wall -Wextra")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -O0 \
+        -fsanitize=undefined \
+        -fno-omit-frame-pointer \
+        -Wall -Wextra -Wpedantic \
+        -Wformat=2 -Wformat-security \
+        -Wcast-align -Wcast-qual \
+        -Wconversion -Wdouble-promotion \
+        -Wmissing-include-dirs \
+        -Wnull-dereference -Wredundant-decls \
+        -Wshadow -Wstrict-aliasing=2 \
+        -Wuninitialized \
+        -D_GLIBCXX_DEBUG \
+        -D_GLIBCXX_DEBUG_PEDANTIC \
+        -D_FORTIFY_SOURCE=2"
+    )
 else()
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -DNDEBUG")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} \
+        -O3 \
+        -mtune=native \
+        -flto=auto \
+        -DNDEBUG \
+        -ffunction-sections \
+        -fdata-sections \
+        -ftree-vectorize \
+        -fstack-protector-strong \
+        -D_FORTIFY_SOURCE=2 \
+        -funroll-loops \
+        -finline-functions"
+    )
+
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} \
+            -fmerge-all-constants \
+            -fvectorize \
+            -fslp-vectorize")
+    endif()
 endif()
 
 # --- Find or Fetch spdlog ---
