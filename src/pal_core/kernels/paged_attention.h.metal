@@ -23,8 +23,6 @@ using namespace metal;
 
 // --- Kernel Configuration Constants ---
 constant static const uint kMaxHeadDimMetal = 256;
-constant static const uint kMaxHeadDimForFusedPath = 256; // Max head_dim for the fused path
-constant static const uint kDefaultAccTileChunkSize = 64;
 constant static const uint kMaxAccumulationTile = 64;
 
 constant static const uint kSimdLanesPerGroup = 32;

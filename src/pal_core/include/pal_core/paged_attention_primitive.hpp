@@ -93,8 +93,6 @@ constexpr size_t kAlignmentMask = kAlignmentBytes - 1;
 constexpr uint32_t kMaxAccumulationTile = 64;
 constexpr uint32_t kMaxHeadDimMetalInKernel = 256; // Match Metal's kMaxHeadDimMetal
 constexpr uint32_t kMaxSimdGroupsPerThreadgroup = 8;
-constexpr uint32_t kDefaultAccTileChunkSizeInCPP = 64; // Must match Metal's kDefaultAccTileChunkSize
-
 /**
  * @brief Custom primitive implementation for paged attention operations.
  *

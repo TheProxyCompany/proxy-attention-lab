@@ -47,9 +47,9 @@ using namespace metal;
  *  - Key/Value cache: [Pages × TokensPerPage × H_kv × D]
  *  - Page table: [Sequences × MaxBlocksPerSequence]
  *
- *  Algorithm Stages (Fused Single-Pass for head_dim <= kMaxHeadDimForFusedPath):
+ *  Algorithm Stages (Fused Single-Pass for head_dim <= kMaxHeadDimMetal):
  *  1. Collaboratively load and pre-scale query vector into shared memory.
- *  2. Initialize full head_dim accumulator (acc_tile_local[kMaxHeadDimForFusedPath]).
+ *  2. Initialize full head_dim accumulator (acc_tile_local[kMaxHeadDimMetal]).
  *  3. Process history tiles in a single pass:
  *     - Load K/V-vectors into threadgroup memory (K_tile, V_tile).
  *     - Compute Q·K scores and store in thread-local variables.
@@ -95,7 +95,7 @@ using namespace metal;
     const uint padded_head_dim_hoisted = params.head_dim + params.pad_floats_per_row;
 
     // Guard path for large head_dim that's not supported by the fused path
-    if (params.head_dim > kMaxHeadDimForFusedPath) {
+    if (params.head_dim > kMaxHeadDimMetal) {
         // TODO: Implement or call the non-fused (original D-chunking) kernel logic here.
         // For now, to prevent execution with unsupported head_dim for the fused path:
         if (local_idx_in_tg == 0) { // Only one thread needs to zero
@@ -231,7 +231,7 @@ using namespace metal;
 
     // --- 9/10: Setup Output Accumulator ---
     // Use a full-size buffer for the entire head dimension in the fused path
-    float acc_tile_local[kMaxHeadDimForFusedPath]; // Thread-local stack array for full head_dim
+    float acc_tile_local[kMaxHeadDimMetal]; // Thread-local stack array for full head_dim
 
     // Initialize local accumulator for the full head dimension
     for (uint i = 0; i < params.head_dim; ++i) {
