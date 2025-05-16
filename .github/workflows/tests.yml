@@ -7,12 +7,12 @@ on: [push, pull_request]
 
 jobs:
   build-test:
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - name: Python deps
-        run: pip install -e -U "."
+        run: pip install -e "."
       - name: Build Metal
         run: ./scripts/build_metal.sh
       - name: Unit tests
-        run: pytest -q -n auto
+        run: pytest tests/ -q -n auto
