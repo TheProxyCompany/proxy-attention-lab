@@ -74,7 +74,7 @@ struct ThreadgroupMemoryLayout {
     }
 };
 
-// Expected size for PagedAttentionParams: 10 uint32_t (40 bytes) + 1 float (4 bytes) = 44 bytes.
+// Expected size for PagedAttentionParams: 9 uint32_t (36 bytes) + 1 float (4 bytes) = 40 bytes.
 // alignas(16) means total size is 48, as it's padded to multiple of 16.
 // Note: We use 64-byte alignment for threadgroup memory, but the struct itself remains 16-byte aligned.
 constexpr size_t kExpectedPagedAttentionParamsSize = 48;
@@ -85,14 +85,11 @@ static_assert(
 
 // Constants for memory padding and alignment
 constexpr size_t kFinalTgMemoryPaddingGuardBytes = 32;
-constexpr size_t kScoreTilePaddingFloatsPerSimdGroup = 8;
 constexpr size_t kAlignmentBytes = 64;
 constexpr size_t kAlignmentMask = kAlignmentBytes - 1;
 
 // Constants for head_dim validation and processing
-constexpr uint32_t kMaxAccumulationTile = 64;
 constexpr uint32_t kMaxHeadDimMetalInKernel = 256; // Match Metal's kMaxHeadDimMetal
-constexpr uint32_t kMaxSimdGroupsPerThreadgroup = 8;
 /**
  * @brief Custom primitive implementation for paged attention operations.
  *
@@ -315,12 +312,7 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
           ") exceeds kernel's internal processing limit kMaxHeadDimMetal (" +
           std::to_string(kMaxHeadDimMetalInKernel) + ").");
     }
-    if (params.head_dim > kMaxAccumulationTile * 1024) {
-      throw std::invalid_argument(
-          "[PagedAttentionPrimitive] params.head_dim (" +
-          std::to_string(params.head_dim) +
-          ") is excessively large for the tiled kernel approach.");
-    }
+    // Check for excessively large head_dim is now handled by kMaxHeadDimMetalInKernel check above
 
     // Validate query dimensions
     if (q.ndim() < 1) {

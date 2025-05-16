@@ -64,8 +64,6 @@ ThreadgroupMemoryLayout PagedAttentionPrimitive::calculate_threadgroup_memory_br
     // 1. q_shmem: head_dim floats
     layout.q_shmem_bytes = params.head_dim * sizeof(float);
     tg_mem_current_offset_bytes += layout.q_shmem_bytes;
-    spdlog::trace("[PAL TGMemCalc] q_shmem: {} bytes, offset: {}", layout.q_shmem_bytes, tg_mem_current_offset_bytes);
-
     // Align subsequent sections to 64-byte boundaries
     constexpr size_t kAlignmentBytes = 64;
     constexpr size_t kAlignmentMask = kAlignmentBytes - 1;
@@ -74,40 +72,31 @@ ThreadgroupMemoryLayout PagedAttentionPrimitive::calculate_threadgroup_memory_br
     // 2. G_partial_max_scores: threads_per_group floats
     layout.partial_reduce_scratch_bytes = threads_per_group * sizeof(float);
     tg_mem_current_offset_bytes += layout.partial_reduce_scratch_bytes;
-    spdlog::trace("[PAL TGMemCalc] partial_reduce_scratch: {} bytes, offset: {}", layout.partial_reduce_scratch_bytes, tg_mem_current_offset_bytes);
 
     // 3. G_simd_reduced_maxes: num_simd_groups floats
     tg_mem_current_offset_bytes = (tg_mem_current_offset_bytes + kAlignmentMask) & ~kAlignmentMask;
     layout.simd_reduced_maxes_bytes = num_simd_groups * sizeof(float);
     tg_mem_current_offset_bytes += layout.simd_reduced_maxes_bytes;
-    spdlog::trace("[PAL TGMemCalc] simd_reduced_maxes: {} bytes, offset: {}", layout.simd_reduced_maxes_bytes, tg_mem_current_offset_bytes);
 
     // 4. G_simd_reduced_adjusted_sum_exps: num_simd_groups floats
     tg_mem_current_offset_bytes = (tg_mem_current_offset_bytes + kAlignmentMask) & ~kAlignmentMask;
     layout.simd_reduced_adjusted_sum_exps_bytes = num_simd_groups * sizeof(float);
     tg_mem_current_offset_bytes += layout.simd_reduced_adjusted_sum_exps_bytes;
-    spdlog::trace("[PAL TGMemCalc] simd_reduced_adjusted_sum_exps: {} bytes, offset: {}",
-                 layout.simd_reduced_adjusted_sum_exps_bytes, tg_mem_current_offset_bytes);
 
     // 5. g_global_stats (float2 for m_global, s_global)
     tg_mem_current_offset_bytes = (tg_mem_current_offset_bytes + kAlignmentMask) & ~kAlignmentMask;
     layout.global_stats_bytes = 2 * sizeof(float);
     tg_mem_current_offset_bytes += layout.global_stats_bytes;
-    spdlog::trace("[PAL TGMemCalc] global_stats: {} bytes, offset: {}", layout.global_stats_bytes, tg_mem_current_offset_bytes);
 
     // 6. g_s_global_compensation (for Kahan summation)
     tg_mem_current_offset_bytes = (tg_mem_current_offset_bytes + kAlignmentMask) & ~kAlignmentMask;
     layout.s_global_compensation_bytes = 1 * sizeof(float);
     tg_mem_current_offset_bytes += layout.s_global_compensation_bytes;
-    spdlog::trace("[PAL TGMemCalc] s_global_compensation: {} bytes, offset: {}",
-                 layout.s_global_compensation_bytes, tg_mem_current_offset_bytes);
 
     // 7. G_simd_group_v_sums (float4 per SIMD group)
     tg_mem_current_offset_bytes = (tg_mem_current_offset_bytes + kAlignmentMask) & ~kAlignmentMask;
     layout.simd_v_chunk_sums_bytes = num_simd_groups * sizeof(float) * 4;
     tg_mem_current_offset_bytes += layout.simd_v_chunk_sums_bytes;
-    spdlog::trace("[PAL TGMemCalc] simd_v_chunk_sums: {} bytes, offset: {}",
-                 layout.simd_v_chunk_sums_bytes, tg_mem_current_offset_bytes);
 
     // Fixed scratch memory for Q and reductions (not including k_tile, v_tile or final guard)
     size_t fixed_scratch_bytes = (tg_mem_current_offset_bytes + kAlignmentMask) & ~kAlignmentMask;
@@ -122,9 +111,6 @@ ThreadgroupMemoryLayout PagedAttentionPrimitive::calculate_threadgroup_memory_br
     // K_tile requires tile_size_T_runtime * padded_head_dim_for_tile * sizeof(float) bytes
     layout.k_tile_bytes = params.tile_size_T_runtime * padded_head_dim_for_tile * sizeof(float);
     tg_mem_current_offset_bytes += layout.k_tile_bytes;
-    spdlog::trace("[PAL TGMemCalc] k_tile padded ({}*{} = {} floats): {} bytes, offset: {}",
-                params.tile_size_T_runtime, padded_head_dim_for_tile, params.tile_size_T_runtime * padded_head_dim_for_tile,
-                layout.k_tile_bytes, tg_mem_current_offset_bytes);
 
     // 9. V Tile memory - for caching V vectors with padding for bank conflict avoidance
     tg_mem_current_offset_bytes = (tg_mem_current_offset_bytes + kAlignmentMask) & ~kAlignmentMask;
@@ -132,16 +118,11 @@ ThreadgroupMemoryLayout PagedAttentionPrimitive::calculate_threadgroup_memory_br
     // V_tile requires tile_size_T_runtime * padded_head_dim_for_tile * sizeof(float) bytes
     layout.v_tile_bytes = params.tile_size_T_runtime * padded_head_dim_for_tile * sizeof(float);
     tg_mem_current_offset_bytes += layout.v_tile_bytes;
-    spdlog::trace("[PAL TGMemCalc] v_tile padded ({}*{} = {} floats): {} bytes, offset: {}",
-                params.tile_size_T_runtime, padded_head_dim_for_tile, params.tile_size_T_runtime * padded_head_dim_for_tile,
-                layout.v_tile_bytes, tg_mem_current_offset_bytes);
 
     // Final padding guard
     constexpr size_t kFinalTgMemoryPaddingGuardBytes = 32;
     layout.final_guard_bytes = kFinalTgMemoryPaddingGuardBytes;
     tg_mem_current_offset_bytes += layout.final_guard_bytes;
-    spdlog::trace("[PAL TGMemCalc] final_guard: {} bytes, offset: {}",
-                 layout.final_guard_bytes, tg_mem_current_offset_bytes);
 
     // Ensure final size is aligned to 64-byte boundary
     layout.total_bytes = (tg_mem_current_offset_bytes + kAlignmentMask) & ~kAlignmentMask;
@@ -194,15 +175,11 @@ void PagedAttentionPrimitive::populate_remaining_attention_params(
     size_t available_mem_for_dynamic_tiles = (max_tg_memory_bytes_val > precise_fixed_tg_mem_bytes) ?
                                            (max_tg_memory_bytes_val - precise_fixed_tg_mem_bytes - kFinalTgMemoryPaddingGuardBytes) : 0;
 
-    // Memory for score_tile with SIMD group padding to avoid bank conflicts
+    // Calculate number of SIMD groups (padding is not needed for score_tile with fused pass)
     const size_t num_simd_groups_cpp = (threads_per_item_group_for_dispatch + 31u) / 32u; // Consistent with kernel
-    constexpr size_t kScoreTilePaddingFloatsPerSimdGroup = 8; // 32-byte padding per SIMD group offset
 
     size_t score_data_floats = params.tile_size_T_runtime; // Initial value will be updated below
-    size_t pad_total_floats = 0;
-    if (num_simd_groups_cpp > 1) { // Padding only needed if there's more than one SIMD group
-        pad_total_floats = (num_simd_groups_cpp - 1) * kScoreTilePaddingFloatsPerSimdGroup;
-    }
+    size_t pad_total_floats = 0; // No padding needed for score_tile with fused pass
 
     // --- O3's Robust Tile Size Calculation ---
 
@@ -210,7 +187,7 @@ void PagedAttentionPrimitive::populate_remaining_attention_params(
     const size_t tg_limit = max_tg_memory_bytes_val; // Already have this as max_tg_memory_bytes_val
     const size_t guard = kFinalTgMemoryPaddingGuardBytes; // Should be 32 (defined in .hpp)
     const uint32_t practical_max_T = 256;
-    const uint32_t min_T_soft = 4;   // O3 suggests 4, can be tuned to 8. Let's start with 4.
+    const uint32_t min_T_soft = 8;   // Increased from 4 to 8 for better utilization
     const uint32_t align_val = 4;    // Keep tiles 4-aligned
 
     // 2. Compute the fixed part
@@ -295,16 +272,12 @@ void PagedAttentionPrimitive::populate_remaining_attention_params(
         throw std::runtime_error("[PAL Primitive] tile_size_T_runtime became 0 after all adjustments.");
     }
 
-    spdlog::info("[PAL Primitive] Final determined tile_size_T_runtime: {} (using padded_head_dim: {})",
+    spdlog::debug("[PAL Primitive] Final determined tile_size_T_runtime: {} (using padded_head_dim: {})",
                params.tile_size_T_runtime, padded_head_dim_for_tile_calc);
 
     spdlog::debug("[PAL Primitive] Final calculated params_struct.tile_size_T_runtime: {}", params.tile_size_T_runtime);
     spdlog::info("[PAL Primitive] Memory budget: bytes_per_token_in_tile={}, max_T_fit={}, fixed_mem={}, guard={}, tg_limit={}",
                 bytes_per_token_in_tile, max_T_fit, fixed_mem, guard, tg_limit);
-
-    // --- Set runtime V-accumulation tile size using constant defined in header ---
-    constexpr uint32_t kMaxAccumulationTile = 64;
-    params.max_accum_tile_runtime = kMaxAccumulationTile;
 
     // Use the constexpr static value defined at the top of the file
     params.log_exp_min_clamp = kLogFp16DenormMinVal;
@@ -524,21 +497,7 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
   // Create and populate PagedAttentionParams struct
   PagedAttentionParams params_struct;
 
-  // Debug logging of parameter structure memory layout
-  spdlog::trace("[PAL DEBUG PARAMS] C++ sizeof(PagedAttentionParams): {} bytes.",
-                sizeof(PagedAttentionParams));
-  spdlog::trace("[PAL DEBUG PARAMS] params_struct ADDRESS: {}",
-                fmt::ptr(&params_struct));
-  spdlog::trace("[PAL DEBUG PARAMS] params_struct.head_dim ADDRESS: {}",
-                fmt::ptr(&params_struct.head_dim));
-  spdlog::trace("[PAL DEBUG PARAMS] offsetof(PagedAttentionParams, num_q_heads): {}",
-                offsetof(PagedAttentionParams, num_q_heads));
-  spdlog::trace("[PAL DEBUG PARAMS] offsetof(PagedAttentionParams, num_kv_heads): {}",
-                offsetof(PagedAttentionParams, num_kv_heads));
-  spdlog::trace("[PAL DEBUG PARAMS] offsetof(PagedAttentionParams, head_dim): {}",
-                offsetof(PagedAttentionParams, head_dim));
-  spdlog::trace("[PAL DEBUG PARAMS] offsetof(PagedAttentionParams, tokens_per_page): {}",
-                offsetof(PagedAttentionParams, tokens_per_page));
+  // Parameter structure size and layout is verified by static_assert
 
   // Extract inputs for later reference - these are needed after the validation
   const auto& q = inputs[0];
@@ -599,31 +558,11 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
   );
 
   // Debug output for parameter values
-  spdlog::trace("[PAL DEBUG PARAMS] C++ sizeof(PagedAttentionParams): {} bytes.",
-                sizeof(PagedAttentionParams));
-  spdlog::trace("[PAL DEBUG PARAMS] C++ offsetof(num_q_heads): {}",
-                offsetof(PagedAttentionParams, num_q_heads));
-  spdlog::trace("[PAL DEBUG PARAMS] C++ offsetof(num_kv_heads): {}",
-                offsetof(PagedAttentionParams, num_kv_heads));
-  spdlog::trace("[PAL DEBUG PARAMS] C++ offsetof(head_dim): {}",
-                offsetof(PagedAttentionParams, head_dim));
-  spdlog::trace("[PAL DEBUG PARAMS] C++ offsetof(tokens_per_page): {}",
-                offsetof(PagedAttentionParams, tokens_per_page));
+  // Structure offsets are now verified by static_assert on PagedAttentionParams
 
-  // Log parameter values being sent to the kernel
-  spdlog::debug("[PAL SENDING PARAMS] num_q_heads: {}",
-                params_struct.num_q_heads);
-  spdlog::debug("[PAL SENDING PARAMS] num_kv_heads: {}",
-                params_struct.num_kv_heads);
-  spdlog::debug("[PAL SENDING PARAMS] head_dim: {}", params_struct.head_dim);
-  spdlog::debug("[PAL SENDING PARAMS] tokens_per_page: {}",
-                params_struct.tokens_per_page);
-
-  // Log parameter memory addresses for debugging
-  spdlog::trace("[PAL DEBUG PARAMS] params_struct ADDRESS: {}",
-                fmt::ptr(&params_struct));
-  spdlog::trace("[PAL DEBUG PARAMS] params_struct.head_dim ADDRESS: {}",
-                fmt::ptr(&params_struct.head_dim));
+  // Log key parameters at trace level
+  spdlog::trace("[PAL SENDING PARAMS] num_q_heads: {}, num_kv_heads: {}, head_dim: {}, tokens_per_page: {}",
+                params_struct.num_q_heads, params_struct.num_kv_heads, params_struct.head_dim, params_struct.tokens_per_page);
 
   // Use our new helper to calculate the threadgroup memory breakdown
   ThreadgroupMemoryLayout layout_debug = calculate_threadgroup_memory_breakdown_and_total(

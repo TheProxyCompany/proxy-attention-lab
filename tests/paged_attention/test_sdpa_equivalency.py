@@ -46,13 +46,8 @@ tokens_per_page = 64
     ],
 )
 def test_pal_vs_sdpa_equivalency_mha(batch_size, seq_len, num_heads, head_dim, dtype):
-    """
-    Compare PAL paged_attention with MLX SDPA for an MHA/MQA/GQA case.
+    """Compare PAL paged_attention with MLX SDPA kernel."""
 
-    This test sets up a standard MHA scenario, computes the attention result
-    using MLX's SDPA, then transforms the inputs to fit PAL's paged_attention
-    kernel, runs PAL's kernel, and asserts numerical equivalency.
-    """
     num_q_heads, num_kv_heads = num_heads
 
     # --- 1. Setup Inputs & Run MLX SDPA (Reference) ---
@@ -63,9 +58,6 @@ def test_pal_vs_sdpa_equivalency_mha(batch_size, seq_len, num_heads, head_dim, d
     sdpa_keys = mx.random.normal(sdpa_kv_shape, dtype=dtype)
     sdpa_values = mx.random.normal(sdpa_kv_shape, dtype=dtype)
 
-    # Create a causal mask for each item in the batch if batch_size > 1
-    # However, MLX SDPA expects a single mask that applies to all batch items if it's 2D (L, S) or 3D (H, L, S)
-    # or a 4D mask (B, H, L, S). For typical causal masking, a 2D mask is fine and broadcasted.
     causal_mask = nn.MultiHeadAttention.create_additive_causal_mask(seq_len).astype(dtype)
     scale = 1.0 / mx.sqrt(float(head_dim))
 

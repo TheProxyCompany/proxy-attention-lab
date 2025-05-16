@@ -251,8 +251,7 @@ using namespace metal;
                 params
             );
 
-            // Use padded head dimension for tile row stride to avoid bank conflicts
-            // uint padded_head_dim = params.head_dim + kPaddingFloatsPerRow; // Replaced by hoisted version
+            // Use padded head dimension from hoisted calculation
 
             if (k_vector_global_ptr != nullptr) {
                 // Each thread loads its K-vector into the K_tile
@@ -425,9 +424,13 @@ using namespace metal;
         threadgroup_barrier(mem_flags::mem_threadgroup); // Full barrier to ensure tg_global_stats and tg_simd_reduce_scratch are visible to all threads
 
         float m_global_current_iter_atomic = (*tg_global_stats).x;
-        float scale_for_acc_iter_atomic = tg_simd_reduce_scratch[0];
+        float scale_for_acc_iter_atomic = tg_simd_reduce_scratch[0]; // This is scale_f from update_softmax_stats_kahan
 
         if (scale_for_acc_iter_atomic != 1.0f) {
+            // Rescale previously accumulated V-values.
+            // If m_global increased due to the current tile's m_local_tile,
+            // previous contributions to acc_tile_local were effectively based on an older, smaller m_global.
+            // This scale_for_acc_iter_atomic adjusts them to the new m_global for consistent normalization.
             for (uint d = 0; d < params.head_dim; d += 4) {
                 float4 acc_chunk = float4(acc_tile_local[d],
                                         (d + 1 < params.head_dim) ? acc_tile_local[d+1] : 0.0f,

@@ -44,7 +44,6 @@ struct alignas(16) PagedAttentionParams {
   uint32_t max_logical_blocks_per_seq;    // Maximum logical blocks per sequence
   uint32_t num_physical_pages_in_pool;    // Number of physical pages in pool
   uint32_t num_sequences_in_batch;        // Number of sequences in batch
-  uint32_t max_accum_tile_runtime;        // Runtime V-accum tile size
   uint32_t tile_size_T_runtime;           // Runtime tile size T for history processing
   float    log_exp_min_clamp;             // Minimum value for exponent in exp function
   uint32_t pad_floats_per_row;            // Padding floats per row for K/V tiles
@@ -57,7 +56,7 @@ static_assert(std::is_standard_layout_v<PagedAttentionParams>,
               "PagedAttentionParams must be a standard-layout type.");
 static_assert(alignof(PagedAttentionParams) == 16,
               "PagedAttentionParams must have 16-byte alignment.");
-// 10 uint32_t (40 bytes) + 1 float (4 bytes) = 44 data bytes.
+// 9 uint32_t (36 bytes) + 1 float (4 bytes) = 40 data bytes.
 // alignas(16) means total size is 48, as it's padded to multiple of 16.
 static_assert(sizeof(PagedAttentionParams) == 48,
               "C++ sizeof(PagedAttentionParams) expected to be 48 bytes.");

@@ -23,10 +23,8 @@ using namespace metal;
 
 // --- Kernel Configuration Constants ---
 constant static const uint kMaxHeadDimMetal = 256;
-constant static const uint kMaxAccumulationTile = 64;
 
 constant static const uint kSimdLanesPerGroup = 32;
-constant static const uint kSimdPaddingFloats = 8;
 
 constant static const uint kAlignmentBytes = 64;
 constant static const uint kAlignmentMask = kAlignmentBytes - 1;
@@ -167,7 +165,7 @@ static inline device const half* fetch_kv_pointer(
  * @param current_global_stats_ptr Pointer to shared {m_global, s_global} stats
  * @param current_s_comp_ptr Pointer to shared Kahan compensation term
  * @param m_local_tile_from_reduction Maximum score from current tile reduction
- * @param d_local_tile_from_reduction Sum of fast::fast::exp(score - m_local) from current tile
+ * @param d_local_tile_from_reduction Sum of fast::exp(score - m_local) from current tile
  * @param broadcast_scale_scratch_ptr Pointer to scratch space for broadcasting scale factor
  * @param kernel_params Kernel parameters struct with log_exp_min_clamp
  */
@@ -227,7 +225,6 @@ static inline void zero_output_vector_for_item(
     }
 }
 
-// dot_product_qk_global removed - no longer needed with K-tiling and fused path
 
 /**
  * Computes the dot product between a query vector and a key vector in threadgroup memory.
