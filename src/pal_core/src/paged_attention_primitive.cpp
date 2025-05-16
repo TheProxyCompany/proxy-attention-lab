@@ -47,7 +47,7 @@ constexpr static float kLogFp16DenormMinVal = -16.6355f;
 constexpr static uint32_t kDefaultPaddingFloatsPerRow = 8;
 
 
-ThreadgroupMemoryLayout PagedAttentionPrimitive::calculate_threadgroup_memory_breakdown_and_total(
+static ThreadgroupMemoryLayout calculate_threadgroup_memory_breakdown_and_total(
     const PagedAttentionParams& params,
     size_t threads_per_group
 ) {
@@ -132,7 +132,7 @@ ThreadgroupMemoryLayout PagedAttentionPrimitive::calculate_threadgroup_memory_br
 }
 
 // Definition of the populate_remaining_attention_params helper method
-void PagedAttentionPrimitive::populate_remaining_attention_params(
+static void populate_remaining_attention_params(
     PagedAttentionParams& params,
     const CoreDims& extracted_core_dims,
     const mx::array& k_pool_arr,
@@ -286,7 +286,7 @@ void PagedAttentionPrimitive::populate_remaining_attention_params(
 }
 
 // Definition of the validate_inputs_and_populate_initial_params helper method
-CoreDims PagedAttentionPrimitive::validate_inputs_and_populate_initial_params(
+static CoreDims validate_inputs_and_populate_initial_params(
     const std::vector<mx::array>& inputs,
     int primitive_tokens_per_page
 ) {

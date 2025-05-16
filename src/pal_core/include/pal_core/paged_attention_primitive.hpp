@@ -166,26 +166,6 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
   int head_dim_;
   int tokens_per_page_;
 
-  // Helper method declarations
-  static CoreDims validate_inputs_and_populate_initial_params(
-      const std::vector<mx::array>& inputs,
-      int primitive_tokens_per_page // To access PagedAttentionPrimitive's construction param
-  );
-
-  static void populate_remaining_attention_params(
-      PagedAttentionParams& params, // Pass by ref to populate (already has core dims from previous step)
-      const CoreDims& extracted_core_dims, // Dimensions from previous helper
-      const mx::array& k_pool_arr, // For num_physical_pages_in_pool
-      const mx::array& page_table_arr, // For max_logical_blocks_per_seq, num_sequences_in_batch
-      MTL::Device* mtl_device_ptr, // For maxThreadgroupMemoryLength
-      size_t threads_per_item_group_for_dispatch // For num_simd_groups in tile_size_T calc
-  );
-
-  static ThreadgroupMemoryLayout calculate_threadgroup_memory_breakdown_and_total(
-      const PagedAttentionParams& params,
-      size_t threads_per_group
-  );
-
   /**
    * @brief Implements vector-Jacobian product for backpropagation.
    *
@@ -390,17 +370,6 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
       const std::vector<mx::array>& inputs,
       size_t current_threads_per_group,
       MTL::Device* mtl_device);
-
-  /**
-   * @brief Calculates the total threadgroup memory required.
-   *
-   * @param params The fully populated parameters struct
-   * @param current_threads_per_group Number of threads per threadgroup
-   * @return Size in bytes needed for all threadgroup memory
-   */
-  static inline size_t calculate_total_threadgroup_memory(
-      const PagedAttentionParams& params,
-      size_t current_threads_per_group);
 
   /**
    * @brief Configures and dispatches the Metal compute kernel.
