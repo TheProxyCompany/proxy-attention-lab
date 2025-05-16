@@ -85,10 +85,10 @@ def test_invalid_physical_page_id_in_page_table() -> None:
     expected_output_value = mx.zeros((num_q_threads, cfg_head_dim), dtype=mx.float16)
 
     # Log test details
-    logger.info(f"Test: Expected output shape: {expected_output_shape}")
-    logger.info(f"Test: Actual output shape: {output_arr.shape}")
-    logger.info(f"Test: Expected output: {expected_output_value}")
-    logger.info(f"Test: Actual output: {output_arr}")
+    logger.info(f"Test: {test_invalid_physical_page_id_in_page_table.__name__}")
+    logger.info(f"  Invalid page ID: 2 (exceeds num_physical_pages={num_physical_pages})")
+    logger.info(f"  Expected output: {expected_output_value}")
+    logger.info(f"  Actual output: {output_arr}")
 
     # Verify results
     assert output_arr.shape == expected_output_shape, (
@@ -157,10 +157,10 @@ def test_negative_query_token_offset() -> None:
     expected_output_value = mx.zeros((num_q_threads, cfg_head_dim), dtype=mx.float16)
 
     # Log test details
-    logger.info(f"Test: Expected output shape: {expected_output_shape}")
-    logger.info(f"Test: Actual output shape: {output_arr.shape}")
-    logger.info(f"Test: Expected output: {expected_output_value}")
-    logger.info(f"Test: Actual output: {output_arr}")
+    logger.info(f"Test: {test_negative_query_token_offset.__name__}")
+    logger.info(f"  Query token offsets: {py_query_token_offset}")
+    logger.info("  Expected output: zeros for item with valid offset")
+    logger.info(f"  Actual output: {output_arr}")
 
     # Verify results
     assert output_arr.shape == expected_output_shape, (
@@ -237,10 +237,11 @@ def test_invalid_seq_idx_in_query_map() -> None:
     expected_output_value = mx.zeros((num_q_threads, cfg_head_dim), dtype=mx.float16)
 
     # Log test details
-    logger.info(f"Test: Expected output shape: {expected_output_shape}")
-    logger.info(f"Test: Actual output shape: {output_arr.shape}")
-    logger.info(f"Test: Expected output: {expected_output_value}")
-    logger.info(f"Test: Actual output: {output_arr}")
+    logger.info(f"Test: {test_invalid_seq_idx_in_query_map.__name__}")
+    logger.info(f"  Query sequence map: {py_query_to_seq_map}")
+    logger.info("  Invalid sequence index: 2 (max valid index is 1)")
+    logger.info(f"  Expected output: {expected_output_value}")
+    logger.info(f"  Actual output: {output_arr}")
 
     # Verify results
     assert output_arr.shape == expected_output_shape, (
@@ -309,6 +310,12 @@ def test_large_head_dimension() -> None:
     # Expected shape is [num_queries, head_dim]
     expected_output_shape = (num_queries, cfg_head_dim)
 
+    # Log test details
+    logger.info(f"Test: {test_large_head_dimension.__name__}")
+    logger.info(f"  Head dimension: {cfg_head_dim} (exceeds previous limit of 128)")
+    logger.info(f"  Output shape: {output_arr.shape}")
+    logger.info(f"  All output values finite: {mx.isfinite(output_arr).all()}")
+
     # Verify results
     assert output_arr.shape == expected_output_shape, (
         f"Output shape {output_arr.shape} does not match expected {expected_output_shape}"
@@ -316,5 +323,3 @@ def test_large_head_dimension() -> None:
     assert output_arr.dtype == mx.float16, f"Output dtype {output_arr.dtype} does not match float16"
     # Verify output values are finite (no NaN or Inf)
     assert mx.isfinite(output_arr).all(), "Output attention vectors should be finite"
-
-    logger.info(f"Large head dimension test passed with head_dim={cfg_head_dim}")

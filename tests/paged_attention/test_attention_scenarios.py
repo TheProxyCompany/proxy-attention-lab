@@ -78,7 +78,7 @@ def test_max_score_over_history_in_one_block() -> None:
     mx.eval(output_arr)
 
     # --- Calculate expected output (Python reference) ---
-    # Scale factor: 1.0 / sqrt(head_dim)
+    # Scale factor: 1.0 / sqrt(head_dim) for scaled dot-product attention
     py_scale = 1.0 / mx.sqrt(mx.array(float(cfg_head_dim))).item()
 
     # Calculate scores for each history position
@@ -130,10 +130,9 @@ def test_max_score_over_history_in_one_block() -> None:
     expected_V_output_reshaped = expected_V_output_py.astype(mx.float16).reshape(num_q_threads, cfg_head_dim)
 
     # Log test details
-    logger.info(f"Test ('{test_max_score_over_history_in_one_block.__name__}'):")
+    logger.info(f"Test: {test_max_score_over_history_in_one_block.__name__}")
     logger.info(f"  Scores: {scores_val}")
     logger.info(f"  Max Score: {true_max_score}")
-    logger.info(f"  Sum Exp Score: {true_sum_exp_score}")
     logger.info(f"  Softmax Probs: {softmax_probs}")
     logger.info(f"  Expected V output: {expected_V_output_reshaped}")
     logger.info(f"  Actual V output: {output_arr}")
@@ -253,12 +252,13 @@ def test_max_score_over_multi_block_history() -> None:
         score = (mx.sum(q_vec * k_vec) * scale).item()
         scores_val.append(score)
 
-    # Calculate detailed score values for debugging and verification
-    score0 = (1.0 * 1.0 + 2.0 * 1.0 + 3.0 * 1.0 + 4.0 * 1.0) * scale  # = 10 * 0.5 = 5.0
-    score1 = (1.0 * 2.0 + 2.0 * 2.0 + 3.0 * 2.0 + 4.0 * 2.0) * scale  # = 20 * 0.5 = 10.0
-    score2 = (1.0 * 0.5 + 2.0 * 0.5 + 3.0 * 0.5 + 4.0 * 0.5) * scale  # = 5 * 0.5 = 2.5
-    score3 = (1.0 * 3.0 + 2.0 * 3.0 + 3.0 * 3.0 + 4.0 * 3.0) * scale  # = 30 * 0.5 = 15.0
-    score4 = (1.0 * 1.5 + 2.0 * 1.5 + 3.0 * 1.5 + 4.0 * 1.5) * scale  # = 15 * 0.5 = 7.5
+    # Calculate detailed score values for each history position
+    # Score calculation: dot_product(query, key) * scale
+    score0 = (1.0 * 1.0 + 2.0 * 1.0 + 3.0 * 1.0 + 4.0 * 1.0) * scale  # = 10 * 0.5 = 5.0 (block 0, slot 0)
+    score1 = (1.0 * 2.0 + 2.0 * 2.0 + 3.0 * 2.0 + 4.0 * 2.0) * scale  # = 20 * 0.5 = 10.0 (block 0, slot 1)
+    score2 = (1.0 * 0.5 + 2.0 * 0.5 + 3.0 * 0.5 + 4.0 * 0.5) * scale  # = 5 * 0.5 = 2.5 (block 0, slot 2)
+    score3 = (1.0 * 3.0 + 2.0 * 3.0 + 3.0 * 3.0 + 4.0 * 3.0) * scale  # = 30 * 0.5 = 15.0 (block 1, slot 0)
+    score4 = (1.0 * 1.5 + 2.0 * 1.5 + 3.0 * 1.5 + 4.0 * 1.5) * scale  # = 15 * 0.5 = 7.5 (block 1, slot 1)
 
     # Find maximum score
     true_max_score = -float("inf")
@@ -300,24 +300,21 @@ def test_max_score_over_multi_block_history() -> None:
     # Reshape to match expected output format
     expected_V_output_reshaped = expected_V_output_py.astype(mx.float16).reshape(num_q_threads, cfg_head_dim)
 
-    # Log test details
-    logger.info(f"Score for hist_pos=0 (block 0, slot 0): {score0}")
-    logger.info(f"Score for hist_pos=1 (block 0, slot 1): {score1}")
-    logger.info(f"Score for hist_pos=2 (block 0, slot 2): {score2}")
-    logger.info(f"Score for hist_pos=3 (block 1, slot 0): {score3}")
-    logger.info(f"Score for hist_pos=4 (block 1, slot 1): {score4}")
-    logger.info(f"Max Score: {true_max_score}")
-    logger.info(f"Sum Exp Score: {true_sum_exp_score}")
-    logger.info(f"Softmax Probs: {softmax_probs}")
-    logger.info(f"Expected V output: {expected_V_output_reshaped}")
-
     # For attention output, shape is [num_q_threads, cfg_head_dim]
     expected_output_shape = (num_q_threads, cfg_head_dim)
 
-    logger.info(f"Test: Expected output shape: {expected_output_shape}")
-    logger.info(f"Test: Actual output shape: {output_arr.shape}")
-    logger.info(f"Test: Expected V output: {expected_V_output_reshaped}")
-    logger.info(f"Test: Actual V output: {output_arr}")
+    # Log test details
+    logger.info(f"Test: {test_max_score_over_multi_block_history.__name__}")
+    logger.info("Scores across multiple blocks:")
+    logger.info(f"  Score for hist_pos=0 (block 0, slot 0): {score0}")
+    logger.info(f"  Score for hist_pos=1 (block 0, slot 1): {score1}")
+    logger.info(f"  Score for hist_pos=2 (block 0, slot 2): {score2}")
+    logger.info(f"  Score for hist_pos=3 (block 1, slot 0): {score3}")
+    logger.info(f"  Score for hist_pos=4 (block 1, slot 1): {score4}")
+    logger.info(f"Max Score: {true_max_score}")
+    logger.info(f"Softmax Probs: {softmax_probs}")
+    logger.info(f"Expected V output: {expected_V_output_reshaped}")
+    logger.info(f"Actual V output: {output_arr}")
 
     # Verify results
     assert output_arr.shape == expected_output_shape, (
@@ -401,11 +398,10 @@ def test_zero_history_returns_zero_score() -> None:
     # Output is now full attention format [num_q_threads, cfg_head_dim]
     expected_output_shape = (num_q_threads, cfg_head_dim)
 
-    logger.info(f"Test Zero History: Query token offsets = {py_query_token_offset}")
-    logger.info(f"Test Zero History: Expected output shape = {expected_output_shape}")
-    logger.info(f"Test Zero History: Actual output shape = {output_arr.shape}")
-    logger.info(f"Test Zero History: Expected V output = {expected_v_output}")
-    logger.info(f"Test Zero History: Actual V output = {output_arr}")
+    logger.info(f"Test: {test_zero_history_returns_zero_score.__name__}")
+    logger.info(f"  Query token offsets = {py_query_token_offset}")
+    logger.info(f"  Expected V output = {expected_v_output}")
+    logger.info(f"  Actual V output = {output_arr}")
 
     # Verify results
     assert output_arr.shape == expected_output_shape, (
@@ -426,6 +422,9 @@ def test_history_limited_by_sequence_length() -> None:
     This test verifies that when a query token's logical offset implies a history that extends
     beyond the actual_sequence_length, the kernel correctly processes only up to
     actual_sequence_length - 1 and ignores positions that would be out of bounds.
+
+    In this test, query_token_offset=5 implies 5 history tokens (positions 0-4),
+    but actual_sequence_length=3 means only positions 0-2 should be considered.
 
     The kernel achieves this via the line:
     uint effective_history_length = min(current_q_token_logical_pos, actual_sequence_length);
@@ -468,7 +467,7 @@ def test_history_limited_by_sequence_length() -> None:
     py_v_cache_pool[0, 0, 0, :] = mx.array([10.0, 20.0, 30.0, 40.0], dtype=mx.float16)  # Position 0
     py_v_cache_pool[0, 1, 0, :] = mx.array([50.0, 60.0, 70.0, 80.0], dtype=mx.float16)  # Position 1 (highest score)
     py_v_cache_pool[0, 2, 0, :] = mx.array([5.0, 6.0, 7.0, 8.0], dtype=mx.float16)  # Position 2
-    # Positions 3-4 should NOT be accessed due to sequence length limit
+    # Positions 3-4 should NOT be accessed due to sequence length limit (actual_sequence_length=3)
     py_v_cache_pool[0, 3, 0, :] = mx.array([100.0, 200.0, 300.0, 400.0], dtype=mx.float16)  # Position 3
     py_v_cache_pool[1, 0, 0, :] = mx.array([500.0, 600.0, 700.0, 800.0], dtype=mx.float16)  # Position 4
 
@@ -539,14 +538,15 @@ def test_history_limited_by_sequence_length() -> None:
     # Output is now full attention format [num_q_threads, cfg_head_dim]
     expected_output_shape = (num_q_threads, cfg_head_dim)
 
-    logger.info(f"Test History Limit: actual_sequence_length = {actual_sequence_length}")
-    logger.info(f"Test History Limit: query_token_offset = {query_token_offset}")
-    logger.info(f"Test History Limit: Score for position 0 = {score0}")
-    logger.info(f"Test History Limit: Score for position 1 = {score1} (max)")
-    logger.info(f"Test History Limit: Score for position 2 = {score2}")
-    logger.info(f"Test History Limit: Softmax probabilities = [{prob0}, {prob1}, {prob2}]")
-    logger.info(f"Test History Limit: Expected V output = {expected_V_output}")
-    logger.info(f"Test History Limit: Actual V output = {output_arr}")
+    logger.info(f"Test: {test_history_limited_by_sequence_length.__name__}")
+    logger.info(f"  actual_sequence_length = {actual_sequence_length}, query_token_offset = {query_token_offset}")
+    logger.info("  Scores for positions within sequence length:")
+    logger.info(f"    Position 0 = {score0}")
+    logger.info(f"    Position 1 = {score1} (max)")
+    logger.info(f"    Position 2 = {score2}")
+    logger.info(f"  Softmax probabilities = [{prob0}, {prob1}, {prob2}]")
+    logger.info(f"  Expected V output = {expected_V_output}")
+    logger.info(f"  Actual V output = {output_arr}")
 
     # Verify results
     assert output_arr.shape == expected_output_shape, (
@@ -569,6 +569,10 @@ def test_history_scan_stops_at_page_table_limit() -> None:
     >= params->max_logical_blocks_per_seq (i.e., beyond what the page table describes
     for that sequence), the kernel correctly stops scanning further history but still
     returns the max score found from valid preceding blocks.
+
+    In this test, query_token_offset=5 implies 5 history tokens (positions 0-4), but
+    the page table only describes 2 logical blocks (covering positions 0-3), so position 4
+    should be ignored even though it's within sequence_length.
 
     The kernel achieves this via the code:
     if (logical_block_idx >= params->max_logical_blocks_per_seq) {
@@ -594,7 +598,7 @@ def test_history_scan_stops_at_page_table_limit() -> None:
     # Position mapping with cfg_tokens_per_page = 2:
     # hist_pos 0, 1 -> logical_block_idx 0 -> physical_page 0
     # hist_pos 2, 3 -> logical_block_idx 1 -> physical_page 1
-    # hist_pos 4    -> logical_block_idx 2 (beyond page_table) -> should not be accessed
+    # hist_pos 4    -> logical_block_idx 2 (beyond page_table limit) -> should not be accessed
 
     # K-vectors for logical block 0 (positions 0, 1)
     # Position 0 (token_slot 0 on physical_page 0) - Score will be 2.0 after scale
@@ -693,16 +697,18 @@ def test_history_scan_stops_at_page_table_limit() -> None:
     expected_V_output = expected_V_output_py.astype(mx.float16).reshape(num_q_threads, cfg_head_dim)
     expected_output_shape = (num_q_threads, cfg_head_dim)
 
-    logger.info(f"Test Page Table Limit: max_logical_blocks_per_seq = {max_logical_blocks_per_seq_in_pagetable}")
-    logger.info(f"Test Page Table Limit: query_token_offset = {query_token_offset}")
-    logger.info("Test Page Table Limit: Scores for positions in valid blocks:")
-    logger.info(f"  Position 0 (block 0, slot 0): {score0}")
-    logger.info(f"  Position 1 (block 0, slot 1): {score1}")
-    logger.info(f"  Position 2 (block 1, slot 0): {score2} (max)")
-    logger.info(f"  Position 3 (block 1, slot 1): {score3}")
-    logger.info(f"Test Page Table Limit: Softmax probabilities = [{prob0}, {prob1}, {prob2}, {prob3}]")
-    logger.info(f"Test Page Table Limit: Expected V output = {expected_V_output}")
-    logger.info(f"Test Page Table Limit: Actual V output = {output_arr}")
+    logger.info(f"Test: {test_history_scan_stops_at_page_table_limit.__name__}")
+    logger.info(
+        f"  max_logical_blocks_per_seq = {max_logical_blocks_per_seq_in_pagetable}, query_token_offset = {query_token_offset}"
+    )
+    logger.info("  Scores for positions in valid blocks:")
+    logger.info(f"    Position 0 (block 0, slot 0): {score0}")
+    logger.info(f"    Position 1 (block 0, slot 1): {score1}")
+    logger.info(f"    Position 2 (block 1, slot 0): {score2} (max)")
+    logger.info(f"    Position 3 (block 1, slot 1): {score3}")
+    logger.info(f"  Softmax probabilities = [{prob0}, {prob1}, {prob2}, {prob3}]")
+    logger.info(f"  Expected V output = {expected_V_output}")
+    logger.info(f"  Actual V output = {output_arr}")
 
     # Verify results
     assert output_arr.shape == expected_output_shape, (

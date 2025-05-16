@@ -33,7 +33,16 @@ def test_v_aggregation_local_accumulation() -> None:
     Tests the V-aggregation for a single item with a single history token,
     verifying proper softmax probability calculation using global max and sum_exp.
     The kernel should compute and output correctly weighted V vectors.
+
+    This test demonstrates the full attention computation flow:
+    1. Query-Key dot product to get raw attention scores
+    2. Scale the scores by 1/sqrt(head_dim)
+    3. Calculate softmax probabilities
+    4. Weight the value vectors with the softmax probabilities
+    5. Return the aggregated value vectors
     """
+    logger.info(f"Test: {test_v_aggregation_local_accumulation.__name__}")
+
     num_items = 1
     cfg_head_dim = 4
     cfg_num_kv_heads = 1
@@ -42,6 +51,7 @@ def test_v_aggregation_local_accumulation() -> None:
     # --- Setup test inputs ---
     # Q: [1, head_dim]
     py_queries = mx.array([[1.0, 1.0, 1.0, 1.0]], dtype=mx.float16)
+    logger.info(f"  Query shape: {py_queries.shape}, values: {py_queries}")
 
     # K-cache: K for hist_idx = 0
     py_k_cache_pool = mx.zeros((1, cfg_tokens_per_page, cfg_num_kv_heads, cfg_head_dim), dtype=mx.float16)
@@ -56,6 +66,12 @@ def test_v_aggregation_local_accumulation() -> None:
     py_sequence_lengths = mx.array([1], dtype=mx.int32)  # Item has 1 token (the current Q)
     py_query_to_seq_map = mx.array([0], dtype=mx.int32)
     py_query_token_offset = mx.array([1], dtype=mx.int32)  # Effective history length = 1 (looks at hist_idx 0)
+
+    logger.info("  Test Configuration:")
+    logger.info(f"    head_dim: {cfg_head_dim}, tokens_per_page: {cfg_tokens_per_page}")
+    logger.info(
+        f"    sequence_length: {py_sequence_lengths.item()}, query_token_offset: {py_query_token_offset.item()}"
+    )
 
     # --- Calculate expected output (Python reference) ---
     py_scale = 1.0 / mx.sqrt(mx.array(float(cfg_head_dim))).item()  # 0.5
@@ -97,10 +113,11 @@ def test_v_aggregation_local_accumulation() -> None:
     )
     mx.eval(output_arr)
 
-    logger.info(f"TDD-7.2-a Step 5: Output from kernel: {output_arr}")
-    logger.info(f"TDD-7.2-a Step 5: Output shape: {output_arr.shape}")
-    logger.info(f"TDD-7.2-a Step 5: Expected full V output: {expected_v_output_reshaped}")
-    logger.info(f"TDD-7.2-a Step 5: Computed softmax_prob: {softmax_prob_hist0}")
+    logger.info("  Attention Output:")
+    logger.info(f"    Output shape: {output_arr.shape}")
+    logger.info(f"    Expected output shape: {(num_items, cfg_head_dim)}")
+    logger.info(f"    Expected V output: {expected_v_output_reshaped}")
+    logger.info(f"    Computed softmax probability: {softmax_prob_hist0}")
 
     # Assert the shape declared by C++ output_shapes
     expected_shape = (num_items, cfg_head_dim)

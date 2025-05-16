@@ -55,7 +55,7 @@ def test_paged_attention_determinism() -> None:
     # num_queries_tokens here means the first dimension of the Q array
     # Total items dispatched will be num_queries_tokens * num_q_heads
     queries_shape = (num_queries_tokens, num_q_heads, head_dim)
-    # Explicitly create numpy array first, then convert, to ensure identical initial data
+    # Using fixed random seed to ensure consistent inputs for determinism test
     py_queries = mx.random.normal(queries_shape, dtype=mx.float16)
 
     # 2. K/V Cache Pools
@@ -96,7 +96,8 @@ def test_paged_attention_determinism() -> None:
     py_query_token_offset = mx.array(_query_token_offset_list, dtype=mx.int32)
 
     # --- Call paged_attention the first time ---
-    logger.info("Determinism Test: First call to paged_attention.")
+    logger.info(f"Test: {test_paged_attention_determinism.__name__}")
+    logger.info("  First call to paged_attention...")
     output1 = paged_attention(
         py_queries,
         py_k_cache_pool,
@@ -109,9 +110,7 @@ def test_paged_attention_determinism() -> None:
     mx.eval(output1)  # Ensure computation is done
 
     # --- Call paged_attention the second time with identical inputs ---
-    # Re-create from numpy arrays to ensure no aliasing or in-place modification issues
-    # (though MLX arrays are usually immutable, this is an extra safeguard for test setup)
-    logger.info("Determinism Test: Second call to paged_attention with identical inputs.")
+    logger.info("  Second call to paged_attention with identical inputs...")
     output2 = paged_attention(
         py_queries,
         py_k_cache_pool,
@@ -131,4 +130,4 @@ def test_paged_attention_determinism() -> None:
         "Paged attention output is not deterministic. Outputs differ between two identical calls."
     )
 
-    logger.info("test_paged_attention_determinism PASSED: Outputs are identical.")
+    logger.info("  Result: Outputs are identical - determinism verified.")

@@ -99,7 +99,7 @@ def test_fetch_k_vector_element_for_first_token_of_sequence() -> None:
 
     # --- Calculate expected output (Python reference) ---
 
-    # Expected scores (not explicitly used in test):
+    # Expected scores (single token history means 100% attention weight):
     # Item 0: Q[0] dot K[0,0,0] * scale = 100.0 * 11.0 * 0.5 = 550.0
     # Item 1: Q[1] dot K[1,0,0] * scale = 200.0 * 22.0 * 0.5 = 2200.0
 
@@ -118,12 +118,10 @@ def test_fetch_k_vector_element_for_first_token_of_sequence() -> None:
     expected_output_shape = (num_q_threads, cfg_head_dim)
 
     # Log test details
-    logger.info(f"DEBUG: output_arr shape = {output_arr.shape}, type = {type(output_arr)}")
-    logger.info(f"DEBUG: expected_V_output shape = {expected_V_output.shape}")
-    logger.info(f"Test: Expected output shape: {expected_output_shape}")
-    logger.info(f"Test: Actual output shape: {output_arr.shape}")
-    logger.info(f"Test: Expected V output: {expected_V_output}")
-    logger.info(f"Test: Actual V output: {output_arr}")
+    logger.info(f"Test: {test_fetch_k_vector_element_for_first_token_of_sequence.__name__}")
+    logger.info(f"  Expected output shape: {expected_output_shape}")
+    logger.info(f"  Expected V output: {expected_V_output}")
+    logger.info(f"  Actual V output: {output_arr}")
 
     # Verify results
     assert output_arr.shape == expected_output_shape, (
@@ -201,7 +199,8 @@ def test_fetch_entire_k_vector_for_specific_token_slot() -> None:
         py_query_token_offset,
     )
     mx.eval(output_arr)
-    # Expected scores:
+
+    # Expected scores (single token history means 100% attention weight):
     # Item 0: Q[0] dot K[0,0,0] * scale = 100.0 * (1+2+3+4) * 0.5 = 100.0 * 10 * 0.5 = 500.0
     # Item 1: Q[1] dot K[1,0,0] * scale = 200.0 * (5+6+7+8) * 0.5 = 200.0 * 26 * 0.5 = 2600.0
 
@@ -220,10 +219,10 @@ def test_fetch_entire_k_vector_for_specific_token_slot() -> None:
     expected_output_shape = (num_q_threads, cfg_head_dim)
 
     # Log test details
-    logger.info(f"Test: Expected output shape: {expected_output_shape}")
-    logger.info(f"Test: Actual output shape: {output_arr.shape}")
-    logger.info(f"Test: Expected V output: {expected_V_output}")
-    logger.info(f"Test: Actual V output: {output_arr}")
+    logger.info(f"Test: {test_fetch_entire_k_vector_for_specific_token_slot.__name__}")
+    logger.info(f"  Expected output shape: {expected_output_shape}")
+    logger.info(f"  Expected V output: {expected_V_output}")
+    logger.info(f"  Actual V output: {output_arr}")
 
     # Verify results
     assert output_arr.shape == expected_output_shape, (
@@ -324,10 +323,10 @@ def test_fetch_k_vector_from_variable_token_slot_in_first_logical_block() -> Non
     expected_output_shape = (num_q_threads, cfg_head_dim)
 
     # Log test details
-    logger.info(f"Test: Expected output shape: {expected_output_shape}")
-    logger.info(f"Test: Actual output shape: {output_arr.shape}")
-    logger.info(f"Test: Expected V output: {expected_V_output}")
-    logger.info(f"Test: Actual V output: {output_arr}")
+    logger.info(f"Test: {test_fetch_k_vector_from_variable_token_slot_in_first_logical_block.__name__}")
+    logger.info(f"  Expected output shape: {expected_output_shape}")
+    logger.info(f"  Expected V output: {expected_V_output}")
+    logger.info(f"  Actual V output: {output_arr}")
 
     # Verify results
     assert output_arr.shape == expected_output_shape, (
@@ -422,8 +421,11 @@ def test_correct_token_processing_for_2d_queries_variable_offsets() -> None:
     expected_output_shape = (num_q_threads, cfg_head_dim)
 
     # Log test details
-    logger.info(f"DEBUG 2D regression test: output_arr shape = {output_arr.shape}, values = {output_arr}")
-    logger.info(f"DEBUG 2D regression test: expected shape = {expected_V_output.shape}, values = {expected_V_output}")
+    logger.debug(f"2D regression test: output_arr shape = {output_arr.shape}, values = {output_arr}")
+    logger.debug(f"2D regression test: expected shape = {expected_V_output.shape}, values = {expected_V_output}")
+    logger.info(f"Test: {test_correct_token_processing_for_2d_queries_variable_offsets.__name__}")
+    logger.info(f"  Expected V output: {expected_V_output}")
+    logger.info(f"  Actual V output: {output_arr}")
 
     # Verify results
     assert output_arr.shape == expected_output_shape, (
@@ -547,14 +549,12 @@ def test_parallel_online_max_and_sum_exp() -> None:
     expected_output_shape = (num_q_threads, cfg_head_dim)
 
     # Log test details
-    logger.info(f"Test online Log-Sum-Exp: Expected output shape: {expected_output_shape}")
-    logger.info(f"Test online Log-Sum-Exp: Actual output shape: {output_arr.shape}")
-    logger.info(f"Test online Log-Sum-Exp: Scores: {scores_all}")
-    logger.info(f"Test online Log-Sum-Exp: Max Score: {expected_max_score}")
-    logger.info(f"Test online Log-Sum-Exp: Sum Exp: {expected_sum_exp}")
-    logger.info(f"Test online Log-Sum-Exp: Softmax Probs: {softmax_probs}")
-    logger.info(f"Test online Log-Sum-Exp: Expected V output: {expected_V_output_reshaped}")
-    logger.info(f"Test online Log-Sum-Exp: Actual V output: {output_arr}")
+    logger.info(f"Test: {test_parallel_online_max_and_sum_exp.__name__}")
+    logger.info(f"  Scores: {scores_all}")
+    logger.info(f"  Max Score: {expected_max_score}")
+    logger.info(f"  Softmax Probs: {softmax_probs}")
+    logger.info(f"  Expected V output: {expected_V_output_reshaped}")
+    logger.info(f"  Actual V output: {output_arr}")
 
     # Verify results
     assert output_arr.shape == expected_output_shape, (
@@ -665,15 +665,11 @@ def test_dot_product_q_with_single_k_vector() -> None:
     expected_output_shape = (total_items, cfg_head_dim)
 
     # Log test details
-    logger.info(f"DEBUG: output_arr shape = {output_arr.shape}, type = {type(output_arr)}")
-    logger.info(f"Test: Q0: {py_queries[0, 0, :]}, K0 chosen: {py_k_cache_pool[0, 0, 0, :]}")
-    logger.info(f"Test: Q0·K0 raw dot product = {q0_dot_k0}, scale={scale}, Expected Score0 = {scores_item0[0]}")
-    logger.info(f"Test: Q1: {py_queries[0, 1, :]}, K1 chosen: {py_k_cache_pool[0, 0, 1, :]}")
-    logger.info(f"Test: Q1·K1 raw dot product = {q1_dot_k1}, scale={scale}, Expected Score1 = {scores_item1[0]}")
-    logger.info(f"Test: Expected output shape: {expected_output_shape}")
-    logger.info(f"Test: Actual output shape: {output_arr.shape}")
-    logger.info(f"Test: Expected V output: {expected_V_output}")
-    logger.info(f"Test: Actual V output: {output_arr}")
+    logger.info(f"Test: {test_dot_product_q_with_single_k_vector.__name__}")
+    logger.info(f"  Q0·K0 raw dot product = {q0_dot_k0}, scale={scale}, Expected Score0 = {scores_item0[0]}")
+    logger.info(f"  Q1·K1 raw dot product = {q1_dot_k1}, scale={scale}, Expected Score1 = {scores_item1[0]}")
+    logger.info(f"  Expected V output: {expected_V_output}")
+    logger.info(f"  Actual V output: {output_arr}")
 
     # Verify results
     assert output_arr.shape == expected_output_shape, (

@@ -46,9 +46,34 @@ tokens_per_page = 64
     ],
 )
 def test_pal_vs_sdpa_equivalency_mha(batch_size, seq_len, num_heads, head_dim, dtype):
-    """Compare PAL paged_attention with MLX SDPA kernel."""
+    """Compare PAL paged_attention with MLX SDPA kernel.
+
+    This test verifies that our paged_attention implementation produces numerically
+    equivalent results to MLX's scaled_dot_product_attention (SDPA) function across
+    different configurations. We test various combinations of:
+
+    - Batch sizes (single item and batched)
+    - Sequence lengths (shorter and longer)
+    - Head configurations (including MQA and GQA variants)
+    - Head dimensions
+
+    The test:
+    1. Runs MLX SDPA with random inputs as the reference implementation
+    2. Converts those same inputs to the format expected by paged_attention
+    3. Runs paged_attention and reshapes the output to match SDPA's output format
+    4. Compares the outputs to ensure they're numerically equivalent within tolerance
+
+    This ensures that our implementation matches the standard attention mechanism
+    when the inputs are directly comparable.
+    """
+    logger.info(f"Test: {test_pal_vs_sdpa_equivalency_mha.__name__}")
 
     num_q_heads, num_kv_heads = num_heads
+
+    logger.info("  Test Configuration:")
+    logger.info(f"    Batch size: {batch_size}, Sequence length: {seq_len}")
+    logger.info(f"    Query heads: {num_q_heads}, KV heads: {num_kv_heads}, Head dim: {head_dim}")
+    logger.info(f"    Data type: {dtype}")
 
     # --- 1. Setup Inputs & Run MLX SDPA (Reference) ---
     sdpa_q_shape = (batch_size, num_q_heads, seq_len, head_dim)
@@ -61,10 +86,9 @@ def test_pal_vs_sdpa_equivalency_mha(batch_size, seq_len, num_heads, head_dim, d
     causal_mask = nn.MultiHeadAttention.create_additive_causal_mask(seq_len).astype(dtype)
     scale = 1.0 / mx.sqrt(float(head_dim))
 
-    logger.info(
-        f"Equivalency Test (params: bs={batch_size}, sl={seq_len}, nqh={num_q_heads}, nkvh={num_kv_heads}, hd={head_dim}, dt={dtype}): "
-        f"Calling mx.fast.scaled_dot_product_attention."
-    )
+    logger.info("  Running MLX SDPA (Reference):")
+    logger.info(f"    Input shapes - Q: {sdpa_q_shape}, K/V: {sdpa_kv_shape}")
+
     sdpa_output = mx.fast.scaled_dot_product_attention(
         sdpa_queries,
         sdpa_keys,
@@ -73,7 +97,7 @@ def test_pal_vs_sdpa_equivalency_mha(batch_size, seq_len, num_heads, head_dim, d
         mask=causal_mask,
     )
     mx.eval(sdpa_output)
-    logger.info(f"Equivalency Test: SDPA output shape={sdpa_output.shape}")
+    logger.info(f"    SDPA output shape: {sdpa_output.shape}")
 
     # --- 2. Prepare Inputs for PAL's paged_attention ---
     # PAL expects queries as (TotalTokens, NumQHeads, HeadDim)
@@ -88,6 +112,13 @@ def test_pal_vs_sdpa_equivalency_mha(batch_size, seq_len, num_heads, head_dim, d
     pal_k_cache_pool = mx.zeros((num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim), dtype=dtype)
     pal_v_cache_pool = mx.zeros((num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim), dtype=dtype)
 
+    logger.info("  Preparing PAL paged_attention inputs:")
+    logger.info(f"    Queries shape: {pal_queries.shape}")
+    logger.info(f"    KV cache shape: {pal_k_cache_pool.shape}")
+    logger.info(f"    Logical pages per sequence: {num_logical_pages_per_seq}")
+    logger.info(f"    Total physical pages: {num_total_physical_pages}")
+
+    # Populate KV cache from SDPA inputs
     for b_idx in range(batch_size):
         # Keys/Values for current sequence in batch: (num_kv_heads, seq_len, head_dim)
         # Transpose to (seq_len, num_kv_heads, head_dim) for easier slicing by token
@@ -109,6 +140,7 @@ def test_pal_vs_sdpa_equivalency_mha(batch_size, seq_len, num_heads, head_dim, d
                     token_start_in_seq:token_end_in_seq, :, :
                 ]
 
+    # Create page table mapping
     pal_page_table_list = []
     for b_idx in range(batch_size):
         sequence_physical_page_indices = [
@@ -117,32 +149,25 @@ def test_pal_vs_sdpa_equivalency_mha(batch_size, seq_len, num_heads, head_dim, d
         pal_page_table_list.append(sequence_physical_page_indices)
     pal_page_table = mx.array(pal_page_table_list, dtype=mx.uint32)
 
+    # Set sequence length for each batch item
     pal_sequence_lengths = mx.array([seq_len] * batch_size, dtype=mx.int32)
 
     # query_to_seq_map: maps each token in pal_queries to its sequence index
     # pal_queries has tokens ordered as [seq0_tokens, seq1_tokens, ...]
-    # Corrected: Should be [0 (SL times), 1 (SL times), ...]
     pal_query_to_seq_map = mx.repeat(mx.arange(batch_size, dtype=mx.int32), repeats=seq_len)
 
     # query_token_offset: for causal attention, 1-indexed position within the sequence
-    # For [s0_t0, s0_t1, ..., s1_t0, s1_t1, ...], offsets are [1, 2, ..., SL, 1, 2, ..., SL, ...]
+    # Offsets are [1, 2, ..., SL, 1, 2, ..., SL, ...]
     pal_query_token_offset = mx.tile(mx.arange(1, seq_len + 1, dtype=mx.int32), batch_size)
 
-    logger.info(f"Equivalency Test: PAL Query shape={pal_queries.shape}")
-    logger.info(f"Equivalency Test: PAL K-Cache shape={pal_k_cache_pool.shape}")
-    logger.info(f"Equivalency Test: PAL Page Table shape={pal_page_table.shape}, content: {pal_page_table}")
-    logger.info(
-        f"Equivalency Test: PAL Seq Lengths shape={pal_sequence_lengths.shape}, content: {pal_sequence_lengths}"
-    )
-    logger.info(
-        f"Equivalency Test: PAL Q_to_Seq Map shape={pal_query_to_seq_map.shape}"
-    )  # , content: {pal_query_to_seq_map}")
-    logger.info(
-        f"Equivalency Test: PAL Q_Token Offset shape={pal_query_token_offset.shape}"
-    )  # , content: {pal_query_token_offset}")
+    logger.info("  PAL metadata arrays:")
+    logger.info(f"    Page table shape: {pal_page_table.shape}")
+    logger.info(f"    Sequence lengths: {pal_sequence_lengths}")
+    logger.info(f"    Query to sequence map shape: {pal_query_to_seq_map.shape}")
+    logger.info(f"    Query token offset shape: {pal_query_token_offset.shape}")
 
     # --- 3. Run PAL paged_attention ---
-    logger.info("Equivalency Test: Calling PAL paged_attention.")
+    logger.info("  Running PAL paged_attention:")
     pal_output = paged_attention(
         pal_queries,
         pal_k_cache_pool,
@@ -153,44 +178,37 @@ def test_pal_vs_sdpa_equivalency_mha(batch_size, seq_len, num_heads, head_dim, d
         pal_query_token_offset,
     )
     mx.eval(pal_output)
-    logger.info(f"Equivalency Test: PAL output shape={pal_output.shape}")
+    logger.info(f"    PAL output shape: {pal_output.shape}")
 
     # --- 4. Compare PAL output with SDPA output ---
     # SDPA output is (batch_size, num_q_heads, seq_len, head_dim)
     # PAL output (from C++ op, given pal_queries shape (B*SL, NQ, HD)) is (B*SL*NQ, HD)
     # We need to reshape sdpa_output to match this.
-    # (B, NQ, SL, HD) -> transpose(0, 2, 1, 3) -> (B, SL, NQ, HD)
-    # -> reshape(-1, HD) -> (B*SL*NQ, HD)
+    # (B, NQ, SL, HD) -> transpose(0, 2, 1, 3) -> (B, SL, NQ, HD) -> reshape(-1, HD) -> (B*SL*NQ, HD)
     sdpa_output_reshaped = sdpa_output.transpose(0, 2, 1, 3).reshape(-1, head_dim)
 
-    logger.info(f"Equivalency Test: PAL output shape={pal_output.shape}")  # Added this log to confirm PAL output shape
-    logger.info(f"Equivalency Test: SDPA output for comparison shape={sdpa_output_reshaped.shape}")
+    logger.info("  Comparing outputs:")
+    logger.info(f"    PAL output shape: {pal_output.shape}")
+    logger.info(f"    Reshaped SDPA output shape: {sdpa_output_reshaped.shape}")
 
     assert pal_output.shape == sdpa_output_reshaped.shape, (
         f"Shape mismatch: PAL output {pal_output.shape}, SDPA for comparison {sdpa_output_reshaped.shape}"
     )
 
+    # Calculate differences between outputs
     diff = mx.abs(pal_output - sdpa_output_reshaped)
     max_diff = mx.max(diff).item()
     mean_diff = mx.mean(diff).item()
-    logger.info(f"PAL vs SDPA Differences - Max: {max_diff}, Mean: {mean_diff}")
+    logger.info(f"    Difference metrics - Max: {max_diff:.6f}, Mean: {mean_diff:.6f}")
 
     # For FP16, we allow slightly larger differences due to numerical precision & different implementation
     current_atol = 1e-2
     current_rtol = 1e-5
+    logger.info(f"    Tolerance values - Absolute: {current_atol}, Relative: {current_rtol}")
 
-    if not mx.allclose(pal_output, sdpa_output_reshaped, atol=current_atol, rtol=current_rtol):
-        logger.error(
-            f"PAL vs SDPA (params: {batch_size, seq_len, num_heads, head_dim, dtype}): Outputs do not match closely enough."
-        )
-        logger.error(f"Overall Max absolute difference: {max_diff}")
-        logger.error(f"Overall Mean absolute difference: {mean_diff}")
-
+    # Assert outputs match within tolerance
     assert mx.allclose(pal_output, sdpa_output_reshaped, atol=current_atol, rtol=current_rtol), (
         f"Numerical mismatch between PAL paged_attention and MLX SDPA for params: "
         f"bs={batch_size}, sl={seq_len}, nqh={num_q_heads}, nkvh={num_kv_heads}, hd={head_dim}, dt={dtype}. "
         f"Max diff: {max_diff}, Mean diff: {mean_diff}"
-    )
-    logger.info(
-        f"test_pal_vs_sdpa_equivalency PASSED for params: bs={batch_size}, sl={seq_len}, nqh={num_q_heads}, nkvh={num_kv_heads}, hd={head_dim}, dt={dtype}."
     )

@@ -86,6 +86,7 @@ def test_fetch_k_vector_from_multiple_kv_heads() -> None:
     )
     mx.eval(output_arr)
 
+    # Expected dot products for GQA mapping
     # For token 0, q_head 0 -> k_head 0:
     # Q[0,0,:] = [100.0, 100.0, 100.0, 100.0], K = [1.0, 2.0, 3.0, 4.0]
     # Dot product = 100.0 * 1.0 + 100.0 * 2.0 + 100.0 * 3.0 + 100.0 * 4.0 = 1000.0
@@ -101,9 +102,6 @@ def test_fetch_k_vector_from_multiple_kv_heads() -> None:
     total_items = num_tokens * num_q_heads
     expected_output_shape = (total_items, cfg_head_dim)
 
-    # Get the entire output array
-    logger.info(f"DEBUG: FULL OUTPUT ARRAY: {output_arr}")
-
     # Calculate expected V-output for each query head
     # Since we only have one history token per query, each softmax prob is 1.0
     # Therefore V-output for each query head is exactly the corresponding V-vector
@@ -117,10 +115,10 @@ def test_fetch_k_vector_from_multiple_kv_heads() -> None:
     # Combine into expected V-output array
     expected_v_output = mx.stack([expected_v_head0, expected_v_head1])
 
-    logger.info(f"Test: Expected output shape: {expected_output_shape}")
-    logger.info(f"Test: Actual output shape: {output_arr.shape}")
-    logger.info(f"Test: Expected V output: {expected_v_output}")
-    logger.info(f"Test: Actual V output: {output_arr}")
+    logger.info(f"Test: {test_fetch_k_vector_from_multiple_kv_heads.__name__}")
+    logger.info(f"  GQA configuration: num_q_heads={num_q_heads}, num_kv_heads={cfg_num_kv_heads}")
+    logger.info(f"  Expected V output: {expected_v_output}")
+    logger.info(f"  Actual V output: {output_arr}")
 
     # Verify results
     assert output_arr.shape == expected_output_shape, (
@@ -249,15 +247,12 @@ def test_mqa_kv_head_selection() -> None:
     # Incorrect V output would be using KV head 1's V vector
     incorrect_v_output = py_v_cache_pool[0, 0, 1, :].reshape(1, cfg_head_dim)
 
-    logger.info(f"Test MQA: Q = {py_queries[0, 0, :]}")
-    logger.info(f"Test MQA: K (KV head 0) = {py_k_cache_pool[0, 0, 0, :]}")
-    logger.info(f"Test MQA: K (KV head 1) = {py_k_cache_pool[0, 0, 1, :]}")
-    logger.info(f"Test MQA: V (KV head 0) = {py_v_cache_pool[0, 0, 0, :]}")
-    logger.info(f"Test MQA: V (KV head 1) = {py_v_cache_pool[0, 0, 1, :]}")
-    logger.info(f"Test MQA: Expected output shape = {expected_output_shape}")
-    logger.info(f"Test MQA: Actual output shape = {output_arr.shape}")
-    logger.info(f"Test MQA: Expected V output = {expected_v_output}")
-    logger.info(f"Test MQA: Actual V output = {output_arr}")
+    logger.info(f"Test: {test_mqa_kv_head_selection.__name__}")
+    logger.info(f"  MQA configuration: num_q_heads={num_q_heads}, num_kv_heads={cfg_num_kv_heads}")
+    logger.info(f"  Q = {py_queries[0, 0, :]}, K (KV head 0) = {py_k_cache_pool[0, 0, 0, :]}")
+    logger.info(f"  Correct V (KV head 0) = {py_v_cache_pool[0, 0, 0, :]}")
+    logger.info(f"  Incorrect V (KV head 1) = {py_v_cache_pool[0, 0, 1, :]}")
+    logger.info(f"  Actual V output = {output_arr}")
 
     # Verify results
     assert output_arr.shape == expected_output_shape, (
@@ -273,15 +268,13 @@ def test_mqa_kv_head_selection() -> None:
         "MQA is incorrectly using KV head 1 instead of KV head 0"
     )
 
-    logger.info("test_mqa_kv_head_selection PASSED")
-
 
 def test_mqa_multi_token_kv_head_selection_2d_query() -> None:
     """Test MQA with multi-token KV head selection using 2D queries.
 
-    This test is specifically configured to diagnose struct layout/marshalling issues
-    between C++ and Metal. It verifies that the Parameter struct is correctly passed
-    between the C++ layer and the Metal kernel.
+    This test verifies consistent KV head selection behavior with 2D queries
+    in MQA mode, ensuring all queries properly select KV head 0 regardless of
+    token position.
     """
     # Test configuration
     num_tokens = 5  # Multiple tokens to test consistent KV-head selection
@@ -324,8 +317,6 @@ def test_mqa_multi_token_kv_head_selection_2d_query() -> None:
     )
     mx.eval(output_arr)
 
-    # This test was originally for parameter marshalling debug, but now we have actual output
-
     # Output is now full attention format [num_tokens, cfg_head_dim]
     expected_output_shape = (num_tokens, cfg_head_dim)
 
@@ -336,10 +327,11 @@ def test_mqa_multi_token_kv_head_selection_2d_query() -> None:
     single_v = mx.array([10.0, 20.0, 30.0, 40.0], dtype=mx.float16)
     expected_v_output = mx.stack([single_v] * num_tokens)
 
-    logger.info(f"Test MQA 2D: Output shape: {output_arr.shape}")
-    logger.info(f"Test MQA 2D: Expected shape: {expected_output_shape}")
-    logger.info(f"Test MQA 2D: Expected output: {expected_v_output}")
-    logger.info(f"Test MQA 2D: Actual output: {output_arr}")
+    logger.info(f"Test: {test_mqa_multi_token_kv_head_selection_2d_query.__name__}")
+    logger.info(f"  MQA configuration: 2D queries, num_kv_heads={cfg_num_kv_heads}")
+    logger.info(f"  Number of tokens: {num_tokens}")
+    logger.info(f"  Expected V output: {expected_v_output[0]} (repeated for each token)")
+    logger.info(f"  Actual output shape: {output_arr.shape}")
 
     # Verify results
     assert output_arr.shape == expected_output_shape, (
@@ -350,5 +342,3 @@ def test_mqa_multi_token_kv_head_selection_2d_query() -> None:
     assert mx.allclose(output_arr, expected_v_output, atol=1e-2, rtol=1e-2), (
         "MQA with 2D queries is not correctly selecting KV head 0"
     )
-
-    logger.info("test_mqa_multi_token_kv_head_selection_2d_query - PARAMETER DEBUG TEST COMPLETED")
