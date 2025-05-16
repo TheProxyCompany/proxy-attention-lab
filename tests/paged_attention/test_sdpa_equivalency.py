@@ -42,7 +42,7 @@ tokens_per_page = 64
         (1, 16, (4, 2), 32, mx.float16),  # GQA (num_q_heads > num_kv_heads, num_kv_heads > 1)
         (1, 16, (1, 1), 64, mx.float16),  # Different head dimension
         (1, 32, (2, 2), 32, mx.float16),  # Different number of heads
-        # (2, 32, (4, 4), 32, mx.float16),    # Batched Example
+        (2, 32, (4, 4), 32, mx.float16),  # Batched Example
     ],
 )
 def test_pal_vs_sdpa_equivalency_mha(batch_size, seq_len, num_heads, head_dim, dtype):
@@ -129,7 +129,8 @@ def test_pal_vs_sdpa_equivalency_mha(batch_size, seq_len, num_heads, head_dim, d
 
     # query_to_seq_map: maps each token in pal_queries to its sequence index
     # pal_queries has tokens ordered as [seq0_tokens, seq1_tokens, ...]
-    pal_query_to_seq_map = mx.tile(mx.arange(batch_size, dtype=mx.int32), seq_len)
+    # Corrected: Should be [0 (SL times), 1 (SL times), ...]
+    pal_query_to_seq_map = mx.repeat(mx.arange(batch_size, dtype=mx.int32), repeats=seq_len)
 
     # query_token_offset: for causal attention, 1-indexed position within the sequence
     # For [s0_t0, s0_t1, ..., s1_t0, s1_t1, ...], offsets are [1, 2, ..., SL, 1, 2, ..., SL, ...]
@@ -182,8 +183,10 @@ def test_pal_vs_sdpa_equivalency_mha(batch_size, seq_len, num_heads, head_dim, d
     mean_diff = mx.mean(diff).item()
     logger.info(f"PAL vs SDPA Differences - Max: {max_diff}, Mean: {mean_diff}")
 
-    current_atol = 1e-2
-    current_rtol = 1e-2
+    # For FP16, we allow larger differences due to numerical precision issues
+    # For FP32, tolerances can be tighter.
+    current_atol = 1e-2 if dtype == mx.float16 else 1e-5
+    current_rtol = 1e-2 if dtype == mx.float16 else 1e-4
 
     if not mx.allclose(pal_output, sdpa_output_reshaped, atol=current_atol, rtol=current_rtol):
         logger.error(
