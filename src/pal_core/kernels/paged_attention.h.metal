@@ -85,7 +85,7 @@ constant static const float kEpsilonForZeroGuard = 1e-9f;
  * @param num_kv_heads_param Number of key-value heads
  * @return The mapped KV head index
  */
-[[always_inline]] static inline uint map_q_to_kv_head(
+static inline uint map_q_to_kv_head(
     uint global_item_q_head_idx, // Effective Q head index for the item
     uint num_q_heads_param,
     uint num_kv_heads_param
@@ -114,7 +114,7 @@ constant static const float kEpsilonForZeroGuard = 1e-9f;
  * @param kernel_params Kernel parameters struct
  * @return Pointer to the K/V vector, or nullptr if invalid
  */
-[[always_inline]] static inline device const half* fetch_kv_pointer(
+static inline device const half* fetch_kv_pointer(
     bool is_k_vector, // true for K, false for V
     uint actual_hist_token_pos,
     uint target_kv_head_idx, // Already mapped
@@ -173,7 +173,7 @@ constant static const float kEpsilonForZeroGuard = 1e-9f;
  * @param broadcast_scale_scratch_ptr Pointer to scratch space for broadcasting scale factor
  * @param kernel_params Kernel parameters struct with log_exp_min_clamp
  */
-[[always_inline]] static inline void update_softmax_stats_kahan(
+static inline void update_softmax_stats_kahan(
     threadgroup float2* current_global_stats_ptr,
     threadgroup float* current_s_comp_ptr,
     float m_local_tile_from_reduction,
@@ -218,7 +218,7 @@ constant static const float kEpsilonForZeroGuard = 1e-9f;
  * @param output_buffer_param Output buffer to write zeros to
  * @param kernel_params Kernel parameters struct with head_dim
  */
-[[always_inline]] static inline void zero_output_vector_for_item(
+static inline void zero_output_vector_for_item(
     uint item_global_idx,
     device half* output_buffer_param,
     constant const PagedAttentionParams& kernel_params
@@ -240,7 +240,7 @@ constant static const float kEpsilonForZeroGuard = 1e-9f;
  * @param kernel_params Kernel parameters struct with head_dim
  * @return The dot product result as a float
  */
-[[always_inline]] static inline float dot_product_qk(
+static inline float dot_product_qk(
     threadgroup const float* q_vec_shmem_param,
     threadgroup const float* k_vec_tile_entry_param,
     constant const PagedAttentionParams& kernel_params
@@ -248,11 +248,10 @@ constant static const float kEpsilonForZeroGuard = 1e-9f;
     float score = 0.0f;
     // C++ validates head_dim % 4 == 0, so no scalar fallback needed in this helper's main loop.
     // The helper assumes it's always called for a full head_dim that's a multiple of 4.
-    for (uint d = 0; d < kernel_params.head_dim; d += 4) {
-        float4 q_c = float4(q_vec_shmem_param[d], q_vec_shmem_param[d+1], q_vec_shmem_param[d+2], q_vec_shmem_param[d+3]);
-        // Load K components from threadgroup memory (already float)
-        float4 k_c = float4(k_vec_tile_entry_param[d], k_vec_tile_entry_param[d+1], k_vec_tile_entry_param[d+2], k_vec_tile_entry_param[d+3]);
-        score += dot(q_c, k_c);
+    for(uint d = 0; d < kernel_params.head_dim; d += 4) {
+        float4 qv = *((threadgroup const float4*)(q_vec_shmem_param + d));
+        float4 kv = *((threadgroup const float4*)(k_vec_tile_entry_param + d));
+        score += dot(qv, kv);
     }
     return score;
 }
@@ -262,7 +261,7 @@ constant static const float kEpsilonForZeroGuard = 1e-9f;
  * @param head_dim_param The dimension of the attention head.
  * @return The calculated scale factor, or 1.0f if head_dim is 0.
  */
-[[always_inline]] static inline float calculate_inv_sqrt_head_dim(uint head_dim_param) {
+static inline float calculate_inv_sqrt_head_dim(uint head_dim_param) {
     if (head_dim_param > 0) {
         return rsqrt((float)head_dim_param);
     }

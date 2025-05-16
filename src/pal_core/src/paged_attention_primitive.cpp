@@ -62,6 +62,7 @@ namespace pal::cpp {
 // Define constants for log_exp_min_clamp calculation
 constexpr static float kFp16DenormMinVal = 5.9604644775390625e-08f; // 2^-24
 constexpr static float kLogFp16DenormMinVal = -16.63553237915039f; // logf(kFp16DenormMinVal)
+constexpr static uint32_t kDefaultPaddingFloatsPerRow = 8; // For 32-byte padding (8 floats)
 
 // Definition of the calculate_threadgroup_memory_breakdown_and_total helper method
 ThreadgroupMemoryLayout PagedAttentionPrimitive::calculate_threadgroup_memory_breakdown_and_total(
@@ -133,9 +134,8 @@ ThreadgroupMemoryLayout PagedAttentionPrimitive::calculate_threadgroup_memory_br
     // 8. K Tile memory - for caching K vectors with padding for bank conflict avoidance
     tg_mem_current_offset_bytes = (tg_mem_current_offset_bytes + kAlignmentMask) & ~kAlignmentMask;
 
-    // Add padding to each K-vector row to avoid bank conflicts
-    const uint32_t padding_floats_per_row = 8; // For 32-byte padding (8 floats)
-    uint32_t padded_head_dim_for_tile = params.head_dim + padding_floats_per_row;
+    // Use pad_floats_per_row from params (should be already set by caller)
+    uint32_t padded_head_dim_for_tile = params.head_dim + params.pad_floats_per_row;
 
     // K_tile requires tile_size_T_runtime * padded_head_dim_for_tile * sizeof(float) bytes
     layout.k_tile_bytes = params.tile_size_T_runtime * padded_head_dim_for_tile * sizeof(float);
@@ -185,6 +185,7 @@ void PagedAttentionPrimitive::populate_remaining_attention_params(
     params.num_kv_heads = extracted_core_dims.num_kv_heads;
     params.head_dim = extracted_core_dims.head_dim;
     params.tokens_per_page = extracted_core_dims.tokens_per_page;
+    params.pad_floats_per_row = kDefaultPaddingFloatsPerRow; // Set this early
     // Note: actual_threads_per_item_group and total_items_in_dispatch were removed from params
 
     params.max_logical_blocks_per_seq = page_table_arr.shape(1);
@@ -251,17 +252,17 @@ void PagedAttentionPrimitive::populate_remaining_attention_params(
 
     // 3. Compute "bytes per history token" for dynamic tiles (K_tile + V_tile) with padding
     // score_tile no longer needed in threadgroup memory for fused pass
-    const uint32_t padding_floats_per_row = 8; // For 32-byte padding to avoid bank conflicts
-    uint32_t padded_head_dim_for_tile = params.head_dim + padding_floats_per_row;
+    // Use pad_floats_per_row from params, which is now set
+    uint32_t padded_head_dim_for_tile_calc = params.head_dim + params.pad_floats_per_row;
 
-    size_t bytes_per_token_in_tile = (padded_head_dim_for_tile * sizeof(float)) /*K_tile_padded*/ +
-                                    (padded_head_dim_for_tile * sizeof(float)) /*V_tile_padded*/;
+    size_t bytes_per_token_in_tile = (padded_head_dim_for_tile_calc * sizeof(float)) /*K_tile_padded*/ +
+                                    (padded_head_dim_for_tile_calc * sizeof(float)) /*V_tile_padded*/;
     if (bytes_per_token_in_tile == 0) { // Should not happen if head_dim > 0
         throw std::runtime_error("[PAL Primitive] Calculated bytes_per_token_in_tile is zero.");
     }
 
     spdlog::debug("[PAL Primitive] Using padded head_dim for tile: {} (head_dim: {} + padding: {})",
-                 padded_head_dim_for_tile, params.head_dim, padding_floats_per_row);
+                 padded_head_dim_for_tile_calc, params.head_dim, params.pad_floats_per_row);
 
     // 4. Raw ceiling that actually fits
     uint32_t max_T_fit = 0;
@@ -343,7 +344,7 @@ void PagedAttentionPrimitive::populate_remaining_attention_params(
     // with the final params_struct. For now, ensure params.tile_size_T_runtime is set.
 
     spdlog::info("[PAL Primitive] Final determined tile_size_T_runtime: {} (using padded_head_dim: {})",
-               params.tile_size_T_runtime, padded_head_dim_for_tile);
+               params.tile_size_T_runtime, padded_head_dim_for_tile_calc);
 
     spdlog::debug("[PAL Primitive] Final calculated params_struct.tile_size_T_runtime: {}", params.tile_size_T_runtime);
     spdlog::info("[PAL Primitive] Memory budget: bytes_per_token_in_tile={}, max_T_fit={}, fixed_mem={}, guard={}, tg_limit={}",

@@ -92,7 +92,7 @@ using namespace metal;
 
     // Hoisted: Calculate padded head dimension to avoid bank conflicts
     // This is used for K_tile and V_tile row strides.
-    const uint padded_head_dim_hoisted = params.head_dim + kPaddingFloatsPerRow;
+    const uint padded_head_dim_hoisted = params.head_dim + params.pad_floats_per_row;
 
     // Guard path for large head_dim that's not supported by the fused path
     if (params.head_dim > kMaxHeadDimForFusedPath) {
@@ -103,10 +103,6 @@ using namespace metal;
         }
         return; // Exit if head_dim is too large for the fused path we are building
     }
-
-    // --- 3/10: Thread-Local Accumulators for Online Softmax ---
-    float m_local = -INFINITY; // Maximum score accumulator
-    float d_local = 0.0f;      // Sum of scaled exponentials accumulator
 
     // --- 4/10: Thread Identifiers & SIMD Group Info ---
     uint global_item_idx = tg_pos_in_grid.x;    // Identifies the query-head item
@@ -163,20 +159,17 @@ using namespace metal;
     current_offset = (uintptr_t)(tg_simd_v_chunk_sums + num_simd_groups);
     current_offset = (current_offset + kAlignmentMask) & ~kAlignmentMask;
 
-    // Calculate padded head dimension to avoid bank conflicts
-    uint padded_head_dim = params.head_dim + kPaddingFloatsPerRow;
-
     threadgroup float* K_tile = (threadgroup float*)current_offset;
 
-    // Update current_offset for the next section (V_tile) using padded_head_dim
-    current_offset += params.tile_size_T_runtime * padded_head_dim * sizeof(float);
+    // Update current_offset for the next section (V_tile) using padded_head_dim_hoisted for K_tile's size
+    current_offset += params.tile_size_T_runtime * padded_head_dim_hoisted * sizeof(float);
     current_offset = (current_offset + kAlignmentMask) & ~kAlignmentMask;
 
     // V_tile for caching V-vectors in threadgroup memory
     threadgroup float* V_tile = (threadgroup float*)current_offset;
 
-    // Update current_offset for final guard bytes - no score_tile needed for fused path
-    current_offset += params.tile_size_T_runtime * padded_head_dim * sizeof(float);
+    // Update current_offset for final guard bytes - using padded_head_dim_hoisted for V_tile's size
+    current_offset += params.tile_size_T_runtime * padded_head_dim_hoisted * sizeof(float);
     current_offset = (current_offset + kAlignmentMask) & ~kAlignmentMask;
 
     // --- 6/10: Q-Vector Pointer Calculation & Staging ---
@@ -280,7 +273,7 @@ using namespace metal;
 
                         // Load the entire K-vector using float4 chunks
                         // Note: We only fill the actual head_dim elements, leaving padding untouched
-                        device const half4* k_vec_global_ptr_h4 = reinterpret_cast<device const half4*>(k_vector_global_ptr);
+                        device const half4* __attribute__((aligned(8))) k_vec_global_ptr_h4 = reinterpret_cast<device const half4*>(k_vector_global_ptr);
                         for (uint d_chunk = 0; d_chunk < params.head_dim / 4; ++d_chunk) {
                             half4 k_val_h4 = k_vec_global_ptr_h4[d_chunk];
                             float4 k_val_f4 = float4(k_val_h4);
@@ -328,7 +321,7 @@ using namespace metal;
                     if (v_vector_global_ptr != nullptr) {
                         // Load the entire V-vector using float4 chunks
                         // Note: We only fill the actual head_dim elements, leaving padding untouched
-                        device const half4* v_vec_global_ptr_h4 = reinterpret_cast<device const half4*>(v_vector_global_ptr);
+                        device const half4* __attribute__((aligned(8))) v_vec_global_ptr_h4 = reinterpret_cast<device const half4*>(v_vector_global_ptr);
                         for (uint d_chunk = 0; d_chunk < params.head_dim / 4; ++d_chunk) {
                             half4 v_val_h4 = v_vec_global_ptr_h4[d_chunk];
                             float4 v_val_f4 = float4(v_val_h4);
@@ -427,7 +420,7 @@ using namespace metal;
                         params
                     );
                 }
-                threadgroup_barrier(mem_flags::mem_none); // Lighter barrier since acc_tile_local is in registers
+                simdgroup_barrier(mem_flags::mem_threadgroup); // Cheaper and still flushes TG-mem, ensures visibility
 
                 // All threads read the consistent m_global and scale factor for this iteration
                 float m_global_current_iter_atomic = (*tg_global_stats).x;
