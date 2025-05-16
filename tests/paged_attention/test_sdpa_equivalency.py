@@ -32,16 +32,17 @@ logger = logging.getLogger(__name__)
 
 tokens_per_page = 64
 
+
 @pytest.mark.parametrize(
     "batch_size, seq_len, num_heads, head_dim, dtype",
     [
-        (1, 16, (1, 1), 32, mx.float16),    # Original case
-        (1, 32, (1, 1), 32, mx.float16),    # Longer sequence
-        (1, 16, (4, 1), 32, mx.float16),    # MQA (num_q_heads > num_kv_heads)
-        (1, 16, (4, 2), 32, mx.float16),    # GQA (num_q_heads > num_kv_heads, num_kv_heads > 1)
-        (1, 16, (1, 1), 64, mx.float16),    # Different head dimension
-        # (2, 8, (2, 2), 16, mx.bfloat16),    # Example with different batch_size, dtype
-        # (3, 16, (4, 4), 32, mx.bfloat16),   # Realistic example
+        (1, 16, (1, 1), 32, mx.float16),  # Original case
+        (1, 32, (1, 1), 32, mx.float16),  # Longer sequence
+        (1, 16, (4, 1), 32, mx.float16),  # MQA (num_q_heads > num_kv_heads)
+        (1, 16, (4, 2), 32, mx.float16),  # GQA (num_q_heads > num_kv_heads, num_kv_heads > 1)
+        (1, 16, (1, 1), 64, mx.float16),  # Different head dimension
+        (1, 32, (2, 2), 32, mx.float16),  # Different number of heads
+        # (2, 32, (4, 4), 32, mx.float16),    # Batched Example
     ],
 )
 def test_pal_vs_sdpa_equivalency_mha(batch_size, seq_len, num_heads, head_dim, dtype):
@@ -51,12 +52,8 @@ def test_pal_vs_sdpa_equivalency_mha(batch_size, seq_len, num_heads, head_dim, d
     This test sets up a standard MHA scenario, computes the attention result
     using MLX's SDPA, then transforms the inputs to fit PAL's paged_attention
     kernel, runs PAL's kernel, and asserts numerical equivalency.
-
-    Note: Due to implementation differences (notably in softmax for float16),
-    tolerances are relaxed. Results should be functionally equivalent for inference.
     """
     num_q_heads, num_kv_heads = num_heads
-    mx.random.seed(11)
 
     # --- 1. Setup Inputs & Run MLX SDPA (Reference) ---
     sdpa_q_shape = (batch_size, num_q_heads, seq_len, head_dim)
