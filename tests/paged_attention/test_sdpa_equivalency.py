@@ -76,7 +76,11 @@ def test_pal_vs_sdpa_equivalency_mha():
 
     logger.info("Equivalency Test: Calling mx.fast.scaled_dot_product_attention.")
     sdpa_output = mx.fast.scaled_dot_product_attention(
-        sdpa_queries, sdpa_keys, sdpa_values, scale=scale, mask=causal_mask
+        sdpa_queries,
+        sdpa_keys,
+        sdpa_values,
+        scale=scale,
+        mask=causal_mask,
     )
     mx.eval(sdpa_output)
     logger.info(f"Equivalency Test: SDPA output shape={sdpa_output.shape}")

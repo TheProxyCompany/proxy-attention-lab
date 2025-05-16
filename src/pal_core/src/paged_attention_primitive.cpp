@@ -42,10 +42,7 @@ namespace mx = mlx::core;
 
 namespace pal::cpp {
 
-// Define constants for log_exp_min_clamp calculation
-constexpr static float kFp16DenormMinVal = 5.9604644775390625e-08f; // 2^-24
-// Use a less aggressive clamp value for better numerical stability with fp16
-constexpr static float kLogFp16DenormMinVal = -11.09f; // O3's specific suggestion for fp16 stability
+constexpr static float kLogFp16DenormMinVal = -20.0f;
 constexpr static uint32_t kDefaultPaddingFloatsPerRow = 8; // For 32-byte padding (8 floats)
 
 // Definition of the calculate_threadgroup_memory_breakdown_and_total helper method
@@ -518,7 +515,20 @@ void PagedAttentionPrimitive::dispatch_metal_kernel(
 
   // Configure dispatch grid sizes
   MTL::Size threadgroups_per_grid = MTL::Size(items_to_process_count, 1, 1);
-  MTL::Size threads_per_threadgroup = MTL::Size(threads_per_group_count, 1, 1);
+
+  // Change: Use exactly tile_size_T_runtime threads per threadgroup to avoid OOB memory access issues
+  // This ensures we never have idle threads writing out-of-bounds to K_tile/V_tile
+  size_t actual_threads_to_launch = std::min(threads_per_group_count,
+                                            static_cast<size_t>(kernel_params.tile_size_T_runtime));
+
+  // Round up to the nearest SIMD group size (32) to ensure we have complete SIMD groups
+  const size_t kSimdLanesPerGroup = 32;
+  actual_threads_to_launch = ((actual_threads_to_launch + kSimdLanesPerGroup - 1) / kSimdLanesPerGroup) * kSimdLanesPerGroup;
+
+  spdlog::debug("[PAL Primitive Dispatch] Using {} threads per threadgroup (original={}, tile_size_T={})",
+               actual_threads_to_launch, threads_per_group_count, kernel_params.tile_size_T_runtime);
+
+  MTL::Size threads_per_threadgroup = MTL::Size(actual_threads_to_launch, 1, 1);
 
   // Set the threadgroup memory length and dispatch the kernel
   compute_encoder.set_threadgroup_memory_length(total_tg_memory_bytes, 0);

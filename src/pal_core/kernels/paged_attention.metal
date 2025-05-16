@@ -401,7 +401,7 @@ using namespace metal;
                 // Calculate the exponentiated score value in a thread-local variable
                 float thread_exp_val = 0.0f;
                 if (local_thread_idx < current_hist_tile_actual_len) {
-                    thread_exp_val = exp(max(thread_score_val - m_local_tile_val, params.log_exp_min_clamp));
+                    thread_exp_val = exp(thread_score_val - m_local_tile_val);
                 }
 
                 // --- 10.1.4/10: History Tile - Local Sum (d_local_tile) Reduction ---
@@ -434,8 +434,7 @@ using namespace metal;
                         tg_s_global_comp,
                         m_local_tile_val,
                         d_local_tile_total_val,
-                        tg_simd_reduce_scratch,
-                        params
+                        tg_simd_reduce_scratch
                     );
                 }
                 threadgroup_barrier(mem_flags::mem_threadgroup); // Full barrier to ensure tg_global_stats and tg_simd_reduce_scratch are visible to all threads

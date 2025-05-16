@@ -176,8 +176,7 @@ static inline void update_softmax_stats_kahan(
     threadgroup float* current_s_comp_ptr,
     float m_local_tile_from_reduction,
     float d_local_tile_from_reduction,
-    threadgroup float* broadcast_scale_scratch_ptr,
-    constant const PagedAttentionParams& kernel_params
+    threadgroup float* broadcast_scale_scratch_ptr
 ) {
     // This helper is CALLED ONLY BY local_thread_idx == 0
     float m_prev = (*current_global_stats_ptr).x;
@@ -191,12 +190,12 @@ static inline void update_softmax_stats_kahan(
 
     if (m_local_tile_from_reduction > m_prev) {
         m_new = m_local_tile_from_reduction;
-        scale_f = fast::exp(max(m_prev - m_new, kernel_params.log_exp_min_clamp));
+        scale_f = fast::exp(m_prev - m_new);
         s_new_uncompensated = s_prev * scale_f; // Rescale s
         c_s_new = c_s_prev * scale_f;         // Rescale its compensation term
     }
 
-    float term_to_add = d_local_tile_from_reduction * fast::exp(max(m_local_tile_from_reduction - m_new, kernel_params.log_exp_min_clamp));
+    float term_to_add = d_local_tile_from_reduction * fast::exp(m_local_tile_from_reduction - m_new);
 
     float y_kahan = term_to_add - c_s_new; // c_s_new is compensation from *previous* Kahan steps on s_new_uncompensated
     float t_kahan = s_new_uncompensated + y_kahan;
