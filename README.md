@@ -8,38 +8,6 @@ The Proxy Attention Lab (PAL) is a C++/Metal-based library designed to provide c
 
 This project aims to explore and implement production-quality paged attention kernels specifically optimized for Apple Silicon (M-series GPUs) using the Metal Shading Language, while integrating seamlessly with the MLX framework.
 
-## Current Status (Forward Pass - Functionally Complete & Robust)
-
-As of the latest iteration (post TDD-7.6):
-
-*   **Functionally Complete Forward Pass:** The core `paged_attn_kernel` (Metal) and its C++ MLX primitive (`PagedAttentionPrimitive`) successfully compute the full forward pass for paged attention. This includes:
-    *   Numerically stable calculation of attention scores (max score, sum-exp).
-    *   Softmax probability computation.
-    *   Weighted aggregation of Value (V) vectors.
-*   **Dynamic V-Accumulator Tiling:** The kernel employs a hybrid tiled stack strategy for V-accumulation, using a fixed-size thread-local tile and an outer loop to process `head_dim` in chunks. This correctly handles large head dimensions without overflowing thread stack memory or exceeding `threadgroup` memory limits.
-*   **Robustness:**
-    *   Handles GQA/MQA configurations.
-    *   Explicitly outputs zeros for zero-history scenarios.
-    *   Includes runtime alignment checks for K/V cache pointers with scalar fallbacks.
-    *   Parameter marshalling between C++ and Metal is hardened with `static_asserts` and internal `scale` recalculation.
-*   **Logging:** Uses `spdlog` for standardized C++ logging, integrated via CMake.
-*   **Code Quality:** The C++, Metal, and Python codebase has undergone a "Production-Ready Code Specification" cleanup, focusing on Google C++ Style (C++/Metal) and PEP 8/Black (Python), Doxygen/docstring documentation, type hinting, and descriptive naming.
-*   **Testing:** A suite of Python unit tests (using `pytest`) covers various scenarios, including core functionality, GQA/MQA, error handling, boundary conditions, and full V-aggregation. All tests are currently passing.
-
-## Key Architectural Features
-
-*   **MLX Integration:** Implemented as a custom MLX C++ primitive (`PagedAttentionPrimitive`).
-*   **Metal Kernel (`paged_attn_kernel`):**
-    *   **Dispatch:** One Metal threadgroup per query-item (token-head pair).
-    *   **Q-Vector Staging:** Queries are pre-scaled and cooperatively loaded into `threadgroup` memory.
-    *   **Paged K/V Access:** Threads within a group scan distinct history chunks, fetching K/V from paged pools via a page table.
-    *   **Fused Two-Pass Softmax & V-Aggregation:** A single kernel launch performs:
-        1.  **Statistics Pass:** Online log-sum-exp for local max/sum-exp, followed by threadgroup reduction for global statistics.
-        2.  **Probability & V-Aggregation Pass:** Re-scores, calculates softmax probabilities using global stats, fetches V, and accumulates weighted V into thread-local tiles.
-    *   **Tiled V-Reduction:** Reduced V-vector tiles are written directly to the output buffer.
-*   **Parameterization:** Kernel behavior is controlled via a `PagedAttentionParams` struct passed from C++.
-*   **Build System:** CMake for C++/Metal components, Python bindings via `nanobind`, and integration with `py-build-cmake` for the Python package.
-
 ## Prerequisites
 
 *   macOS (for Metal development)
