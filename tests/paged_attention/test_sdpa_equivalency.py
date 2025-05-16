@@ -124,9 +124,8 @@ def test_pal_vs_sdpa_equivalency_mha():
         f"Shape mismatch: PAL output {pal_output.shape}, SDPA for comparison {sdpa_output_reshaped.shape}"
     )
 
-    # Testing with very relaxed tolerances
-    atol = 3.2
-    rtol = 0.5
+    atol = 1e-2
+    rtol = 1e-2
 
     diff = mx.abs(pal_output - sdpa_output_reshaped)
     max_diff = mx.max(diff).item()
@@ -135,13 +134,6 @@ def test_pal_vs_sdpa_equivalency_mha():
 
     if not mx.allclose(pal_output, sdpa_output_reshaped, atol=atol, rtol=rtol):
         logger.error("PAL vs SDPA: Outputs do not match closely enough.")
-        num_to_print = min(10, pal_output.shape[0])
-        for idx in range(num_to_print):
-            logger.error(f"Item {idx}:")
-            logger.error(f"  PAL : {pal_output[idx].tolist()}")
-            logger.error(f"  SDPA: {sdpa_output_reshaped[idx].tolist()}")
-            diff_item = mx.abs(pal_output[idx] - sdpa_output_reshaped[idx])
-            logger.error(f"  Diff: {diff_item.tolist()}, MaxDiff: {mx.max(diff_item).item()}")
         logger.error(f"Overall Max absolute difference: {max_diff}")
         logger.error(f"Overall Mean absolute difference: {mean_diff}")
 

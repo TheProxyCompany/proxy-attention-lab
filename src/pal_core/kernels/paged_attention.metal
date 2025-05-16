@@ -292,6 +292,15 @@ using namespace metal;
                             k_tile_entry_ptr[d_chunk * 4 + 3] = 0.0f;
                         }
                     }
+                } else {
+                    // Thread is outside the current actual history tile length, zero out its K_tile row
+                    threadgroup float* k_tile_entry_ptr = K_tile + (local_thread_idx * padded_head_dim_hoisted);
+                    for (uint d_chunk = 0; d_chunk < params.head_dim / 4; ++d_chunk) {
+                        k_tile_entry_ptr[d_chunk * 4 + 0] = 0.0f;
+                        k_tile_entry_ptr[d_chunk * 4 + 1] = 0.0f;
+                        k_tile_entry_ptr[d_chunk * 4 + 2] = 0.0f;
+                        k_tile_entry_ptr[d_chunk * 4 + 3] = 0.0f;
+                    }
                 }
                 threadgroup_barrier(mem_flags::mem_threadgroup); // Ensure K_tile is fully populated before use
 
@@ -339,6 +348,15 @@ using namespace metal;
                             v_tile_entry_ptr[d_chunk * 4 + 3] = 0.0f;
                         }
                     }
+                } else {
+                    // Thread is outside the current actual history tile length, zero out its V_tile row
+                    threadgroup float* v_tile_entry_ptr = V_tile + (local_thread_idx * padded_head_dim_hoisted);
+                    for (uint d_chunk = 0; d_chunk < params.head_dim / 4; ++d_chunk) {
+                        v_tile_entry_ptr[d_chunk * 4 + 0] = 0.0f;
+                        v_tile_entry_ptr[d_chunk * 4 + 1] = 0.0f;
+                        v_tile_entry_ptr[d_chunk * 4 + 2] = 0.0f;
+                        v_tile_entry_ptr[d_chunk * 4 + 3] = 0.0f;
+                    }
                 }
                 threadgroup_barrier(mem_flags::mem_threadgroup); // Ensure V_tile is fully populated before use
 
@@ -383,7 +401,7 @@ using namespace metal;
                 // Calculate the exponentiated score value in a thread-local variable
                 float thread_exp_val = 0.0f;
                 if (local_thread_idx < current_hist_tile_actual_len) {
-                    thread_exp_val = exp(max(thread_score_val - m_local_tile_val, params.log_exp_min_clamp));
+                    thread_exp_val = fast::exp(max(thread_score_val - m_local_tile_val, params.log_exp_min_clamp));
                 }
 
                 // --- 10.1.4/10: History Tile - Local Sum (d_local_tile) Reduction ---
@@ -426,9 +444,19 @@ using namespace metal;
                 float m_global_current_iter_atomic = (*tg_global_stats).x;
                 float scale_for_acc_iter_atomic = tg_simd_reduce_scratch[0];
 
-                // All threads rescale their local acc_tile_local
-                for (uint i = 0; i < params.head_dim; ++i) {
-                    acc_tile_local[i] *= scale_for_acc_iter_atomic;
+                // All threads rescale their local acc_tile_local (process in float4 chunks for efficiency)
+                if (scale_for_acc_iter_atomic != 1.0f) { // Optimization: only multiply if needed
+                    for (uint d = 0; d < params.head_dim; d += 4) {
+                        float4 acc_chunk = float4(acc_tile_local[d],
+                                                (d + 1 < params.head_dim) ? acc_tile_local[d+1] : 0.0f,
+                                                (d + 2 < params.head_dim) ? acc_tile_local[d+2] : 0.0f,
+                                                (d + 3 < params.head_dim) ? acc_tile_local[d+3] : 0.0f);
+                        acc_chunk *= scale_for_acc_iter_atomic;
+                        acc_tile_local[d] = acc_chunk.x;
+                        if (d + 1 < params.head_dim) acc_tile_local[d+1] = acc_chunk.y;
+                        if (d + 2 < params.head_dim) acc_tile_local[d+2] = acc_chunk.z;
+                        if (d + 3 < params.head_dim) acc_tile_local[d+3] = acc_chunk.w;
+                    }
                 }
 
 
@@ -442,18 +470,30 @@ using namespace metal;
                     threadgroup const float* v_vector_from_tile = V_tile + (local_thread_idx * padded_head_dim_hoisted);
 
                     // Calculate final weight component: exp(raw_score - m_global)
-                    // thread_exp_val = exp(raw_score - m_local_tile_val)
-                    // Need to multiply by exp(m_local_tile_val - m_global_current_iter_atomic)
+                    // thread_exp_val = fast::exp(raw_score - m_local_tile_val)
+                    // Need to multiply by fast::exp(m_local_tile_val - m_global_current_iter_atomic)
                     // Using m_global_current_iter_atomic that was read after the sync barrier
                     float weight_term = thread_exp_val; // Already float
-                    float exp_term = exp(max(m_local_tile_val - m_global_current_iter_atomic, params.log_exp_min_clamp));
+                    float exp_term = fast::exp(max(m_local_tile_val - m_global_current_iter_atomic, params.log_exp_min_clamp));
                     float final_p_attn_weight_numerator = weight_term * exp_term; // float * float = float
 
-                    // Accumulate into the full acc_tile_local
+                    // Accumulate into the full acc_tile_local in float4 chunks for efficiency
                     // In fused path, we process the entire head_dim at once
-                    for (uint d_idx = 0; d_idx < params.head_dim; ++d_idx) {
-                        // Use V-vector from threadgroup memory
-                        acc_tile_local[d_idx] += final_p_attn_weight_numerator * v_vector_from_tile[d_idx];
+                    for (uint d_idx = 0; d_idx < params.head_dim; d_idx += 4) {
+                        float4 v_chunk;
+                        v_chunk.x = v_vector_from_tile[d_idx];
+                        v_chunk.y = (d_idx + 1 < params.head_dim) ? v_vector_from_tile[d_idx + 1] : 0.0f;
+                        v_chunk.z = (d_idx + 2 < params.head_dim) ? v_vector_from_tile[d_idx + 2] : 0.0f;
+                        v_chunk.w = (d_idx + 3 < params.head_dim) ? v_vector_from_tile[d_idx + 3] : 0.0f;
+
+                        // Weighted contribution from this token's V-vector
+                        v_chunk *= final_p_attn_weight_numerator;
+
+                        // Accumulate into acc_tile_local
+                        acc_tile_local[d_idx] += v_chunk.x;
+                        if (d_idx + 1 < params.head_dim) acc_tile_local[d_idx + 1] += v_chunk.y;
+                        if (d_idx + 2 < params.head_dim) acc_tile_local[d_idx + 2] += v_chunk.z;
+                        if (d_idx + 3 < params.head_dim) acc_tile_local[d_idx + 3] += v_chunk.w;
                     }
                 }
 

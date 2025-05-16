@@ -169,7 +169,7 @@ static inline device const half* fetch_kv_pointer(
  * @param current_global_stats_ptr Pointer to shared {m_global, s_global} stats
  * @param current_s_comp_ptr Pointer to shared Kahan compensation term
  * @param m_local_tile_from_reduction Maximum score from current tile reduction
- * @param d_local_tile_from_reduction Sum of exp(score - m_local) from current tile
+ * @param d_local_tile_from_reduction Sum of fast::exp(score - m_local) from current tile
  * @param broadcast_scale_scratch_ptr Pointer to scratch space for broadcasting scale factor
  * @param kernel_params Kernel parameters struct with log_exp_min_clamp
  */
@@ -193,12 +193,12 @@ static inline void update_softmax_stats_kahan(
 
     if (m_local_tile_from_reduction > m_prev) {
         m_new = m_local_tile_from_reduction;
-        scale_f = exp(max(m_prev - m_new, kernel_params.log_exp_min_clamp));
+        scale_f = fast::exp(max(m_prev - m_new, kernel_params.log_exp_min_clamp));
         s_new_uncompensated = s_prev * scale_f; // Rescale s
         c_s_new = c_s_prev * scale_f;         // Rescale its compensation term
     }
 
-    float term_to_add = d_local_tile_from_reduction * exp(max(m_local_tile_from_reduction - m_new, kernel_params.log_exp_min_clamp));
+    float term_to_add = d_local_tile_from_reduction * fast::exp(max(m_local_tile_from_reduction - m_new, kernel_params.log_exp_min_clamp));
 
     float y_kahan = term_to_add - c_s_new; // c_s_new is compensation from *previous* Kahan steps on s_new_uncompensated
     float t_kahan = s_new_uncompensated + y_kahan;

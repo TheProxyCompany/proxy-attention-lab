@@ -26,24 +26,7 @@
 #include <string>
 #include <type_traits>
 #include <limits>
-
-#if __has_include(<spdlog/spdlog.h>)
-    #include <spdlog/spdlog.h>
-    #define PAL_HAS_SPDLOG 1
-#else
-    #define PAL_HAS_SPDLOG 0
-    // Minimal fallback if spdlog is not available (e.g., for standalone builds without FetchContent run)
-    // This could be a no-op or a simple std::cerr wrapper. For now, let's make it a no-op.
-    // Minimal no-op stubs if spdlog is unavailable.
-    namespace spdlog {
-        template<typename... Args> void trace(Args... args) {}
-        template<typename... Args> void debug(Args... args) {}
-        template<typename... Args> void info(Args... args) {}
-        template<typename... Args> void warn(Args... args) {}
-        template<typename... Args> void error(Args... args) {}
-        template<typename... Args> void critical(Args... args) {}
-    } // namespace spdlog
-#endif
+#include <spdlog/spdlog.h>
 
 // MLX and Metal includes
 #include <mlx/allocator.h>
@@ -61,7 +44,8 @@ namespace pal::cpp {
 
 // Define constants for log_exp_min_clamp calculation
 constexpr static float kFp16DenormMinVal = 5.9604644775390625e-08f; // 2^-24
-constexpr static float kLogFp16DenormMinVal = -16.63553237915039f; // logf(kFp16DenormMinVal)
+// Use a less aggressive clamp value for better numerical stability with fp16
+constexpr static float kLogFp16DenormMinVal = -10.0f; // Less aggressive than logf(kFp16DenormMinVal) = -16.63...
 constexpr static uint32_t kDefaultPaddingFloatsPerRow = 8; // For 32-byte padding (8 floats)
 
 // Definition of the calculate_threadgroup_memory_breakdown_and_total helper method
