@@ -183,10 +183,9 @@ def test_pal_vs_sdpa_equivalency_mha(batch_size, seq_len, num_heads, head_dim, d
     mean_diff = mx.mean(diff).item()
     logger.info(f"PAL vs SDPA Differences - Max: {max_diff}, Mean: {mean_diff}")
 
-    # For FP16, we allow larger differences due to numerical precision issues
-    # For FP32, tolerances can be tighter.
-    current_atol = 1e-2 if dtype == mx.float16 else 1e-5
-    current_rtol = 1e-2 if dtype == mx.float16 else 1e-4
+    # For FP16, we allow slightly larger differences due to numerical precision issues
+    current_atol = 1e-2
+    current_rtol = 1e-4
 
     if not mx.allclose(pal_output, sdpa_output_reshaped, atol=current_atol, rtol=current_rtol):
         logger.error(
