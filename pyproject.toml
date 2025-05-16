@@ -15,6 +15,7 @@ dependencies = [
     "py-build-cmake",
     "pytest",
     "pytest-xdist",
+    "pytest-benchmark",
     "pre-commit",
     "black",
     "isort",

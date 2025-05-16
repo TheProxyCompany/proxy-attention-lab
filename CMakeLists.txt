@@ -34,3 +34,11 @@ else()
 endif()
 
 add_subdirectory(src/pal_core)
+
+# Recursively add all benchmarks/cpp directories containing a CMakeLists.txt
+file(GLOB_RECURSE BENCHMARK_DIRS ${CMAKE_SOURCE_DIR}/tests/*/benchmarks/cpp)
+
+foreach(BENCHMARK_DIR ${BENCHMARK_DIRS})
+    message(STATUS "Adding benchmark directory: ${BENCHMARK_DIR}")
+    add_subdirectory(${BENCHMARK_DIR})
+endforeach()
