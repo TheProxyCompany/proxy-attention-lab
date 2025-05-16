@@ -23,6 +23,8 @@ using namespace metal;
 
 // --- Kernel Configuration Constants ---
 constant static const uint kMaxHeadDimMetal = 256;
+constant static const uint kMaxHeadDimForFusedPath = 256; // Max head_dim for the fused path
+constant static const uint kPaddingFloatsPerRow = 8; // For 32-byte padding to avoid bank conflicts
 constant static const uint kDefaultAccTileChunkSize = 64;
 constant static const uint kMaxAccumulationTile = 64;
 
@@ -228,18 +230,20 @@ constant static const float kEpsilonForZeroGuard = 1e-9f;
     }
 }
 
+// dot_product_qk_global removed - no longer needed with K-tiling and fused path
+
 /**
- * Computes the dot product between a query vector in shared memory and a key vector in global memory.
+ * Computes the dot product between a query vector and a key vector in threadgroup memory.
  * Efficient vectorized implementation that assumes head_dim is a multiple of 4.
  *
  * @param q_vec_shmem_param Pointer to query vector in shared memory
- * @param k_vec_global_param Pointer to key vector in global memory
+ * @param k_vec_tile_entry_param Pointer to key vector in threadgroup memory (K_tile)
  * @param kernel_params Kernel parameters struct with head_dim
  * @return The dot product result as a float
  */
 [[always_inline]] static inline float dot_product_qk(
     threadgroup const float* q_vec_shmem_param,
-    device const half* k_vec_global_param,
+    threadgroup const float* k_vec_tile_entry_param,
     constant const PagedAttentionParams& kernel_params
 ) {
     float score = 0.0f;
@@ -247,13 +251,8 @@ constant static const float kEpsilonForZeroGuard = 1e-9f;
     // The helper assumes it's always called for a full head_dim that's a multiple of 4.
     for (uint d = 0; d < kernel_params.head_dim; d += 4) {
         float4 q_c = float4(q_vec_shmem_param[d], q_vec_shmem_param[d+1], q_vec_shmem_param[d+2], q_vec_shmem_param[d+3]);
-        // Load K components - Metal implicitly widens half to float in mixed expressions
-        float4 k_c = float4(
-            k_vec_global_param[d],
-            k_vec_global_param[d+1],
-            k_vec_global_param[d+2],
-            k_vec_global_param[d+3]
-        );
+        // Load K components from threadgroup memory (already float)
+        float4 k_c = float4(k_vec_tile_entry_param[d], k_vec_tile_entry_param[d+1], k_vec_tile_entry_param[d+2], k_vec_tile_entry_param[d+3]);
         score += dot(q_c, k_c);
     }
     return score;

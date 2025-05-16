@@ -48,7 +48,6 @@
 // MLX and Metal includes
 #include <mlx/allocator.h>
 #include <mlx/array.h>
-#include <mlx/backend/common/utils.h>
 #include <mlx/backend/cpu/encoder.h>
 #include <mlx/backend/metal/device.h>
 #include <mlx/backend/metal/metal.h>
@@ -123,25 +122,36 @@ ThreadgroupMemoryLayout PagedAttentionPrimitive::calculate_threadgroup_memory_br
     spdlog::trace("[PAL TGMemCalc] simd_v_chunk_sums: {} bytes, offset: {}",
                  layout.simd_v_chunk_sums_bytes, tg_mem_current_offset_bytes);
 
-    // Fixed scratch memory for Q and reductions (not including score tile or final guard)
+    // Fixed scratch memory for Q and reductions (not including k_tile, score_tile or final guard)
     size_t fixed_scratch_bytes = (tg_mem_current_offset_bytes + kAlignmentMask) & ~kAlignmentMask;
-    spdlog::debug("[PAL TGMemCalc] Fixed scratch memory (excluding score tile): {} bytes", fixed_scratch_bytes);
+    spdlog::debug("[PAL TGMemCalc] Fixed scratch memory (excluding k_tile and score tile): {} bytes", fixed_scratch_bytes);
 
-    // 8. Score Tile memory with SIMD group padding
+    // 8. K Tile memory - for caching K vectors with padding for bank conflict avoidance
     tg_mem_current_offset_bytes = (tg_mem_current_offset_bytes + kAlignmentMask) & ~kAlignmentMask;
-    constexpr size_t kScoreTilePaddingFloatsPerSimdGroup = 8;
 
-    size_t score_data_floats = params.tile_size_T_runtime;
-    size_t pad_total_floats = 0;
-    if (num_simd_groups > 1) {
-        pad_total_floats = (num_simd_groups - 1) * kScoreTilePaddingFloatsPerSimdGroup;
-    }
+    // Add padding to each K-vector row to avoid bank conflicts
+    const uint32_t padding_floats_per_row = 8; // For 32-byte padding (8 floats)
+    uint32_t padded_head_dim_for_tile = params.head_dim + padding_floats_per_row;
 
-    size_t total_floats_for_score_tile = score_data_floats + pad_total_floats;
-    layout.score_tile_bytes = total_floats_for_score_tile * sizeof(float);
-    tg_mem_current_offset_bytes += layout.score_tile_bytes;
-    spdlog::trace("[PAL TGMemCalc] score_tile ({} data floats + {} padding floats): {} bytes, offset: {}",
-                 score_data_floats, pad_total_floats, layout.score_tile_bytes, tg_mem_current_offset_bytes);
+    // K_tile requires tile_size_T_runtime * padded_head_dim_for_tile * sizeof(float) bytes
+    layout.k_tile_bytes = params.tile_size_T_runtime * padded_head_dim_for_tile * sizeof(float);
+    tg_mem_current_offset_bytes += layout.k_tile_bytes;
+    spdlog::trace("[PAL TGMemCalc] k_tile padded ({}*{} = {} floats): {} bytes, offset: {}",
+                params.tile_size_T_runtime, padded_head_dim_for_tile, params.tile_size_T_runtime * padded_head_dim_for_tile,
+                layout.k_tile_bytes, tg_mem_current_offset_bytes);
+
+    // 9. V Tile memory - for caching V vectors with padding for bank conflict avoidance
+    tg_mem_current_offset_bytes = (tg_mem_current_offset_bytes + kAlignmentMask) & ~kAlignmentMask;
+
+    // V_tile requires tile_size_T_runtime * padded_head_dim_for_tile * sizeof(float) bytes
+    layout.v_tile_bytes = params.tile_size_T_runtime * padded_head_dim_for_tile * sizeof(float);
+    tg_mem_current_offset_bytes += layout.v_tile_bytes;
+    spdlog::trace("[PAL TGMemCalc] v_tile padded ({}*{} = {} floats): {} bytes, offset: {}",
+                params.tile_size_T_runtime, padded_head_dim_for_tile, params.tile_size_T_runtime * padded_head_dim_for_tile,
+                layout.v_tile_bytes, tg_mem_current_offset_bytes);
+
+    // Score Tile memory is no longer needed in threadgroup memory for fused pass
+    // as scores are used immediately and don't need to be cached
 
     // Final padding guard
     constexpr size_t kFinalTgMemoryPaddingGuardBytes = 32;
@@ -199,13 +209,14 @@ void PagedAttentionPrimitive::populate_remaining_attention_params(
 
     // --- Calculate tile_size_T_runtime with precise fixed memory size ---
     size_t max_tg_memory_bytes_val = mtl_device_ptr->maxThreadgroupMemoryLength();
-    size_t available_mem_for_score_tile = (max_tg_memory_bytes_val > precise_fixed_tg_mem_bytes) ?
+    size_t available_mem_for_dynamic_tiles = (max_tg_memory_bytes_val > precise_fixed_tg_mem_bytes) ?
                                            (max_tg_memory_bytes_val - precise_fixed_tg_mem_bytes - kFinalTgMemoryPaddingGuardBytes) : 0;
 
     // Calculate memory per history item in a tile
-    // Currently, the kernel directly loads K/V from global memory and doesn't use threadgroup memory caching
-    // for K/V tiles. We only need to allocate memory for score_tile (1 float per history item).
-    // This optimization significantly reduces threadgroup memory requirements.
+    // We now cache K-vectors in threadgroup memory, so each history item needs:
+    // 1. A slot in the score_tile (1 float)
+    // 2. A K-vector slot (head_dim floats)
+    // This increases memory usage per tile item but will reduce global memory bandwidth.
 
     // Memory for score_tile with SIMD group padding to avoid bank conflicts
     const size_t num_simd_groups_cpp = (threads_per_item_group_for_dispatch + 31u) / 32u; // Consistent with kernel
@@ -217,61 +228,122 @@ void PagedAttentionPrimitive::populate_remaining_attention_params(
         pad_total_floats = (num_simd_groups_cpp - 1) * kScoreTilePaddingFloatsPerSimdGroup;
     }
 
-    size_t total_floats_for_score_tile_region = score_data_floats + pad_total_floats;
-    size_t mem_for_score_tile = total_floats_for_score_tile_region * sizeof(float);
+    // --- O3's Robust Tile Size Calculation ---
 
-    uint32_t calculated_tile_size_T = 0;
-    size_t bytes_per_hist_item_for_score_tile = sizeof(float);
+    // 1. Gather constants once
+    const size_t tg_limit = max_tg_memory_bytes_val; // Already have this as max_tg_memory_bytes_val
+    const size_t guard = kFinalTgMemoryPaddingGuardBytes; // Should be 32 (defined in .hpp)
+    const uint32_t practical_max_T = 256;
+    const uint32_t min_T_soft = 4;   // O3 suggests 4, can be tuned to 8. Let's start with 4.
+    const uint32_t align_val = 4;    // Keep tiles 4-aligned
 
-    if (bytes_per_hist_item_for_score_tile > 0) {
-        calculated_tile_size_T = static_cast<uint32_t>(available_mem_for_score_tile / bytes_per_hist_item_for_score_tile);
+    // 2. Compute the fixed part (already have precise_fixed_tg_mem_bytes from earlier)
+    size_t fixed_mem = precise_fixed_tg_mem_bytes; // This was calculated from fixed_layout_info
+    // No need to re-align fixed_mem here if precise_fixed_tg_mem_bytes was already aligned.
+    // Let's assume precise_fixed_tg_mem_bytes is the sum of already aligned sections.
+    if (fixed_mem + guard >= tg_limit) {
+        throw std::runtime_error("[PAL Primitive] Fixed scratch memory alone exceeds threadgroup memory limit.");
     }
 
-    spdlog::debug("[PAL Primitive PopulateParams] Available for score_tile: {}, bytes_per_item: {}, prelim_tile_T: {}",
-                available_mem_for_score_tile, bytes_per_hist_item_for_score_tile, calculated_tile_size_T);
+    // 3. Compute "bytes per history token" for dynamic tiles (K_tile + V_tile) with padding
+    // score_tile no longer needed in threadgroup memory for fused pass
+    const uint32_t padding_floats_per_row = 8; // For 32-byte padding to avoid bank conflicts
+    uint32_t padded_head_dim_for_tile = params.head_dim + padding_floats_per_row;
 
-    spdlog::debug("[PAL Primitive] Max possible tile size T (before clamps): {}", calculated_tile_size_T);
-
-    // Apply clamps and heuristics
-    const uint32_t min_tile_size_T = 16; // Hard floor
-    const uint32_t practical_max_tile_size_T = 256; // Practical upper cap, can be tuned
-
-    // Apply O3's heuristic: Raise tile_size_T_runtime to at least 64 when head_dim <= 256
-    const uint32_t target_min_tile_size = 64;
-    if (params.head_dim <= 256 && calculated_tile_size_T < target_min_tile_size) {
-        // Check if forcing to target_min_tile_size would exceed memory
-        size_t bytes_for_target_min_tile_score = target_min_tile_size * sizeof(float);
-        if (precise_fixed_tg_mem_bytes + bytes_for_target_min_tile_score <= max_tg_memory_bytes_val) {
-            spdlog::debug("[PAL Primitive] head_dim ({}) <= 256, raising tile_size_T from {} to {}",
-                         params.head_dim, calculated_tile_size_T, target_min_tile_size);
-            calculated_tile_size_T = target_min_tile_size;
-        } else {
-            spdlog::debug("[PAL Primitive] head_dim ({}) <= 256, but cannot raise tile_size_T to {} due to memory limits with current fixed costs.",
-                         params.head_dim, target_min_tile_size);
-        }
+    size_t bytes_per_token_in_tile = (padded_head_dim_for_tile * sizeof(float)) /*K_tile_padded*/ +
+                                    (padded_head_dim_for_tile * sizeof(float)) /*V_tile_padded*/;
+    if (bytes_per_token_in_tile == 0) { // Should not happen if head_dim > 0
+        throw std::runtime_error("[PAL Primitive] Calculated bytes_per_token_in_tile is zero.");
     }
 
-    // Apply standard clamps
-    params.tile_size_T_runtime = std::max(calculated_tile_size_T, min_tile_size_T);
-    params.tile_size_T_runtime = std::min(params.tile_size_T_runtime, practical_max_tile_size_T);
+    spdlog::debug("[PAL Primitive] Using padded head_dim for tile: {} (head_dim: {} + padding: {})",
+                 padded_head_dim_for_tile, params.head_dim, padding_floats_per_row);
 
-    // Ensure it's a multiple of 4 for potential vector processing of scores, or just for tidiness
+    // 4. Raw ceiling that actually fits
+    uint32_t max_T_fit = 0;
+    if (tg_limit > fixed_mem + guard) { // Ensure there's some memory left for dynamic parts
+        max_T_fit = static_cast<uint32_t>(
+            (tg_limit - fixed_mem - guard) / bytes_per_token_in_tile);
+    }
+    spdlog::debug("[PAL Primitive] Max_T_fit (raw based on memory): {}", max_T_fit);
+
+
+    // 5. Clamp, align down
+    // 5a. Cap by user's practical max and by tokens_per_page (from K-cache, effectively a physical limit for a single page)
+    // Note: params.tokens_per_page is from the K-cache structure, not a dynamic seq_len.
+    // It's a physical limit on how many tokens *can* be in a page, so a tile shouldn't exceed this.
+    max_T_fit = std::min({max_T_fit,
+                          practical_max_T,
+                          static_cast<uint32_t>(params.tokens_per_page)});
+    spdlog::debug("[PAL Primitive] Max_T_fit (after practical_max_T and tokens_per_page clamp): {}", max_T_fit);
+
+
+    // 5b. Ensure >0 (if it's 0, it means not even one token fits with K-tiling)
+    if (max_T_fit == 0) {
+        spdlog::error("[PAL Primitive] head_dim {} is too large to cache even one history token's K-vector and score. "
+                      "FixedMem: {}, Guard: {}, BytesPerToken: {}, TG_Limit: {}",
+                      params.head_dim, fixed_mem, guard, bytes_per_token_in_tile, tg_limit);
+        throw std::runtime_error("[PAL Primitive] Not enough threadgroup memory for K-tiling with current head_dim. Cannot fit even one history item.");
+    }
+
+    // 5c. Align down to multiple of 'align_val' (e.g., 4)
+    max_T_fit = (max_T_fit / align_val) * align_val;
+    // If alignment made it zero, but it was possible to fit something, force to smallest alignment.
+    if (max_T_fit == 0 && ((tg_limit - fixed_mem - guard) / bytes_per_token_in_tile) > 0) {
+        max_T_fit = align_val;
+    }
+    spdlog::debug("[PAL Primitive] Max_T_fit (after alignment): {}", max_T_fit);
+
+    // If still 0 after alignment (e.g. raw max_T_fit was < align_val), then it's impossible.
+    if (max_T_fit == 0) {
+        throw std::runtime_error("[PAL Primitive] Not enough threadgroup memory for K-tiling (max_T_fit is 0 after alignment).");
+    }
+
+    // 6. Optional heuristic bump (but never past the limit of max_T_fit)
+    uint32_t desired_T = (params.head_dim <= 256) ? 64u : min_T_soft; // O3's heuristic, 64u or min_T_soft
+    desired_T = std::min(desired_T, practical_max_T); // Don't let desired_T exceed practical_max_T
+
+    if (max_T_fit >= desired_T) {
+        params.tile_size_T_runtime = desired_T;
+        spdlog::debug("[PAL Primitive] Using desired_T: {}", params.tile_size_T_runtime);
+    } else {
+        params.tile_size_T_runtime = max_T_fit; // Accept the smaller tile that fits
+        spdlog::debug("[PAL Primitive] Desired_T ({}) doesn't fit, using max_T_fit: {}", desired_T, params.tile_size_T_runtime);
+    }
+
+    // Ensure tile_size_T_runtime is at least min_T_soft, but only if max_T_fit was also at least min_T_soft.
+    // This prevents forcing a tile size that doesn't fit.
+    // The primary constraint is max_T_fit. min_T_soft is a "preferred" minimum if possible.
+    if (max_T_fit >= min_T_soft) {
+        params.tile_size_T_runtime = std::max(params.tile_size_T_runtime, min_T_soft);
+    } else {
+        // If max_T_fit itself is less than min_T_soft (but > 0), we must use max_T_fit.
+        // This case is already handled by params.tile_size_T_runtime = max_T_fit; above.
+    }
+    spdlog::debug("[PAL Primitive] tile_size_T_runtime (after heuristic and min_T_soft consideration): {}", params.tile_size_T_runtime);
+
+
+    // Final alignment (should be redundant if max_T_fit and desired_T were already aligned, but safe)
     if (params.tile_size_T_runtime > 0) {
-        params.tile_size_T_runtime = (params.tile_size_T_runtime / 4u) * 4u;
-        if (params.tile_size_T_runtime == 0 && calculated_tile_size_T > 0) { // Avoid making it 0 if it was viable
-            params.tile_size_T_runtime = min_tile_size_T; // Reset to min if rounding down made it zero
-        }
-    } else { // If calculated_tile_size_T was 0
-        params.tile_size_T_runtime = min_tile_size_T; // Default to min if calculation yielded zero
+       params.tile_size_T_runtime = (params.tile_size_T_runtime / align_val) * align_val;
+       if (params.tile_size_T_runtime == 0) params.tile_size_T_runtime = align_val; // Ensure not zero if it was viable
+    } else {
+        // This case should ideally be caught by max_T_fit == 0 check earlier
+        throw std::runtime_error("[PAL Primitive] tile_size_T_runtime became 0 after all adjustments.");
     }
 
-    // Final check if tile size became 0 due to constraints, force to a minimum if there's any history
-    if (params.tile_size_T_runtime == 0) {
-        params.tile_size_T_runtime = min_tile_size_T;
-        spdlog::warn("[PAL Primitive] Calculated tile_size_T_runtime was 0, forcing to min_tile_size_T={}", min_tile_size_T);
-    }
+
+    // 7. Final safety audit (O3's step, though calculations should ensure this passes)
+    // This requires re-calculating total_bytes using the *final* params.tile_size_T_runtime
+    // We can defer this check to the existing one in eval_gpu after calculate_threadgroup_memory_breakdown_and_total is called
+    // with the final params_struct. For now, ensure params.tile_size_T_runtime is set.
+
+    spdlog::info("[PAL Primitive] Final determined tile_size_T_runtime: {} (using padded_head_dim: {})",
+               params.tile_size_T_runtime, padded_head_dim_for_tile);
 
     spdlog::debug("[PAL Primitive] Final calculated params_struct.tile_size_T_runtime: {}", params.tile_size_T_runtime);
+    spdlog::info("[PAL Primitive] Memory budget: bytes_per_token_in_tile={}, max_T_fit={}, fixed_mem={}, guard={}, tg_limit={}",
+                bytes_per_token_in_tile, max_T_fit, fixed_mem, guard, tg_limit);
 
     // --- Set runtime V-accumulation tile size using constant defined in header ---
     constexpr uint32_t kMaxAccumulationTile = 64;
@@ -632,7 +704,8 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
   spdlog::debug("[PAL Primitive] TG Memory breakdown:");
   spdlog::debug("[PAL Primitive]   - q_shmem: {} bytes", layout_debug.q_shmem_bytes);
   spdlog::debug("[PAL Primitive]   - reduction scratch: {} bytes", layout_debug.fixed_components_sum_for_t_calc() - layout_debug.q_shmem_bytes);
-  spdlog::debug("[PAL Primitive]   - score_tile: {} bytes", layout_debug.score_tile_bytes);
+  spdlog::debug("[PAL Primitive]   - k_tile: {} bytes", layout_debug.k_tile_bytes);
+  spdlog::debug("[PAL Primitive]   - v_tile: {} bytes", layout_debug.v_tile_bytes);
   spdlog::debug("[PAL Primitive]   - final_guard: {} bytes", layout_debug.final_guard_bytes);
   spdlog::debug("[PAL Primitive]   - Total: {} bytes", layout_debug.total_bytes);
 

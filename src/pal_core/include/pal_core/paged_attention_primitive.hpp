@@ -56,12 +56,14 @@ struct ThreadgroupMemoryLayout {
     size_t global_stats_bytes{0};
     size_t s_global_compensation_bytes{0};
     size_t simd_v_chunk_sums_bytes{0};
-    size_t score_tile_bytes{0};
+    size_t k_tile_bytes{0}; // For caching K-vectors in threadgroup memory
+    size_t v_tile_bytes{0}; // For caching V-vectors in threadgroup memory
     size_t final_guard_bytes{0};
     size_t total_bytes{0};
 
     size_t fixed_components_sum_for_t_calc() const {
-        // Sum of q_shmem + all 6 scratch arrays (everything except score_tile and final_guard)
+        // Sum of q_shmem + all 6 scratch arrays (everything except k_tile, v_tile and final_guard)
+        // K_tile_bytes and v_tile_bytes are removed from here as they depend on tile_T (creating a circular dependency)
         return q_shmem_bytes +
                partial_reduce_scratch_bytes +
                simd_reduced_maxes_bytes +
