@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Operations in MLX."""
+"""Operations for paged attention in MLX."""
 
 import mlx.core as mx
 
@@ -32,15 +32,17 @@ def paged_attention(
     """Performs paged attention using the custom C++ primitive and Metal kernel.
 
     Args:
-        queries: Queries array.
-            Shape: [TotalQueryTokens, NumQHeads, HeadDim] or [TotalQueryTokens, ModelDim]
+        queries: Queries array. May be 1D, 2D, or 3D:
+            - 1D: [NumItems] with HeadDim=1
+            - 2D: [NumItems, HeadDim] (NumQHeads implicitly 1)
+            - 3D: [NumTokens, NumQHeads, HeadDim]
         k_cache_pool: The entire K cache buffer.
             Shape: [NumTotalPages, TokensPerPage, NumKVHeads, HeadDim]
         v_cache_pool: The entire V cache buffer.
             Shape: [NumTotalPages, TokensPerPage, NumKVHeads, HeadDim]
         page_table: Page table mapping logical blocks for each sequence
             to physical page IDs in the k_cache_pool/v_cache_pool.
-            Shape: [NumSequencesInBatch, MaxLogicalBlocksPerSequence] (flattened or 2D)
+            Shape: [NumSequencesInBatch, MaxLogicalBlocksPerSequence]
         sequence_lengths: Actual length of each sequence in the batch.
             Shape: [NumSequencesInBatch]
         query_to_seq_map: Maps each query token to its sequence index.
@@ -50,7 +52,13 @@ def paged_attention(
         stream: Optional stream or device for the operation.
 
     Returns:
-        The attention output array.
+        mx.array: The result of the paged attention operation:
+            - If queries are 3D [NumTokens, NumQHeads, HeadDim], output is [NumTokens*NumQHeads, HeadDim]
+            - If queries are 2D [NumItems, HeadDim], output is [NumItems, HeadDim]
+            - If queries are 1D [NumItems], output is [NumItems, HeadDim]
+
+    Note:
+        The output HeadDim is always taken from the KV cache head dimension, regardless of query dimensions.
     """
     return cpp_paged_attention_kernel(
         queries,

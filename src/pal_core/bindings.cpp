@@ -79,14 +79,16 @@ NB_MODULE(pal_core, m) {
         Performs paged attention using a custom primitive.
 
         Args:
-            queries (mlx.core.array): Queries array. May be 1D, 2D [tokens, head_dim],
-                                     or 3D [tokens, heads, head_dim].
+            queries (mlx.core.array): Queries array. May be 1D, 2D, or 3D:
+                - 1D: [NumItems] with HeadDim=1
+                - 2D: [NumItems, HeadDim] (NumQHeads implicitly 1)
+                - 3D: [NumTokens, NumQHeads, HeadDim]
             k_cache_pool (mlx.core.array): Global K cache data pool with shape
-                                          [num_pages, tokens_per_page, kv_heads, head_dim].
+                                          [NumTotalPages, TokensPerPage, NumKVHeads, HeadDim].
             v_cache_pool (mlx.core.array): Global V cache data pool with shape
-                                          [num_pages, tokens_per_page, kv_heads, head_dim].
+                                          [NumTotalPages, TokensPerPage, NumKVHeads, HeadDim].
             page_table (mlx.core.array): Page table array mapping logical blocks to physical
-                                        page IDs. Shape [num_sequences, max_blocks_per_seq].
+                                        page IDs. Shape [NumSequencesInBatch, MaxLogicalBlocksPerSeq].
             sequence_lengths (mlx.core.array): Array of actual lengths for each sequence
                                               in the batch.
             query_to_seq_map (mlx.core.array): Array mapping each query token to its
@@ -96,8 +98,13 @@ NB_MODULE(pal_core, m) {
             stream (mlx.core.Stream | mlx.core.Device | None, optional): Stream or device
                                                                         for the operation.
         Returns:
-            mlx.core.array: The result of the paged attention operation with shape
-                           [num_queries, head_dim].
+            mlx.core.array: The result of the paged attention operation:
+                - If queries are 3D [NumTokens, NumQHeads, HeadDim], output is [NumTokens*NumQHeads, HeadDim]
+                - If queries are 2D [NumItems, HeadDim], output is [NumItems, HeadDim]
+                - If queries are 1D [NumItems], output is [NumItems, HeadDim]
+
+        Note:
+            The output HeadDim is always taken from the KV cache head dimension, regardless of query dimensions.
       )doc");
 
   // Version information
