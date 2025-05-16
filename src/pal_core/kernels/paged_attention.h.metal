@@ -29,7 +29,6 @@ constant static const uint kSimdLanesPerGroup = 32;
 constant static const uint kAlignmentBytes = 64;
 constant static const uint kAlignmentMask = kAlignmentBytes - 1;
 
-constant static const uint kMaxTileSizeRuntimeSafetyCap = 512;
 constant static const float kEpsilonForZeroGuard = 1e-9f;
 
 
@@ -256,9 +255,3 @@ static inline float dot_product_qk(
  * @param head_dim_param The dimension of the attention head.
  * @return The calculated scale factor, or 1.0f if head_dim is 0.
  */
-static inline float calculate_inv_sqrt_head_dim(uint head_dim_param) {
-    if (head_dim_param > 0) {
-        return rsqrt((float)head_dim_param);
-    }
-    return 1.0f;
-}

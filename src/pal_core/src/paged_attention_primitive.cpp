@@ -269,6 +269,13 @@ static void populate_remaining_attention_params(
     // Use the constexpr static value defined at the top of the file
     params.log_exp_min_clamp = kLogFp16DenormMinVal;
 
+    if (params.head_dim > 0) {
+        params.inv_sqrt_head_dim = 1.0f / std::sqrt(static_cast<float>(params.head_dim));
+    } else {
+        params.inv_sqrt_head_dim = 1.0f;  // Default fallback
+    }
+    spdlog::debug("[PAL Primitive PopulateParams] Calculated inv_sqrt_head_dim: {}", params.inv_sqrt_head_dim);
+
     spdlog::debug("[PAL Primitive] Setting log_exp_min_clamp (based on fp16_denorm_min): {}", params.log_exp_min_clamp);
 }
 

@@ -22,47 +22,13 @@
 using namespace metal;
 
 /**
- *  paged_attn_kernel
- *  ----------------------------------------
- *  Implements paged attention for transformer models with key-value memory pooling.
- *
- *  This kernel computes attention scores between query vectors and key vectors stored in
- *  paged memory, then weights value vectors to produce the final output. The implementation
- *  handles:
- *  - Multi-headed attention (MHA)
- *  - Grouped query attention (GQA)
- *  - Multi-query attention (MQA)
- *  - Efficient vectorized memory access
- *  - K/V-vector caching in threadgroup memory
- *  - SIMD-accelerated parallel reductions
- *  - Kahan summation for improved numerical stability with long sequences
- *
- *  Thread Mapping:
- *  - One threadgroup processes one query item (single token+head pair)
- *  - Each thread in the threadgroup collaboratively processes a portion of history
- *  - SIMD groups are used for efficient parallel reductions
- *
- *  Memory Layout:
- *  - Query shape: [N_tokens × H_q × D] or [N] when H_q==1
- *  - Key/Value cache: [Pages × TokensPerPage × H_kv × D]
- *  - Page table: [Sequences × MaxBlocksPerSequence]
- *
- *  Algorithm Stages (Fused Single-Pass for head_dim <= kMaxHeadDimMetal):
- *  1. Collaboratively load and pre-scale query vector into shared memory.
- *  2. Initialize full head_dim accumulator (acc_tile_local[kMaxHeadDimMetal]).
- *  3. Process history tiles in a single pass:
- *     - Load K/V-vectors into threadgroup memory (K_tile, V_tile).
- *     - Compute Q·K scores and store in thread-local variables.
- *     - Perform online softmax with thread-local scores to update global stats.
- *     - Calculate attention weights using thread-local values.
- *     - Directly accumulate weighted V-vectors from V_tile into full acc_tile_local.
- *     - Rescale accumulator based on global softmax updates.
- *  4. After processing all history:
- *     - Normalize the full accumulator using the final softmax denominator.
- *     - Reduce across the threadgroup and write the entire head_dim to output buffer.
- *
- *  The fused approach eliminates the need for score_tile storage and the D-chunking outer loop,
- *  processing the entire head_dim in one pass for better efficiency on typical model dimensions.
+ * paged_attn_kernel
+ * -----------------
+ * Fused paged attention for transformer models. Supports MHA, GQA and MQA with
+ * vectorized loads, K/V caching and SIMD reductions. One threadgroup handles a
+ * single query-head item and performs: load & scale Q, tile K/V history, online
+ * softmax, accumulate V and final normalization.
+ * Assumes params.head_dim is a multiple of 4, validated on host.
  */
 [[kernel]] void paged_attn_kernel(
     device      const half* queries_in              [[buffer(0)]],
@@ -82,7 +48,6 @@ using namespace metal;
     uint        simd_group_id                       [[simdgroup_index_in_threadgroup]]
 ) {
     // --- 1/10: Calculate Inverse Sqrt Head Dim ---
-    float inv_sqrt_head_dim_val = calculate_inv_sqrt_head_dim(params.head_dim);
 
     // --- 2/10: Basic Input Validation ---
     // Early exit for degenerate case where head_dim is zero
@@ -181,7 +146,7 @@ using namespace metal;
 
     // --- 6.1/10: Stage Q-Vector into Shared Memory ---
     for (uint i = local_thread_idx; i < params.head_dim; i += tg_dim.x) {
-        q_shmem[i] = (float)q_vector_item_ptr[i] * inv_sqrt_head_dim_val;
+        q_shmem[i] = (float)q_vector_item_ptr[i] * params.inv_sqrt_head_dim;
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 

@@ -74,7 +74,7 @@ struct ThreadgroupMemoryLayout {
     }
 };
 
-// Expected size for PagedAttentionParams: 9 uint32_t (36 bytes) + 1 float (4 bytes) = 40 bytes.
+// Expected size for PagedAttentionParams: 10 uint32_t (40 bytes) + 2 float (8 bytes) = 48 bytes.
 // alignas(16) means total size is 48, as it's padded to multiple of 16.
 // Note: We use 64-byte alignment for threadgroup memory, but the struct itself remains 16-byte aligned.
 constexpr size_t kExpectedPagedAttentionParamsSize = 48;
