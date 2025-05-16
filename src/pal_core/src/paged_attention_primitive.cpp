@@ -42,10 +42,11 @@ namespace mx = mlx::core;
 
 namespace pal::cpp {
 
-constexpr static float kLogFp16DenormMinVal = -20.0f;
-constexpr static uint32_t kDefaultPaddingFloatsPerRow = 8; // For 32-byte padding (8 floats)
+// fp16 - log(2^-24) = -16.6355
+constexpr static float kLogFp16DenormMinVal = -16.6355f;
+constexpr static uint32_t kDefaultPaddingFloatsPerRow = 8;
 
-// Definition of the calculate_threadgroup_memory_breakdown_and_total helper method
+
 ThreadgroupMemoryLayout PagedAttentionPrimitive::calculate_threadgroup_memory_breakdown_and_total(
     const PagedAttentionParams& params,
     size_t threads_per_group
@@ -135,9 +136,6 @@ ThreadgroupMemoryLayout PagedAttentionPrimitive::calculate_threadgroup_memory_br
                 params.tile_size_T_runtime, padded_head_dim_for_tile, params.tile_size_T_runtime * padded_head_dim_for_tile,
                 layout.v_tile_bytes, tg_mem_current_offset_bytes);
 
-    // Score Tile memory is no longer needed in threadgroup memory for fused pass
-    // as scores are used immediately and don't need to be cached
-
     // Final padding guard
     constexpr size_t kFinalTgMemoryPaddingGuardBytes = 32;
     layout.final_guard_bytes = kFinalTgMemoryPaddingGuardBytes;
@@ -154,27 +152,25 @@ ThreadgroupMemoryLayout PagedAttentionPrimitive::calculate_threadgroup_memory_br
 
 // Definition of the populate_remaining_attention_params helper method
 void PagedAttentionPrimitive::populate_remaining_attention_params(
-    PagedAttentionParams& params, // Already has head_dim, num_q_heads, etc. from CoreDims
+    PagedAttentionParams& params,
     const CoreDims& extracted_core_dims,
     const mx::array& k_pool_arr,
     const mx::array& page_table_arr,
     MTL::Device* mtl_device_ptr,
     size_t threads_per_item_group_for_dispatch
 ) {
-    // Populate params directly using members from extracted_core_dims
+
     params.num_q_heads = extracted_core_dims.num_q_heads;
     params.num_kv_heads = extracted_core_dims.num_kv_heads;
     params.head_dim = extracted_core_dims.head_dim;
     params.tokens_per_page = extracted_core_dims.tokens_per_page;
-    params.pad_floats_per_row = kDefaultPaddingFloatsPerRow; // Set this early
-    // Note: actual_threads_per_item_group and total_items_in_dispatch were removed from params
+    params.pad_floats_per_row = kDefaultPaddingFloatsPerRow;
 
     params.max_logical_blocks_per_seq = page_table_arr.shape(1);
     params.num_physical_pages_in_pool = k_pool_arr.shape(0);
     params.num_sequences_in_batch = page_table_arr.shape(0);
 
     // --- Calculate fixed TG memory part using calculate_threadgroup_memory_breakdown_and_total ---
-    // Create a temporary params struct with tile_size_T_runtime = 0 to calculate fixed memory only
     PagedAttentionParams params_for_fixed_sizing = params; // Copy current params (has head_dim etc.)
     params_for_fixed_sizing.tile_size_T_runtime = 0; // Set to 0 so score_tile_bytes will be 0
 
@@ -198,12 +194,6 @@ void PagedAttentionPrimitive::populate_remaining_attention_params(
     size_t available_mem_for_dynamic_tiles = (max_tg_memory_bytes_val > precise_fixed_tg_mem_bytes) ?
                                            (max_tg_memory_bytes_val - precise_fixed_tg_mem_bytes - kFinalTgMemoryPaddingGuardBytes) : 0;
 
-    // Calculate memory per history item in a tile
-    // We now cache K-vectors in threadgroup memory, so each history item needs:
-    // 1. A slot in the score_tile (1 float)
-    // 2. A K-vector slot (head_dim floats)
-    // This increases memory usage per tile item but will reduce global memory bandwidth.
-
     // Memory for score_tile with SIMD group padding to avoid bank conflicts
     const size_t num_simd_groups_cpp = (threads_per_item_group_for_dispatch + 31u) / 32u; // Consistent with kernel
     constexpr size_t kScoreTilePaddingFloatsPerSimdGroup = 8; // 32-byte padding per SIMD group offset
@@ -223,10 +213,8 @@ void PagedAttentionPrimitive::populate_remaining_attention_params(
     const uint32_t min_T_soft = 4;   // O3 suggests 4, can be tuned to 8. Let's start with 4.
     const uint32_t align_val = 4;    // Keep tiles 4-aligned
 
-    // 2. Compute the fixed part (already have precise_fixed_tg_mem_bytes from earlier)
-    size_t fixed_mem = precise_fixed_tg_mem_bytes; // This was calculated from fixed_layout_info
-    // No need to re-align fixed_mem here if precise_fixed_tg_mem_bytes was already aligned.
-    // Let's assume precise_fixed_tg_mem_bytes is the sum of already aligned sections.
+    // 2. Compute the fixed part
+    size_t fixed_mem = precise_fixed_tg_mem_bytes;
     if (fixed_mem + guard >= tg_limit) {
         throw std::runtime_error("[PAL Primitive] Fixed scratch memory alone exceeds threadgroup memory limit.");
     }
@@ -253,18 +241,11 @@ void PagedAttentionPrimitive::populate_remaining_attention_params(
     }
     spdlog::debug("[PAL Primitive] Max_T_fit (raw based on memory): {}", max_T_fit);
 
-
-    // 5. Clamp, align down
-    // 5a. Cap by user's practical max and by tokens_per_page (from K-cache, effectively a physical limit for a single page)
-    // Note: params.tokens_per_page is from the K-cache structure, not a dynamic seq_len.
-    // It's a physical limit on how many tokens *can* be in a page, so a tile shouldn't exceed this.
     max_T_fit = std::min({max_T_fit,
                           practical_max_T,
                           static_cast<uint32_t>(params.tokens_per_page)});
     spdlog::debug("[PAL Primitive] Max_T_fit (after practical_max_T and tokens_per_page clamp): {}", max_T_fit);
 
-
-    // 5b. Ensure >0 (if it's 0, it means not even one token fits with K-tiling)
     if (max_T_fit == 0) {
         spdlog::error("[PAL Primitive] head_dim {} is too large to cache even one history token's K-vector and score. "
                       "FixedMem: {}, Guard: {}, BytesPerToken: {}, TG_Limit: {}",
@@ -299,12 +280,8 @@ void PagedAttentionPrimitive::populate_remaining_attention_params(
 
     // Ensure tile_size_T_runtime is at least min_T_soft, but only if max_T_fit was also at least min_T_soft.
     // This prevents forcing a tile size that doesn't fit.
-    // The primary constraint is max_T_fit. min_T_soft is a "preferred" minimum if possible.
     if (max_T_fit >= min_T_soft) {
         params.tile_size_T_runtime = std::max(params.tile_size_T_runtime, min_T_soft);
-    } else {
-        // If max_T_fit itself is less than min_T_soft (but > 0), we must use max_T_fit.
-        // This case is already handled by params.tile_size_T_runtime = max_T_fit; above.
     }
     spdlog::debug("[PAL Primitive] tile_size_T_runtime (after heuristic and min_T_soft consideration): {}", params.tile_size_T_runtime);
 
@@ -317,12 +294,6 @@ void PagedAttentionPrimitive::populate_remaining_attention_params(
         // This case should ideally be caught by max_T_fit == 0 check earlier
         throw std::runtime_error("[PAL Primitive] tile_size_T_runtime became 0 after all adjustments.");
     }
-
-
-    // 7. Final safety audit (O3's step, though calculations should ensure this passes)
-    // This requires re-calculating total_bytes using the *final* params.tile_size_T_runtime
-    // We can defer this check to the existing one in eval_gpu after calculate_threadgroup_memory_breakdown_and_total is called
-    // with the final params_struct. For now, ensure params.tile_size_T_runtime is set.
 
     spdlog::info("[PAL Primitive] Final determined tile_size_T_runtime: {} (using padded_head_dim: {})",
                params.tile_size_T_runtime, padded_head_dim_for_tile_calc);
@@ -359,9 +330,6 @@ CoreDims PagedAttentionPrimitive::validate_inputs_and_populate_initial_params(
     const auto& query_token_offset = inputs[6];
 
     // --- Dtype Checks ---
-    if (q.dtype() != mx::float16 || k_pool.dtype() != mx::float16 || v_pool.dtype() != mx::float16) {
-         throw std::invalid_argument("[PAL Primitive Validate] Queries, K-pool, and V-pool must be float16.");
-    }
     if (page_table.dtype() != mx::uint32) {
          throw std::invalid_argument("[PAL Primitive Validate] page_table must be uint32.");
     }
@@ -621,7 +589,6 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
   spdlog::debug("[PAL Primitive] Effective threads_per_item_group for dispatch: {}", threads_per_item_group);
 
   // Call helper to populate the remaining attention parameters
-  // This now internally uses calculate_threadgroup_memory_breakdown_and_total for precise memory calculation
   populate_remaining_attention_params(
       params_struct,
       core_dims,
