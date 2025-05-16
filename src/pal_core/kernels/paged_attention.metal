@@ -401,7 +401,7 @@ using namespace metal;
                 // Calculate the exponentiated score value in a thread-local variable
                 float thread_exp_val = 0.0f;
                 if (local_thread_idx < current_hist_tile_actual_len) {
-                    thread_exp_val = fast::exp(max(thread_score_val - m_local_tile_val, params.log_exp_min_clamp));
+                    thread_exp_val = exp(max(thread_score_val - m_local_tile_val, params.log_exp_min_clamp));
                 }
 
                 // --- 10.1.4/10: History Tile - Local Sum (d_local_tile) Reduction ---
@@ -438,7 +438,7 @@ using namespace metal;
                         params
                     );
                 }
-                simdgroup_barrier(mem_flags::mem_threadgroup); // Cheaper and still flushes TG-mem, ensures visibility
+                threadgroup_barrier(mem_flags::mem_threadgroup); // Full barrier to ensure tg_global_stats and tg_simd_reduce_scratch are visible to all threads
 
                 // All threads read the consistent m_global and scale factor for this iteration
                 float m_global_current_iter_atomic = (*tg_global_stats).x;
@@ -470,11 +470,12 @@ using namespace metal;
                     threadgroup const float* v_vector_from_tile = V_tile + (local_thread_idx * padded_head_dim_hoisted);
 
                     // Calculate final weight component: exp(raw_score - m_global)
-                    // thread_exp_val = fast::exp(raw_score - m_local_tile_val)
-                    // Need to multiply by fast::exp(m_local_tile_val - m_global_current_iter_atomic)
+                    // thread_exp_val = exp(raw_score - m_local_tile_val)
+                    // Need to multiply by exp(m_local_tile_val - m_global_current_iter_atomic)
                     // Using m_global_current_iter_atomic that was read after the sync barrier
+                    // This effectively gives us: exp(raw_score - m_global_current_iter_atomic)
                     float weight_term = thread_exp_val; // Already float
-                    float exp_term = fast::exp(max(m_local_tile_val - m_global_current_iter_atomic, params.log_exp_min_clamp));
+                    float exp_term = exp(max(m_local_tile_val - m_global_current_iter_atomic, params.log_exp_min_clamp));
                     float final_p_attn_weight_numerator = weight_term * exp_term; // float * float = float
 
                     // Accumulate into the full acc_tile_local in float4 chunks for efficiency

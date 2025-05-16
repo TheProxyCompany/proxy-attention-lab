@@ -45,7 +45,7 @@ namespace pal::cpp {
 // Define constants for log_exp_min_clamp calculation
 constexpr static float kFp16DenormMinVal = 5.9604644775390625e-08f; // 2^-24
 // Use a less aggressive clamp value for better numerical stability with fp16
-constexpr static float kLogFp16DenormMinVal = -10.0f; // Less aggressive than logf(kFp16DenormMinVal) = -16.63...
+constexpr static float kLogFp16DenormMinVal = -11.09f; // O3's specific suggestion for fp16 stability
 constexpr static uint32_t kDefaultPaddingFloatsPerRow = 8; // For 32-byte padding (8 floats)
 
 // Definition of the calculate_threadgroup_memory_breakdown_and_total helper method
