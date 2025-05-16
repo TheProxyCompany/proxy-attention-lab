@@ -10,9 +10,9 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+      - name: Install MLX & Nanobind
+        run: pip install --no-deps "git+https://github.com/TheProxyCompany/mlx.git" "nanobind==2.5.0"
       - name: Python deps
-        run: pip install -e "."
-      - name: Build Metal
-        run: ./scripts/build_metal.sh
+        run: pip install "."
       - name: Unit tests
         run: pytest tests/ -q -n auto
