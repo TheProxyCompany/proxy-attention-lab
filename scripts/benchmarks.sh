@@ -23,8 +23,8 @@ PYTHON_BENCHMARK_ROOT_DIR="tests" # Root for Python benchmark discovery
 CPP_BENCHMARK_BUILD_ROOT_DIR="build/tests" # Root for C++ benchmark executable discovery
 BENCHMARK_OUTPUT_ROOT=".benchmarks" # Output directory for benchmark results
 
-# Naming conventions for discovery
-PYTHON_BENCHMARK_PATTERN="paged_attention/benchmarks/python/*.py" # Pattern for Python benchmark files
+# Naming conventions for discovery (unused but kept for reference)
+PYTHON_BENCHMARK_PATTERN="*/benchmarks/python/*.py"
 
 # --- Helper Functions ---
 log() {
@@ -63,26 +63,23 @@ print_usage() {
 Usage: $(basename "$0") [OPTIONS]
 
 Options:
-  --run [suite_target]     Run benchmark suite(s). If suite_target is omitted, runs all.
-                           Valid targets: all, py, cpp, py_pal, py_sdpa, cpp_pal, cpp_sdpa
-  --analyze                Only analyze existing benchmark results
-  --rebuild-only           Only update dependencies and rebuild the project
-  --reset                  Clear all existing benchmark results before running
-  --help                   Show this help message
+  --run [all|py|cpp] [kernel]  Run benchmarks. Language defaults to 'all'.
+                               If a kernel name is provided it limits the run
+                               to that kernel.
+  --analyze                    Only analyze existing benchmark results
+  --rebuild-only               Only update dependencies and rebuild the project
+  --reset                      Clear all existing benchmark results before running
+  --help                       Show this help message
 
 Combined Options:
-  --run ... --analyze      Run the specified benchmarks and then analyze the results
-  --run ... --reset        Clear all benchmarks before running new ones
+  --run ... --analyze          Run the specified benchmarks and then analyze the results
+  --run ... --reset            Clear all benchmarks before running new ones
 
 Examples:
-  $(basename "$0")                             # Default: rebuild, run all, analyze
-  $(basename "$0") --run                       # Rebuild, run all, NO analysis
-  $(basename "$0") --run py_pal                # Rebuild, run only Python PAL benchmarks
-  $(basename "$0") --run cpp_sdpa              # Rebuild, run only C++ SDPA benchmarks
-  $(basename "$0") --run py --analyze          # Run Python benchmarks and analyze results
-  $(basename "$0") --run --reset               # Reset benchmark dir, then run all benchmarks
-  $(basename "$0") --analyze                   # Only analyze existing data
-  $(basename "$0") --rebuild-only              # Only update deps and rebuild
+  $(basename "$0") --run                  # Rebuild, run all benchmarks
+  $(basename "$0") --run py paged_attention   # Run Python benchmarks for paged_attention
+  $(basename "$0") --run cpp                 # Run all C++ benchmarks
+  $(basename "$0") --analyze                # Only analyze existing data
 EOF
 }
 
@@ -191,38 +188,34 @@ setup_benchmark_output_dir() {
 }
 
 run_python_benchmarks() {
-    local target="${1:-all}"
-    local filter_option=""
+    local kernel="${1:-}"
     local benchmark_start benchmark_end benchmark_duration
 
     hr
-    log "Running Python benchmarks (target: ${target})..."
+    if [ -n "${kernel}" ]; then
+        log "Running Python benchmarks for kernel: ${kernel}"
+    else
+        log "Running all Python benchmarks"
+    fi
 
     benchmark_start=$(date +%s)
 
-    # Set filter based on target
-    case "${target}" in
-        "py_pal"|"pal")
-            filter_option="-k test_pal_"
-            log "Filtering for PAL Python benchmarks only"
-            ;;
-        "py_sdpa"|"sdpa")
-            filter_option="-k test_sdpa_"
-            log "Filtering for SDPA Python benchmarks only"
-            ;;
-        "all"|"py"|*)
-            filter_option="" # Run all Python benchmarks
-            log "Running all Python benchmarks"
-            ;;
-    esac
-
-    # Find all .py files in any benchmarks/python subfolder under tests/
     python_benchmark_files=()
-    while IFS= read -r -d $'\0' file; do
-        python_benchmark_files+=("$file")
-    done < <(find "${PYTHON_BENCHMARK_ROOT_DIR}" -type d -path "*/benchmarks/python" -print0 | while IFS= read -r -d $'\0' dir; do
-        find "$dir" -maxdepth 1 -type f -name "*.py" -print0
-    done)
+    if [ -n "${kernel}" ]; then
+        if [ -d "tests/${kernel}/benchmarks/python" ]; then
+            while IFS= read -r -d $'\0' file; do
+                python_benchmark_files+=("$file")
+            done < <(find "tests/${kernel}/benchmarks/python" -maxdepth 1 -type f -name "*.py" -print0)
+        else
+            log "WARNING: No Python benchmarks found for kernel '${kernel}'"
+        fi
+    else
+        while IFS= read -r -d $'\0' file; do
+            python_benchmark_files+=("$file")
+        done < <(find "${PYTHON_BENCHMARK_ROOT_DIR}" -type d -path "*/benchmarks/python" -print0 | while IFS= read -r -d $'\0' dir; do
+            find "$dir" -maxdepth 1 -type f -name "*.py" -print0
+        done)
+    fi
 
     if [ ${#python_benchmark_files[@]} -eq 0 ]; then
         log "No Python benchmark files found in any 'benchmark/python' subfolder under '${PYTHON_BENCHMARK_ROOT_DIR}'."
@@ -231,13 +224,13 @@ run_python_benchmarks() {
             hr
             log "Running Python benchmarks in: ${benchmark_file}"
 
-            # Generate a unique JSON output name based on the benchmark file name, target and date
+            # Generate a unique JSON output name based on the benchmark file name and timestamp
             local benchmark_basename
             benchmark_basename=$(basename "${benchmark_file}" .py)
             local timestamp=$(date +"%Y%m%d_%H%M%S")
-            local test_type="${target}"
-            if [ "${test_type}" = "all" ] || [ "${test_type}" = "py" ]; then
-                test_type="py_all"
+            local test_type="py_all"
+            if [ -n "${kernel}" ]; then
+                test_type="py_${kernel}"
             fi
             local python_json_output="${BENCHMARK_OUTPUT_ROOT}/${test_type}_${benchmark_basename}_${timestamp}.json"
 
@@ -246,7 +239,6 @@ run_python_benchmarks() {
                 --benchmark-only \
                 --benchmark-columns="min,max,mean,stddev,rounds,iterations" \
                 --benchmark-json="${python_json_output}" \
-                ${filter_option} \
                 -v
 
             log "Python benchmarks from ${benchmark_file} completed. Results saved to ${python_json_output}"
@@ -260,36 +252,30 @@ run_python_benchmarks() {
 }
 
 run_cpp_benchmarks() {
-    local target="${1:-all}"
+    local kernel="${1:-}"
     local filter_option=""
     local benchmark_start benchmark_end benchmark_duration
 
     hr
-    log "Running C++ benchmarks (target: ${target})..."
+    if [ -n "${kernel}" ]; then
+        log "Running C++ benchmarks for kernel: ${kernel}"
+        filter_option="--benchmark_filter=${kernel}"
+    else
+        log "Running all C++ benchmarks"
+    fi
 
     benchmark_start=$(date +%s)
 
-    # Set filter based on target
-    case "${target}" in
-        "cpp_pal"|"pal")
-            filter_option="--benchmark_filter=BM_PAL_"
-            log "Filtering for PAL C++ benchmarks only"
-            ;;
-        "cpp_sdpa"|"sdpa")
-            filter_option="--benchmark_filter=BM_SDPA_"
-            log "Filtering for SDPA C++ benchmarks only"
-            ;;
-        "all"|"cpp"|*)
-            filter_option="" # Run all C++ benchmarks
-            log "Running all C++ benchmarks"
-            ;;
-    esac
-
-    # Use find to locate C++ benchmark executables in the build directory
     cpp_benchmark_executables=()
-    while IFS= read -r -d $'\0' file; do
-        cpp_benchmark_executables+=("$file")
-    done < <(find "${CPP_BENCHMARK_BUILD_ROOT_DIR}" -type f -perm -u+x -print0)
+    if [ -n "${kernel}" ]; then
+        while IFS= read -r -d $'\0' file; do
+            cpp_benchmark_executables+=("$file")
+        done < <(find "${CPP_BENCHMARK_BUILD_ROOT_DIR}" -type f -perm -u+x -name "*${kernel}*" -print0)
+    else
+        while IFS= read -r -d $'\0' file; do
+            cpp_benchmark_executables+=("$file")
+        done < <(find "${CPP_BENCHMARK_BUILD_ROOT_DIR}" -type f -perm -u+x -print0)
+    fi
 
     if [ ${#cpp_benchmark_executables[@]} -eq 0 ]; then
         log "No C++ benchmark executables found in '${CPP_BENCHMARK_BUILD_ROOT_DIR}'."
@@ -302,9 +288,9 @@ run_cpp_benchmarks() {
             local benchmark_exename
             benchmark_exename=$(basename "${benchmark_exe}")
             local timestamp=$(date +"%Y%m%d_%H%M%S")
-            local test_type="${target}"
-            if [ "${test_type}" = "all" ] || [ "${test_type}" = "cpp" ]; then
-                test_type="cpp_all"
+            local test_type="cpp_all"
+            if [ -n "${kernel}" ]; then
+                test_type="cpp_${kernel}"
             fi
             local cpp_json_output="${BENCHMARK_OUTPUT_ROOT}/${test_type}_${benchmark_exename}_${timestamp}.json"
 
@@ -362,7 +348,8 @@ main() {
     local ANALYZE_ONLY=false
     local REBUILD_ONLY=false
     local RESET_BENCHMARKS=false
-    local TARGET_SUITE="all"
+    local RUN_LANGUAGE="all"
+    local RUN_KERNEL=""
 
     hr
     log "Starting Benchmark Suite Runner"
@@ -382,8 +369,8 @@ main() {
         setup_environment
         setup_benchmark_output_dir "false" # Don't reset by default
         update_and_rebuild_project
-        run_python_benchmarks "all"
-        run_cpp_benchmarks "all"
+        run_python_benchmarks ""
+        run_cpp_benchmarks ""
         analyze_results
     else
         # Process flags
@@ -394,10 +381,14 @@ main() {
                 --run)
                     RUN_REQUESTED=true
                     if [ $# -gt 1 ] && [[ ! "$2" == --* ]]; then
-                        TARGET_SUITE="$2"
+                        RUN_LANGUAGE="$2"
                         shift
+                        if [ $# -gt 1 ] && [[ ! "$2" == --* ]]; then
+                            RUN_KERNEL="$2"
+                            shift
+                        fi
                     else
-                        TARGET_SUITE="all"
+                        RUN_LANGUAGE="all"
                     fi
                     ;;
                 --analyze)
@@ -426,10 +417,10 @@ main() {
             shift
         done
 
-        # Validate target suite if specified
-        if [ "${RUN_REQUESTED}" = true ] && ! [[ "${TARGET_SUITE}" =~ ^(all|py|cpp|py_pal|py_sdpa|cpp_pal|cpp_sdpa)$ ]]; then
-            log "ERROR: Invalid target suite: ${TARGET_SUITE}"
-            log "Valid values: all, py, cpp, py_pal, py_sdpa, cpp_pal, cpp_sdpa"
+        # Validate run language
+        if [ "${RUN_REQUESTED}" = true ] && ! [[ "${RUN_LANGUAGE}" =~ ^(all|py|cpp)$ ]]; then
+            log "ERROR: Invalid run language: ${RUN_LANGUAGE}"
+            log "Valid values: all, py, cpp"
             exit 1
         fi
 
@@ -450,33 +441,21 @@ main() {
         fi
 
         if [ "${RUN_REQUESTED}" = true ]; then
-            log "Run mode: target=${TARGET_SUITE}"
+            log "Run mode: language=${RUN_LANGUAGE} kernel=${RUN_KERNEL:-all}"
             setup_benchmark_output_dir "${RESET_BENCHMARKS}"
             update_and_rebuild_project
 
             # Run appropriate benchmark suites
-            case "${TARGET_SUITE}" in
+            case "${RUN_LANGUAGE}" in
                 "all")
-                    run_python_benchmarks "all"
-                    run_cpp_benchmarks "all"
+                    run_python_benchmarks "${RUN_KERNEL}"
+                    run_cpp_benchmarks "${RUN_KERNEL}"
                     ;;
                 "py")
-                    run_python_benchmarks "all"
+                    run_python_benchmarks "${RUN_KERNEL}"
                     ;;
                 "cpp")
-                    run_cpp_benchmarks "all"
-                    ;;
-                "py_pal")
-                    run_python_benchmarks "pal"
-                    ;;
-                "py_sdpa")
-                    run_python_benchmarks "sdpa"
-                    ;;
-                "cpp_pal")
-                    run_cpp_benchmarks "pal"
-                    ;;
-                "cpp_sdpa")
-                    run_cpp_benchmarks "sdpa"
+                    run_cpp_benchmarks "${RUN_KERNEL}"
                     ;;
             esac
 

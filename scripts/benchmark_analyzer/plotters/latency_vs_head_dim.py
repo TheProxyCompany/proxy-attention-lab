@@ -8,26 +8,29 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 from .. import plot_utils
-from ..config import COL_MEAN_LATENCY, COL_SOURCE
+from ..config import COL_KERNEL_TESTED, COL_LANGUAGE, COL_MEAN_LATENCY
 
 STYLES = plot_utils.get_plot_styles()
 
 
-def plot(df: pd.DataFrame, output_dir: Path, styles: dict[str, str | float] | None = None) -> str:
-    """Generate latency vs head dimension plot."""
+def plot(df: pd.DataFrame, output_dir: Path, styles: dict[str, str | float] | None = None) -> dict[str, str]:
+    """Generate latency vs head dimension plots per kernel."""
     styles = styles or STYLES
-    fig, ax = plt.subplots(figsize=(8, 6))
-    for src, group in df.dropna(subset=["head_dim"]).groupby(COL_SOURCE):
-        ax.plot(group["head_dim"], group[COL_MEAN_LATENCY], label=src, marker="o")
-    plot_utils.apply_common_plot_aesthetics(
-        ax,
-        "Latency vs Head Dimension",
-        "Head Dimension",
-        "Mean Latency (ms)",
-        styles,
-    )
     output_dir.mkdir(parents=True, exist_ok=True)
-    filename = "latency_vs_head_dim.png"
-    fig.savefig(output_dir / filename, dpi=300)
-    plt.close(fig)
-    return filename
+    filenames: dict[str, str] = {}
+    for kernel, kdf in df.dropna(subset=["head_dim"]).groupby(COL_KERNEL_TESTED):
+        fig, ax = plt.subplots(figsize=(8, 6))
+        for lang, group in kdf.groupby(COL_LANGUAGE):
+            ax.plot(group["head_dim"], group[COL_MEAN_LATENCY], label=lang, marker="o")
+        plot_utils.apply_common_plot_aesthetics(
+            ax,
+            f"{kernel} Latency vs Head Dimension",
+            "Head Dimension",
+            "Mean Latency (ms)",
+            styles,
+        )
+        filename = f"latency_vs_head_dim_{kernel}.png"
+        fig.savefig(output_dir / filename, dpi=300)
+        plt.close(fig)
+        filenames[kernel] = filename
+    return filenames

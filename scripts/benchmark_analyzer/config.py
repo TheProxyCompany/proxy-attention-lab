@@ -12,6 +12,8 @@ DEFAULT_BATCH_SIZE = 64
 # Column names used across the package
 COL_BENCHMARK_NAME_BASE = "benchmark_name_base"
 COL_SOURCE = "source"
+COL_LANGUAGE = "language"
+COL_KERNEL_TESTED = "kernel_tested"
 COL_PARAMS_STR = "params_str"
 COL_MEAN_LATENCY = "mean_latency_ms"
 COL_THROUGHPUT = "throughput_items_per_sec"

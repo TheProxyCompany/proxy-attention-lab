@@ -1,11 +1,11 @@
-"""CLI tool for analyzing benchmark results."""
+"""CLI tool for analyzing PAL benchmark results for custom kernels."""
 
 from __future__ import annotations
 
 import argparse
 from pathlib import Path
 
-from benchmark_analyzer import config, loaders, plot_utils, reporters, transformers
+from benchmark_analyzer import loaders, plot_utils, reporters, transformers
 from benchmark_analyzer.plotters import (
     latency_vs_effective_items,
     latency_vs_head_dim,
@@ -33,9 +33,12 @@ def main() -> None:
     df = transformers.extract_and_normalize_parameters(raw_df)
     styles = plot_utils.get_plot_styles()
     plot_filenames: dict[str, str] = {}
-    plot_filenames["latency_vs_seq_len"] = latency_vs_seq_len.plot(df, args.output_dir, styles)
-    plot_filenames["latency_vs_head_dim"] = latency_vs_head_dim.plot(df, args.output_dir, styles)
-    plot_filenames["latency_vs_effective_items"] = latency_vs_effective_items.plot(df, args.output_dir, styles)
+    for k, v in latency_vs_seq_len.plot(df, args.output_dir, styles).items():
+        plot_filenames[f"latency_vs_seq_len_{k}"] = v
+    for k, v in latency_vs_head_dim.plot(df, args.output_dir, styles).items():
+        plot_filenames[f"latency_vs_head_dim_{k}"] = v
+    for k, v in latency_vs_effective_items.plot(df, args.output_dir, styles).items():
+        plot_filenames[f"latency_vs_effective_items_{k}"] = v
     model_plot = model_configs_latency.plot(df, args.output_dir, styles)
     if model_plot:
         plot_filenames["model_configs_latency"] = model_plot

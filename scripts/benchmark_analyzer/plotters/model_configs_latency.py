@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 from .. import plot_utils
-from ..config import COL_MEAN_LATENCY, COL_SOURCE
+from ..config import COL_KERNEL_TESTED, COL_MEAN_LATENCY, COL_SOURCE
 
 STYLES = plot_utils.get_plot_styles()
 
@@ -19,12 +19,13 @@ def plot(df: pd.DataFrame, output_dir: Path, styles: dict[str, str | float] | No
     cfg_df = df.dropna(subset=["model_config_name"])
     if cfg_df.empty:
         return ""
+    kernel = cfg_df[COL_KERNEL_TESTED].unique()[0] if not cfg_df.empty else "kernel"
     fig, ax = plt.subplots(figsize=(8, 6))
     pivot = cfg_df.pivot_table(index="model_config_name", columns=COL_SOURCE, values=COL_MEAN_LATENCY)
-    pivot.plot.bar(ax=ax, color=[styles["PAL_BAR_COLOR"], styles["SDPA_BAR_COLOR"]])
+    pivot.plot.bar(ax=ax, color=[styles.get("PAL_BAR_COLOR", "#333333"), styles.get("SDPA_BAR_COLOR", "#777777")])
     plot_utils.apply_common_plot_aesthetics(
         ax,
-        "Model Configuration Latency",
+        f"{kernel} Model Configuration Latency",
         "Model Config",
         "Mean Latency (ms)",
         styles,
