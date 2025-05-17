@@ -20,7 +20,10 @@ dependencies = [
     "black",
     "isort",
     "ruff",
-    "mypy"
+    "mypy",
+    "matplotlib",
+    "numpy",
+    "pandas",
 ]
 
 [tool.setuptools]

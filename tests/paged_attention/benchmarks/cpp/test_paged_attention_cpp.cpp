@@ -24,9 +24,65 @@
 #include <mlx/random.h>
 #include <mlx/ops.h>
 
+#include <mlx/fast.h>
 #include <spdlog/spdlog.h>
 
 #include "pal_core/ops.hpp"
+
+namespace mx = mlx::core;
+
+// Helper struct for SDPA benchmark inputs (using a tuple instead of a struct to avoid constructor issues)
+using SDPABenchmarkInputs = std::tuple<mx::array, mx::array, mx::array, float, mx::array>;
+
+// Helper function to set up SDPA benchmark inputs
+SDPABenchmarkInputs setup_sdpa_benchmark_inputs_cpp(
+    int batch_size,
+    int num_q_heads,
+    int num_kv_heads,
+    int head_dim,
+    int seq_len,
+    mx::Dtype dtype
+) {
+    // Compute scale factor (1.0 / sqrt(head_dim))
+    float scale = 1.0f / std::sqrt(static_cast<float>(head_dim));
+
+    // Create input tensors with appropriate shapes
+    mx::array queries = mx::random::normal(
+        {batch_size, num_q_heads, seq_len, head_dim},
+        dtype
+    );
+
+    mx::array keys = mx::random::normal(
+        {batch_size, num_kv_heads, seq_len, head_dim},
+        dtype
+    );
+
+    mx::array values = mx::random::normal(
+        {batch_size, num_kv_heads, seq_len, head_dim},
+        dtype
+    );
+
+    // Create causal mask (using MLX's triu and full functions)
+    // Create a full ones matrix and make it upper triangular for causal masking
+    auto ones = mx::full({seq_len, seq_len}, 1.0f, dtype);
+    auto mask_val = std::numeric_limits<float>::lowest();
+    auto upper_triangular = mx::triu(ones, 1);
+    mx::array causal_mask = upper_triangular * mask_val;
+
+    // Ensure the causal_mask is of the same dtype as queries/keys/values.
+    // The multiplication above (e.g., float16 array * float scalar) promotes the result to float32.
+    // We need to cast it back to the original dtype (e.g., float16) for the SDPA kernel.
+    causal_mask = mx::astype(causal_mask, dtype);
+
+    // Ensure tensors are computed before returning
+    queries.eval();
+    keys.eval();
+    values.eval();
+    causal_mask.eval();
+
+    // Return tuple with all inputs
+    return {queries, keys, values, scale, causal_mask};
+}
 
 // Static initializer to set spdlog level for benchmarks
 struct BenchmarkSpdlogInitializer {
@@ -49,6 +105,13 @@ const int DEFAULT_SEQ_LEN = 128;
 const int DEFAULT_TOKENS_PER_PAGE = 64;
 const int DEFAULT_NUM_SEQUENCES_IN_BATCH = 1;
 const int DEFAULT_NUM_QUERY_ITEMS = 64;  // For DEFAULT_NUM_Q_HEADS=1, this means 64 tokens
+
+// Default configuration for SDPA benchmarks
+const int SDPA_DEFAULT_BATCH_SIZE = 64;
+const int SDPA_DEFAULT_NUM_Q_HEADS = 1;
+const int SDPA_DEFAULT_NUM_KV_HEADS = 1;
+const int SDPA_DEFAULT_HEAD_DIM = 128;
+const int SDPA_DEFAULT_SEQ_LEN = 128;
 
 // Helper function to create the page table
 mx::array create_page_table(int num_sequences_in_batch, int num_logical_pages_per_seq) {
@@ -335,6 +398,183 @@ BENCHMARK(BM_PAL_LatencyVsHeadDim)
 BENCHMARK(BM_PAL_LatencyVsNumItems)
     ->RangeMultiplier(2)
     ->Range(32, 512);
+
+// SDPA Benchmark Functions
+
+static void BM_SDPA_LatencyVsSeqLen(benchmark::State& state) {
+    // Extract parameters from state
+    const int batch_size = static_cast<int>(state.range(0));
+    const int seq_len = static_cast<int>(state.range(1));
+
+    // Fixed parameters for this benchmark
+    const int num_q_heads = SDPA_DEFAULT_NUM_Q_HEADS;
+    const int num_kv_heads = SDPA_DEFAULT_NUM_KV_HEADS;
+    const int head_dim = SDPA_DEFAULT_HEAD_DIM;
+
+    // Setup input tensors using the helper function
+    auto [queries, keys, values, scale, causal_mask] = setup_sdpa_benchmark_inputs_cpp(
+        batch_size, num_q_heads, num_kv_heads, head_dim, seq_len, mx::float16
+    );
+
+    // Main benchmark loop
+    for (auto _ : state) {
+        mx::array out = mx::fast::scaled_dot_product_attention(
+            queries,
+            keys,
+            values,
+            scale,
+            "array",  // Using explicit mask array
+            {causal_mask},
+            mx::Device::gpu
+        );
+        out.eval();  // Ensure GPU computation completes
+    }
+
+    // Set the number of items processed (batch_size * num_q_heads * seq_len per iteration)
+    state.SetItemsProcessed(static_cast<long long>(batch_size * num_q_heads * seq_len) * state.iterations());
+}
+
+static void BM_SDPA_LatencyVsHeadDim(benchmark::State& state) {
+    // Extract parameters from state
+    const int batch_size = static_cast<int>(state.range(0));
+    const int head_dim = static_cast<int>(state.range(1));
+
+    // Fixed parameters for this benchmark
+    const int num_q_heads = SDPA_DEFAULT_NUM_Q_HEADS;
+    const int num_kv_heads = SDPA_DEFAULT_NUM_KV_HEADS;
+    const int seq_len = SDPA_DEFAULT_SEQ_LEN;
+
+    // Setup input tensors using the helper function
+    auto [queries, keys, values, scale, causal_mask] = setup_sdpa_benchmark_inputs_cpp(
+        batch_size, num_q_heads, num_kv_heads, head_dim, seq_len, mx::float16
+    );
+
+    // Main benchmark loop
+    for (auto _ : state) {
+        mx::array out = mx::fast::scaled_dot_product_attention(
+            queries,
+            keys,
+            values,
+            scale,
+            "array",  // Using explicit mask array
+            {causal_mask},
+            mx::Device::gpu
+        );
+        out.eval();  // Ensure GPU computation completes
+    }
+
+    // Set the number of bytes processed (batch_size * num_q_heads * seq_len * head_dim * sizeof(float))
+    size_t bytes_processed = static_cast<size_t>(batch_size * num_q_heads * seq_len) * head_dim * sizeof(float);
+    state.SetBytesProcessed(static_cast<long long>(bytes_processed) * state.iterations());
+}
+
+static void BM_SDPA_LatencyVsNumItems(benchmark::State& state) {
+    // Extract parameters from state - for SDPA this is batch_size
+    const int batch_size = static_cast<int>(state.range(0));
+
+    // Fixed parameters for this benchmark
+    const int num_q_heads = SDPA_DEFAULT_NUM_Q_HEADS;
+    const int num_kv_heads = SDPA_DEFAULT_NUM_KV_HEADS;
+    const int head_dim = SDPA_DEFAULT_HEAD_DIM;
+    const int seq_len = SDPA_DEFAULT_SEQ_LEN;
+
+    // Setup input tensors using the helper function
+    auto [queries, keys, values, scale, causal_mask] = setup_sdpa_benchmark_inputs_cpp(
+        batch_size, num_q_heads, num_kv_heads, head_dim, seq_len, mx::float16
+    );
+
+    // Main benchmark loop
+    for (auto _ : state) {
+        mx::array out = mx::fast::scaled_dot_product_attention(
+            queries,
+            keys,
+            values,
+            scale,
+            "array",  // Using explicit mask array
+            {causal_mask},
+            mx::Device::gpu
+        );
+        out.eval();  // Ensure GPU computation completes
+    }
+
+    // Set the number of items processed (batch_size * num_q_heads per iteration)
+    // This matches the "num_query_items" metric in the PAL benchmarks
+    state.SetItemsProcessed(static_cast<long long>(batch_size * num_q_heads) * state.iterations());
+}
+
+// Register the SDPA benchmarks
+BENCHMARK(BM_SDPA_LatencyVsSeqLen)
+    ->Args({SDPA_DEFAULT_BATCH_SIZE, 64})
+    ->Args({SDPA_DEFAULT_BATCH_SIZE, 128})
+    ->Args({SDPA_DEFAULT_BATCH_SIZE, 256})
+    ->Args({SDPA_DEFAULT_BATCH_SIZE, 512})
+    ->Args({SDPA_DEFAULT_BATCH_SIZE, 1024})
+    ->Args({SDPA_DEFAULT_BATCH_SIZE, 2048});
+
+BENCHMARK(BM_SDPA_LatencyVsHeadDim)
+    ->Args({SDPA_DEFAULT_BATCH_SIZE, 64})
+    ->Args({SDPA_DEFAULT_BATCH_SIZE, 128})
+    ->Args({SDPA_DEFAULT_BATCH_SIZE, 192})
+    ->Args({SDPA_DEFAULT_BATCH_SIZE, 256});
+
+BENCHMARK(BM_SDPA_LatencyVsNumItems)
+    ->RangeMultiplier(2)
+    ->Range(32, 512);
+
+// SDPA Model Configuration Benchmarks
+
+// Helper function to run SDPA model benchmark with specific configuration
+static void BM_SDPA_ModelConfig(
+    benchmark::State& state,
+    const int batch_size,
+    const int num_q_heads,
+    const int num_kv_heads,
+    const int head_dim,
+    const int seq_len
+) {
+    // Setup input tensors for this model configuration
+    auto [queries, keys, values, scale, causal_mask] = setup_sdpa_benchmark_inputs_cpp(
+        batch_size, num_q_heads, num_kv_heads, head_dim, seq_len, mx::float16
+    );
+
+    // Main benchmark loop
+    for (auto _ : state) {
+        mx::array out = mx::fast::scaled_dot_product_attention(
+            queries,
+            keys,
+            values,
+            scale,
+            "array",  // Using explicit mask array
+            {causal_mask},
+            mx::Device::gpu
+        );
+        out.eval();
+    }
+
+    // Set metrics for items processed (batch_size * num_q_heads)
+    // This matches the equivalent of "num_query_items" in PAL
+    state.SetItemsProcessed(static_cast<long long>(batch_size * num_q_heads) * state.iterations());
+}
+
+// Llama3 70B-like configuration
+static void BM_SDPA_ModelConfig_Llama3_70B_Sim(benchmark::State& state) {
+    BM_SDPA_ModelConfig(state, 4, 64, 8, 128, 1024);
+}
+
+// Qwen 8B-like configuration
+static void BM_SDPA_ModelConfig_Qwen_8B_Sim(benchmark::State& state) {
+    BM_SDPA_ModelConfig(state, 4, 32, 32, 128, 1024);
+}
+
+// Qwen2.5 72B-like configuration
+static void BM_SDPA_ModelConfig_Qwen2_5_72B_Sim(benchmark::State& state) {
+    BM_SDPA_ModelConfig(state, 4, 128, 8, 128, 1024);
+}
+
+// Register model configuration benchmarks
+BENCHMARK(BM_SDPA_ModelConfig_Llama3_70B_Sim);
+BENCHMARK(BM_SDPA_ModelConfig_Qwen_8B_Sim);
+BENCHMARK(BM_SDPA_ModelConfig_Qwen2_5_72B_Sim);
 
 // Main function
 BENCHMARK_MAIN();

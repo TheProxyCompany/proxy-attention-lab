@@ -54,6 +54,7 @@ import logging
 from typing import Any
 
 import mlx.core as mx
+import mlx.nn
 import pytest
 
 from proxy_attention_lab import paged_attention
@@ -71,6 +72,68 @@ BASELINE_CONFIG = {
     "num_sequences_in_batch": 1,
     "dtype": mx.float16,
 }
+
+# Define baseline configuration for SDPA benchmarks
+BASELINE_CONFIG_FOR_SDPA = {
+    "batch_size": 64,  # Number of sequences in SDPA batch
+    "num_q_heads": 1,
+    "num_kv_heads": 1,
+    "head_dim": 128,
+    "seq_len": 128,  # Sequence length for SDPA
+    "dtype": mx.float16,
+}
+
+
+def setup_sdpa_benchmark_inputs(params: dict[str, Any]) -> tuple[mx.array, mx.array, mx.array, float, mx.array | None]:
+    """
+    Create all necessary input tensors for the MLX scaled_dot_product_attention benchmark.
+
+    Args:
+        params: Dictionary containing benchmark parameters:
+            - batch_size: Number of sequences in batch
+            - num_q_heads: Number of query heads
+            - num_kv_heads: Number of K/V heads
+            - head_dim: Dimension of each head
+            - seq_len: Sequence length
+            - dtype: Data type for tensors (e.g., mx.float16)
+
+    Returns:
+        Tuple containing all the input tensors in the order needed for scaled_dot_product_attention:
+            - queries: [batch_size, num_q_heads, seq_len, head_dim]
+            - keys: [batch_size, num_kv_heads, seq_len, head_dim]
+            - values: [batch_size, num_kv_heads, seq_len, head_dim]
+            - scale: scaling factor (1.0 / sqrt(head_dim))
+            - causal_mask: causal attention mask [seq_len, seq_len] or None
+
+    Raises:
+        ValueError: If parameters are incompatible
+    """
+    # Compute scale factor
+    scale = 1.0 / mx.sqrt(float(params["head_dim"]))
+
+    # Create input tensors
+    queries = mx.random.normal(
+        (params["batch_size"], params["num_q_heads"], params["seq_len"], params["head_dim"]), dtype=params["dtype"]
+    )
+
+    keys = mx.random.normal(
+        (params["batch_size"], params["num_kv_heads"], params["seq_len"], params["head_dim"]), dtype=params["dtype"]
+    )
+
+    values = mx.random.normal(
+        (params["batch_size"], params["num_kv_heads"], params["seq_len"], params["head_dim"]), dtype=params["dtype"]
+    )
+
+    # Create causal mask
+    causal_mask = mlx.nn.MultiHeadAttention.create_additive_causal_mask(params["seq_len"]).astype(params["dtype"])
+
+    # Evaluate all tensors before returning to ensure they're computed
+    mx.eval(queries)
+    mx.eval(keys)
+    mx.eval(values)
+    mx.eval(causal_mask)
+
+    return queries, keys, values, scale, causal_mask
 
 
 def setup_pal_benchmark_inputs(params: dict[str, Any]) -> tuple[mx.array, ...]:
@@ -215,6 +278,37 @@ def test_pal_latency_vs_seq_len(benchmark, seq_len_val):
     assert mx.isfinite(result).all()
 
 
+@pytest.mark.parametrize("seq_len_val", [64, 128, 256, 512, 1024, 2048])
+def test_sdpa_latency_vs_seq_len(benchmark, seq_len_val):
+    """
+    Benchmark MLX scaled_dot_product_attention operation performance across different sequence lengths.
+
+    Args:
+        benchmark: pytest-benchmark fixture for performance measurement
+        seq_len_val: sequence length value to test
+    """
+    # Create test parameters from baseline with specified sequence length
+    params = BASELINE_CONFIG_FOR_SDPA.copy()
+    params["seq_len"] = seq_len_val
+
+    # Setup input tensors (evaluated during setup)
+    q, k, v, scale, mask = setup_sdpa_benchmark_inputs(params)
+
+    # Define benchmark function that evaluates the result
+    def operation_to_benchmark():
+        output = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale, mask=mask)
+        mx.eval(output)
+        return output
+
+    # Run benchmark
+    result = benchmark(operation_to_benchmark)
+
+    # Assert the output has expected shape and valid values
+    expected_shape = (params["batch_size"], params["num_q_heads"], params["seq_len"], params["head_dim"])
+    assert result.shape == expected_shape
+    assert mx.isfinite(result).all()
+
+
 @pytest.mark.parametrize("head_dim_val", [64, 128, 160, 192, 256])
 def test_pal_latency_vs_head_dim(benchmark, head_dim_val):
     """
@@ -247,6 +341,37 @@ def test_pal_latency_vs_head_dim(benchmark, head_dim_val):
     expected_items = num_tokens * num_q_heads
     expected_shape = (expected_items, params["head_dim"])
 
+    assert result.shape == expected_shape
+    assert mx.isfinite(result).all()
+
+
+@pytest.mark.parametrize("head_dim_val", [64, 128, 160, 192, 256])
+def test_sdpa_latency_vs_head_dim(benchmark, head_dim_val):
+    """
+    Benchmark MLX scaled_dot_product_attention operation performance across different head dimensions.
+
+    Args:
+        benchmark: pytest-benchmark fixture for performance measurement
+        head_dim_val: head dimension value to test
+    """
+    # Create test parameters from baseline with specified head dimension
+    params = BASELINE_CONFIG_FOR_SDPA.copy()
+    params["head_dim"] = head_dim_val
+
+    # Setup input tensors (evaluated during setup)
+    q, k, v, scale, mask = setup_sdpa_benchmark_inputs(params)
+
+    # Define benchmark function that evaluates the result
+    def operation_to_benchmark():
+        output = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale, mask=mask)
+        mx.eval(output)
+        return output
+
+    # Run benchmark
+    result = benchmark(operation_to_benchmark)
+
+    # Assert the output has expected shape and valid values
+    expected_shape = (params["batch_size"], params["num_q_heads"], params["seq_len"], params["head_dim"])
     assert result.shape == expected_shape
     assert mx.isfinite(result).all()
 
@@ -295,6 +420,40 @@ def test_pal_latency_vs_query_items(benchmark, num_query_items_val):
         pytest.skip(f"Skipping incompatible configuration: {e}")
 
 
+@pytest.mark.parametrize("batch_size_val", [32, 64, 128, 256, 512])
+def test_sdpa_latency_vs_batch_size(benchmark, batch_size_val):
+    """
+    Benchmark MLX scaled_dot_product_attention operation performance across different batch sizes.
+
+    This is the SDPA equivalent of test_pal_latency_vs_query_items. In SDPA, we vary the
+    batch_size which is the most direct way to increase the number of query items processed.
+
+    Args:
+        benchmark: pytest-benchmark fixture for performance measurement
+        batch_size_val: batch size to test
+    """
+    # Create test parameters from baseline with specified batch size
+    params = BASELINE_CONFIG_FOR_SDPA.copy()
+    params["batch_size"] = batch_size_val
+
+    # Setup input tensors (evaluated during setup)
+    q, k, v, scale, mask = setup_sdpa_benchmark_inputs(params)
+
+    # Define benchmark function that evaluates the result
+    def operation_to_benchmark():
+        output = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale, mask=mask)
+        mx.eval(output)
+        return output
+
+    # Run benchmark
+    result = benchmark(operation_to_benchmark)
+
+    # Assert the output has expected shape and valid values
+    expected_shape = (params["batch_size"], params["num_q_heads"], params["seq_len"], params["head_dim"])
+    assert result.shape == expected_shape
+    assert mx.isfinite(result).all()
+
+
 # Define realistic model configurations with estimated parameters
 MODEL_CONFIGS = [
     (
@@ -338,6 +497,43 @@ MODEL_CONFIGS = [
     ),
 ]
 
+# Define realistic model configurations for SDPA benchmarks
+SDPA_MODEL_CONFIGS = [
+    (
+        "Llama3_70B_Sim",
+        {
+            "batch_size": 4,  # Fixed batch size for SDPA model tests
+            "num_q_heads": 64,
+            "num_kv_heads": 8,
+            "head_dim": 128,
+            "seq_len": 1024,
+            "dtype": mx.float16,
+        },
+    ),
+    (
+        "Qwen_8B_Sim",
+        {
+            "batch_size": 4,  # Fixed batch size for SDPA model tests
+            "num_q_heads": 32,
+            "num_kv_heads": 32,
+            "head_dim": 128,
+            "seq_len": 1024,
+            "dtype": mx.float16,
+        },
+    ),
+    (
+        "Qwen2.5_72B_Sim",
+        {
+            "batch_size": 4,  # Fixed batch size for SDPA model tests
+            "num_q_heads": 128,
+            "num_kv_heads": 8,
+            "head_dim": 128,
+            "seq_len": 1024,
+            "dtype": mx.float16,
+        },
+    ),
+]
+
 
 @pytest.mark.parametrize("model_config_name, model_params", MODEL_CONFIGS)
 def test_pal_latency_model_configs(benchmark, model_config_name, model_params):
@@ -369,6 +565,43 @@ def test_pal_latency_model_configs(benchmark, model_config_name, model_params):
         expected_items = num_tokens * num_q_heads
         expected_shape = (expected_items, model_params["head_dim"])
 
+        assert result.shape == expected_shape
+        assert mx.isfinite(result).all()
+
+    except ValueError as e:
+        pytest.skip(f"Skipping incompatible configuration for {model_config_name}: {e}")
+
+
+@pytest.mark.parametrize("model_config_name, model_params", SDPA_MODEL_CONFIGS)
+def test_sdpa_latency_model_configs(benchmark, model_config_name, model_params):
+    """
+    Benchmark MLX scaled_dot_product_attention operation performance with realistic model configurations.
+
+    Args:
+        benchmark: pytest-benchmark fixture for performance measurement
+        model_config_name: name of the model configuration being tested
+        model_params: model parameters dictionary
+    """
+    try:
+        # Setup input tensors (evaluated during setup)
+        q, k, v, scale, mask = setup_sdpa_benchmark_inputs(model_params)
+
+        # Define benchmark function that evaluates the result
+        def operation_to_benchmark():
+            output = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale, mask=mask)
+            mx.eval(output)
+            return output
+
+        # Run benchmark
+        result = benchmark(operation_to_benchmark)
+
+        # Assert the output has expected shape and valid values
+        expected_shape = (
+            model_params["batch_size"],
+            model_params["num_q_heads"],
+            model_params["seq_len"],
+            model_params["head_dim"],
+        )
         assert result.shape == expected_shape
         assert mx.isfinite(result).all()
 
