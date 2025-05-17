@@ -219,26 +219,32 @@ def _calculate_throughput(row: dict[str, Any]) -> float | None:
     source = row.get(config.COL_SOURCE, "")
     full_name = row.get("full_name", "unknown")
 
-    if config.COL_THROUGHPUT in row and row[config.COL_THROUGHPUT] is not None and row[config.COL_THROUGHPUT] > 0:
+    existing_throughput = row.get(config.COL_THROUGHPUT)
+    if (
+        config.COL_THROUGHPUT in row
+        and existing_throughput is not None
+        and not pd.isna(existing_throughput)
+        and existing_throughput > 0
+    ):
         # Already have throughput value
-        logger.debug(f"Using existing throughput for {full_name}: {row[config.COL_THROUGHPUT]:.2f} items/sec")
-        return row[config.COL_THROUGHPUT]
+        logger.debug(f"Using existing throughput for {full_name}: {existing_throughput:.2f} items/sec")
+        return float(existing_throughput)
 
     # Get the effective items if already calculated
     effective_items = row.get("effective_items")
-    if effective_items is None:
+    if effective_items is None or pd.isna(effective_items):
         # Calculate effective items based on source
         effective_items = _calculate_effective_items(row)
         logger.debug(f"Calculated effective_items for {full_name}: {effective_items}")
 
     # If we still don't have effective items, we can't calculate throughput
-    if effective_items is None or effective_items <= 0:
+    if effective_items is None or pd.isna(effective_items) or effective_items <= 0:
         logger.warning(f"Cannot calculate throughput for {full_name}: no valid effective_items")
         return None
 
     # Get the mean latency
     mean_latency_ms = row.get(config.COL_MEAN_LATENCY, 0)
-    if mean_latency_ms <= 0:
+    if pd.isna(mean_latency_ms) or mean_latency_ms <= 0:
         logger.warning(f"Cannot calculate throughput for {full_name}: invalid latency {mean_latency_ms}")
         return None
 
@@ -274,16 +280,16 @@ def _calculate_effective_items(row: dict[str, Any]) -> int | None:
     # Use both source and kernel_name for more reliable detection
     if "pal" in source or kernel_name == "paged_attention":
         # For PAL, effective items is num_query_items
-        num_query_items = row.get("num_query_items", 0)
-        if num_query_items is not None and num_query_items > 0:
+        num_query_items = row.get("num_query_items")
+        if num_query_items is not None and not pd.isna(num_query_items) and num_query_items > 0:
             logger.debug(f"PAL effective_items for {full_name}: {num_query_items} (num_query_items)")
-            return num_query_items
+            return int(num_query_items)
         logger.warning(f"PAL benchmark without valid num_query_items: {full_name}")
         return 0
 
     elif "sdpa" in source or kernel_name == "sdpa":
         # For SDPA, effective items is batch_size * num_q_heads * seq_len
-        batch_size = row.get("batch_size", 0)
+        batch_size = row.get("batch_size")
         num_q_heads = row.get("num_q_heads", config.DEFAULT_NUM_Q_HEADS)
         seq_len = row.get("seq_len", config.DEFAULT_SEQ_LEN)
 
@@ -291,6 +297,9 @@ def _calculate_effective_items(row: dict[str, Any]) -> int | None:
             batch_size is not None
             and num_q_heads is not None
             and seq_len is not None
+            and not pd.isna(batch_size)
+            and not pd.isna(num_q_heads)
+            and not pd.isna(seq_len)
             and batch_size > 0
             and num_q_heads > 0
             and seq_len > 0
@@ -299,7 +308,7 @@ def _calculate_effective_items(row: dict[str, Any]) -> int | None:
             logger.debug(
                 f"SDPA effective_items for {full_name}: {effective} (batch_size={batch_size} * num_q_heads={num_q_heads} * seq_len={seq_len})"
             )
-            return effective
+            return int(effective)
 
         logger.warning(f"SDPA benchmark without valid batch_size, num_q_heads, or seq_len: {full_name}")
         return 0
