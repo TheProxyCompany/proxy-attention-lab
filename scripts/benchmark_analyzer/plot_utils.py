@@ -4,33 +4,36 @@ from __future__ import annotations
 
 import matplotlib.pyplot as plt
 
+# Important column name constants
+COL_BENCHMARK_NAME_BASE = "benchmark_name_base"
+
 
 def get_plot_styles() -> dict[str, str | float]:
     """Return standardized plotting styles."""
     styles: dict[str, str | float] = {}
-    styles["PAL_CPP_COLOR"] = "#024645"
-    styles["PAL_PY_COLOR"] = "#024645"
-    styles["SDPA_CPP_COLOR"] = "#000000"
-    styles["SDPA_PY_COLOR"] = "#000000"
-    styles["PAL_CPP_STYLE"] = "--"
-    styles["PAL_PY_STYLE"] = "-"
-    styles["SDPA_CPP_STYLE"] = "-."
-    styles["SDPA_PY_STYLE"] = ":"
+    styles["PAL_CPP_COLOR"] = "#024645"  # Teal
+    styles["PAL_PY_COLOR"] = "#026664"  # Slightly lighter teal
+    styles["SDPA_CPP_COLOR"] = "#000000"  # Black
+    styles["SDPA_PY_COLOR"] = "#333333"  # Dark gray
+    styles["PAL_CPP_STYLE"] = "--"  # Dashed
+    styles["PAL_PY_STYLE"] = "-"  # Solid
+    styles["SDPA_CPP_STYLE"] = "-."  # Dash-dot
+    styles["SDPA_PY_STYLE"] = ":"  # Dotted
     styles["PAL_LINEWIDTH"] = 2.5
     styles["SDPA_LINEWIDTH"] = 1.5
     styles["PAL_CPP_MARKER"] = "o"
-    styles["PAL_PY_MARKER"] = "o"
-    styles["SDPA_CPP_MARKER"] = "D"
-    styles["SDPA_PY_MARKER"] = "D"
+    styles["PAL_PY_MARKER"] = "s"  # Square
+    styles["SDPA_CPP_MARKER"] = "D"  # Diamond
+    styles["SDPA_PY_MARKER"] = "^"  # Triangle
     styles["REF_LINE_COLOR"] = "gray"
     styles["REF_LINE_STYLE"] = "--"
     styles["REF_LINE_WIDTH"] = 1.0
     styles["REF_LINE_ALPHA"] = 0.6
-    styles["TITLE_FONTSIZE"] = 14
+    styles["TITLE_FONTSIZE"] = 16
     styles["TITLE_FONTWEIGHT"] = "bold"
     styles["AXIS_LABEL_FONTSIZE"] = 12
-    styles["TICK_LABEL_FONTSIZE"] = 12
-    styles["LEGEND_FONTSIZE"] = 12
+    styles["TICK_LABEL_FONTSIZE"] = 10
+    styles["LEGEND_FONTSIZE"] = 10
     styles["GRID_COLOR"] = "#D3D3D3"
     styles["GRID_ALPHA"] = 0.5
     styles["GRID_LINESTYLE"] = ":"
