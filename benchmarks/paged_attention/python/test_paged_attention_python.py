@@ -387,22 +387,20 @@ def test_sdpa_latency_vs_head_dim(benchmark, head_dim_val):
     assert mx.isfinite(result).all()
 
 
-@pytest.mark.parametrize("num_query_items_val", [32, 64, 128, 256, 512])
-def test_pal_latency_vs_query_items(benchmark, num_query_items_val):
+@pytest.mark.parametrize("batch_size_val", [32, 64, 128, 256, 512])
+def test_pal_latency_vs_query_items(benchmark, batch_size_val):
     """
-    Benchmark paged_attention operation performance across different query item counts.
+    Benchmark paged_attention operation performance across different batch sizes.
 
     Args:
         benchmark: pytest-benchmark fixture for performance measurement
-        num_query_items_val: total number of query items to test
+        batch_size_val: number of independent requests to test
     """
-    # Create test parameters from baseline with specified query items
+    # Create test parameters from baseline with specified batch size
     params = BASELINE_CONFIG.copy()
-    params["num_query_items"] = num_query_items_val
-
-    # Fixed num_q_heads for this test to ensure compatibility
-    # (num_query_items must be divisible by num_q_heads)
+    params["seq_len"] = 2048
     params["num_q_heads"] = 1
+    params["num_query_items"] = batch_size_val * params["num_q_heads"]
 
     try:
         # Setup input tensors (evaluated during setup)
@@ -437,18 +435,17 @@ def test_sdpa_latency_vs_batch_size(benchmark, batch_size_val):
     Benchmark MLX scaled_dot_product_attention operation performance across different batch sizes.
 
     This is the SDPA equivalent of test_pal_latency_vs_query_items. In SDPA, we vary the
-    batch_size which is the most direct way to increase the number of query items processed.
+    batch_size which is the most direct way to increase the number of active requests.
 
     Args:
         benchmark: pytest-benchmark fixture for performance measurement
         batch_size_val: batch size to test
     """
     # Create test parameters from baseline with specified batch size.
-    # Use seq_len=1 so that the batch size directly represents the number of
-    # query vectors, matching the PAL batch-size sweep.
+    # Use seq_len=2048 to mirror a realistic decode context length.
     params = BASELINE_CONFIG_FOR_SDPA.copy()
     params["batch_size"] = batch_size_val
-    params["seq_len"] = 1
+    params["seq_len"] = 2048
 
     # Setup input tensors (evaluated during setup)
     q, k, v, scale, mask = setup_sdpa_benchmark_inputs(params)
@@ -473,7 +470,7 @@ MODEL_CONFIGS = [
     (
         "Llama3_70B_Sim",
         {
-            "num_query_items": 64 * 64,  # 64 tokens in batch * 64 query heads
+            "num_query_items": 4 * 1024 * 64,  # total query vectors budget
             "num_q_heads": 64,
             "num_kv_heads": 8,
             "head_dim": 128,
@@ -486,7 +483,7 @@ MODEL_CONFIGS = [
     (
         "Qwen_8B_Sim",
         {
-            "num_query_items": 64 * 32,  # 64 tokens in batch * 32 query heads
+            "num_query_items": 4 * 1024 * 32,  # total query vectors budget
             "num_q_heads": 32,
             "num_kv_heads": 32,
             "head_dim": 128,
@@ -499,7 +496,7 @@ MODEL_CONFIGS = [
     (
         "Qwen2.5_72B_Sim",
         {
-            "num_query_items": 64 * 128,  # 64 tokens in batch * 128 query heads
+            "num_query_items": 4 * 1024 * 128,  # total query vectors budget
             "num_q_heads": 128,
             "num_kv_heads": 8,
             "head_dim": 128,

@@ -497,9 +497,9 @@ static void BM_SDPA_LatencyVsNumItems(benchmark::State& state) {
         out.eval();  // Ensure GPU computation completes
     }
 
-    // Set the number of items processed (batch_size * num_q_heads per iteration)
+    // Set the number of items processed (batch_size * num_q_heads * seq_len per iteration)
     // This matches the "num_query_items" metric in the PAL benchmarks
-    state.SetItemsProcessed(static_cast<long long>(batch_size * num_q_heads) * state.iterations());
+    state.SetItemsProcessed(static_cast<long long>(batch_size * num_q_heads * seq_len) * state.iterations());
 }
 
 // Register the SDPA benchmarks
@@ -551,9 +551,9 @@ static void BM_SDPA_ModelConfig(
         out.eval();
     }
 
-    // Set metrics for items processed (batch_size * num_q_heads)
+    // Set metrics for items processed (batch_size * num_q_heads * seq_len)
     // This matches the equivalent of "num_query_items" in PAL
-    state.SetItemsProcessed(static_cast<long long>(batch_size * num_q_heads) * state.iterations());
+    state.SetItemsProcessed(static_cast<long long>(batch_size * num_q_heads * seq_len) * state.iterations());
 }
 
 // Llama3 70B-like configuration
