@@ -234,8 +234,9 @@ run_python_benchmarks() {
             # Run pytest with appropriate filters
             pytest "${benchmark_file}" \
                 --benchmark-only \
-                --benchmark-columns="min,max,mean,stddev,rounds,iterations" \
+                --benchmark-columns="min,max,mean,rounds,iterations" \
                 --benchmark-json="${python_json_output}" \
+                --benchmark-min-time=0.001 \
                 -v
 
             log "Python benchmarks from ${benchmark_file} completed. Results saved to ${python_json_output}"
@@ -294,7 +295,7 @@ run_cpp_benchmarks() {
             SPDLOG_LEVEL=warn "${benchmark_exe}" \
                 --benchmark_format=json \
                 --benchmark_out="${cpp_json_output}" \
-                --benchmark_repetitions=3 \
+                --benchmark_repetitions=1 \
                 ${filter_option}
 
             log "C++ benchmarks from ${benchmark_exe} completed. Results saved to ${cpp_json_output}"

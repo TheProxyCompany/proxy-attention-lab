@@ -247,6 +247,26 @@ def setup_pal_benchmark_inputs(params: dict[str, Any]) -> tuple[mx.array, ...]:
     )
 
 
+def test_cold_start(benchmark):
+    """
+    Warmup the paged_attention kernel.
+    """
+    logger.info("Attempting to warm up the paged_attention kernel...")
+    try:
+        params = BASELINE_CONFIG.copy()
+        input_tensors = setup_pal_benchmark_inputs(params)
+
+        _ = benchmark(lambda: paged_attention(*input_tensors))
+
+        logger.info("Paged_attention kernel warm-up sequence concluded successfully.")
+    except Exception as e:
+        logger.error(
+            f"An issue occurred during paged_attention kernel warm-up: {e}",
+            exc_info=True,
+        )
+        pytest.fail(f"Paged_attention kernel warm-up failed: {e}")
+
+
 @pytest.mark.parametrize("seq_len_val", [64, 128, 256, 512, 1024, 2048])
 def test_pal_latency_vs_seq_len(benchmark, seq_len_val):
     """
@@ -618,25 +638,3 @@ def test_sdpa_latency_model_configs(benchmark, model_config_name, model_params):
 
     except ValueError as e:
         pytest.skip(f"Skipping incompatible configuration for {model_config_name}: {e}")
-
-
-if __name__ == "__main__":
-    # This allows running the benchmarks directly with:
-    # python -m tests.paged_attention.benchmarks.python.paged_attention_benchmark_python
-    import sys
-
-    import pytest
-
-    # Default arguments for pytest
-    pytest_args = [
-        "-xvs",  # Verbose, stop on first failure
-        "--benchmark-only",  # Only run benchmark functions
-        "--benchmark-columns=min,max,mean,stddev",  # Customize columns
-        __file__,  # This file
-    ]
-
-    # Add any command line arguments
-    pytest_args.extend(sys.argv[1:])
-
-    # Run pytest with the configured arguments
-    sys.exit(pytest.main(pytest_args))
