@@ -60,6 +60,11 @@ activate_venv() {
 
 # --- Main Script Logic ---
 main() {
+    local script_start script_end python_start python_end cpp_start cpp_end
+    local python_duration cpp_duration total_duration
+
+    script_start=$(date +%s)
+
     hr
     log "Starting Benchmark Suite Runner"
     hr
@@ -112,6 +117,8 @@ main() {
     hr
     log "Discovering and Running Python pytest-benchmark tests..."
 
+    python_start=$(date +%s)
+
     # Use find to locate Python benchmark files
     # Adjust depth or path if benchmark files are nested differently
     python_benchmark_files=()
@@ -119,29 +126,35 @@ main() {
         python_benchmark_files+=("$file")
     done < <(find "${PYTHON_BENCHMARK_ROOT_DIR}" -type f -name "${PYTHON_BENCHMARK_PATTERN}" -print0)
 
-    # if [ ${#python_benchmark_files[@]} -eq 0 ]; then
-    #     log "No Python benchmark files found matching pattern '${PYTHON_BENCHMARK_PATTERN}' in '${PYTHON_BENCHMARK_ROOT_DIR}'."
-    # else
-    #     for benchmark_file in "${python_benchmark_files[@]}"; do
-    #         hr
-    #         log "Running Python benchmarks in: ${benchmark_file}"
-    #         # Generate a unique JSON output name based on the benchmark file name
-    #         local benchmark_basename
-    #         benchmark_basename=$(basename "${benchmark_file}" .py)
-    #         local python_json_output="${BUILD_DIR}/${benchmark_basename}_results.json"
+    if [ ${#python_benchmark_files[@]} -eq 0 ]; then
+        log "No Python benchmark files found matching pattern '${PYTHON_BENCHMARK_PATTERN}' in '${PYTHON_BENCHMARK_ROOT_DIR}'."
+    else
+        for benchmark_file in "${python_benchmark_files[@]}"; do
+            hr
+            log "Running Python benchmarks in: ${benchmark_file}"
+            # Generate a unique JSON output name based on the benchmark file name
+            local benchmark_basename
+            benchmark_basename=$(basename "${benchmark_file}" .py)
+            local python_json_output="${BUILD_DIR}/${benchmark_basename}_results.json"
 
-    #         pytest "${benchmark_file}" \
-    #             --benchmark-only \
-    #             --benchmark-columns="min,max,mean,stddev,rounds,iterations" \
-    #             --benchmark-json="${python_json_output}" \
-    #             -v
-    #         log "Python benchmarks from ${benchmark_file} completed. Results potentially in ${python_json_output}"
-    #     done
-    # fi
+            pytest "${benchmark_file}" \
+                --benchmark-only \
+                --benchmark-columns="min,max,mean,stddev,rounds,iterations" \
+                --benchmark-json="${python_json_output}" \
+                -v
+            log "Python benchmarks from ${benchmark_file} completed. Results potentially in ${python_json_output}"
+        done
+    fi
+
+    python_end=$(date +%s)
+    python_duration=$((python_end - python_start))
+
     hr
 
     # 3. Discover and Run C++ Google Benchmarks
     log "Discovering and Running C++ Google Benchmark tests..."
+
+    cpp_start=$(date +%s)
 
     # Use find to locate C++ benchmark executables in the build directory
     cpp_benchmark_executables=()
@@ -168,10 +181,25 @@ main() {
             log "C++ benchmarks from ${benchmark_exe} completed. Results saved to ${cpp_json_output}"
         done
     fi
+
+    cpp_end=$(date +%s)
+    cpp_duration=$((cpp_end - cpp_start))
+
     hr
+
+    script_end=$(date +%s)
+    total_duration=$((script_end - script_start))
 
     log "Benchmark Suite Finished."
     log "Review individual JSON output files in ${BUILD_DIR}/ for detailed results."
+
+    # Print timing summary
+    hr
+    log "Timing Summary:"
+    printf "  Python benchmarks: %ds\n" "${python_duration}"
+    printf "  C++ benchmarks:    %ds\n" "${cpp_duration}"
+    printf "  Total script time: %ds\n" "${total_duration}"
+    hr
 }
 
 # --- Script Execution ---

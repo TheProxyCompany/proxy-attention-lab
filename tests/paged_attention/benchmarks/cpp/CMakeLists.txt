@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(pal_op_benchmarks CXX)
+project(paged_attention_benchmarks_cpp CXX)
 
 # --- Check if PAL_METALLIB_PATH is set ---
 if(NOT PAL_METALLIB_PATH)
@@ -30,7 +30,7 @@ FetchContent_MakeAvailable(benchmark)
 FetchContent_GetProperties(benchmark SOURCE_DIR)
 
 # --- Define Benchmark Executable ---
-set(BENCHMARK_EXE_NAME pal_op_benchmarks)
+set(BENCHMARK_EXE_NAME paged_attention_benchmarks_cpp)
 file(GLOB_RECURSE BENCHMARK_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp)
 add_executable(${BENCHMARK_EXE_NAME} ${BENCHMARK_SOURCES})
 
@@ -45,6 +45,7 @@ target_link_libraries(${BENCHMARK_EXE_NAME}
     PRIVATE
         pal_core_lib
         benchmark
+        ${PAL_SPDLOG_LINK_TARGET}
 )
 
 include(GoogleTest)
