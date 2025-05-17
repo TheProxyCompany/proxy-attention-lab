@@ -12,7 +12,6 @@ import pandas as pd
 from benchmarks.analyzer import config
 
 # Set up logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
@@ -28,49 +27,24 @@ def detect_format(json_file: Path) -> str:
 
 
 def extract_kernel_name(filename_stem: str, bench_name: str | None = None) -> str:
-    """
-    Extract kernel name from filename or benchmark name.
+    """Return the kernel name inferred from a filename or benchmark name."""
 
-    Args:
-        filename_stem: The stem of the filename (without extension)
-        bench_name: Optional benchmark name to extract kernel from
+    patterns = {
+        "paged_attention": re.compile(r"(?:pal|paged_attention)", re.IGNORECASE),
+        "sdpa": re.compile(r"sdpa", re.IGNORECASE),
+    }
 
-    Returns:
-        Extracted kernel name (e.g., "paged_attention", "sdpa")
-    """
-    # First try to extract from benchmark name if provided
+    # Prefer the benchmark name when available
     if bench_name:
-        # For BM_PAL_ or BM_SDPA_ format
-        if "BM_PAL_" in bench_name:
-            return "paged_attention"
-        elif "BM_SDPA_" in bench_name:
-            return "sdpa"
-        # For test_pal_ or test_sdpa_ format
-        elif "test_pal_" in bench_name:
-            return "paged_attention"
-        elif "test_sdpa_" in bench_name:
-            return "sdpa"
+        for kernel, pattern in patterns.items():
+            if pattern.search(bench_name):
+                return kernel
 
-    # Then try to extract from filename patterns
-    # cpp_[kernel]_benchmarks_cpp_* or py_[kernel]_*
-    kernel_match = re.search(r"(?:cpp|py)_([a-zA-Z0-9_]+)_", filename_stem)
-    if kernel_match:
-        kernel = kernel_match.group(1)
-        # Map standard kernel names
-        if kernel == "pal":
-            return "paged_attention"
-        elif kernel == "sdpa":
-            return "sdpa"
-        # For other kernels, return as-is
-        return kernel
+    # Next try the filename stem
+    for kernel, pattern in patterns.items():
+        if pattern.search(filename_stem):
+            return kernel
 
-    # Fallback to basic detection
-    if "paged_attention" in filename_stem or ("pal" in filename_stem.lower() and "sdpa" not in filename_stem.lower()):
-        return "paged_attention"
-    elif "sdpa" in filename_stem.lower():
-        return "sdpa"
-
-    # Last resort
     return "unknown_kernel"
 
 

@@ -204,16 +204,14 @@ run_python_benchmarks() {
         if [ -d "${BENCHMARK_ROOT_DIR}/${kernel}/python" ]; then
             while IFS= read -r -d $'\0' file; do
                 python_benchmark_files+=("$file")
-            done < <(find "${BENCHMARK_ROOT_DIR}/${kernel}/python" -maxdepth 1 -type f -name "*.py" -print0)
+            done < <(find "${BENCHMARK_ROOT_DIR}/${kernel}/python" -maxdepth 1 -type f -name "*.py" -print0 | sort -z -u)
         else
             log "WARNING: No Python benchmarks found for kernel '${kernel}'"
         fi
     else
         while IFS= read -r -d $'\0' file; do
             python_benchmark_files+=("$file")
-        done < <(find "${BENCHMARK_ROOT_DIR}" -type d -path "*/python" -print0 | while IFS= read -r -d $'\0' dir; do
-            find "$dir" -maxdepth 1 -type f -name "*.py" -print0
-        done)
+        done < <(find "${BENCHMARK_ROOT_DIR}" -type f -path "*/python/*.py" -print0 | sort -z -u)
     fi
 
     if [ ${#python_benchmark_files[@]} -eq 0 ]; then
@@ -269,13 +267,11 @@ run_cpp_benchmarks() {
     if [ -n "${kernel}" ]; then
         while IFS= read -r -d $'\0' file; do
             cpp_benchmark_executables+=("$file")
-        done < <(find "${BUILD_DIR}/${BENCHMARK_ROOT_DIR}/${kernel}/cpp" -type f -perm -u+x -print0)
+        done < <(find "${BUILD_DIR}/${BENCHMARK_ROOT_DIR}/${kernel}/cpp" -type f -perm -u+x -print0 | sort -z -u)
     else
         while IFS= read -r -d $'\0' file; do
             cpp_benchmark_executables+=("$file")
-        done < <(find "${BUILD_DIR}/${BENCHMARK_ROOT_DIR}" -type d -path "*/cpp" -print0 | while IFS= read -r -d $'\0' dir; do
-            find "$dir" -type f -perm -u+x -print0
-        done)
+        done < <(find "${BUILD_DIR}/${BENCHMARK_ROOT_DIR}" -type f -path "*/cpp/*" -perm -u+x -print0 | sort -z -u)
     fi
 
     if [ ${#cpp_benchmark_executables[@]} -eq 0 ]; then
@@ -366,7 +362,7 @@ main() {
     if [ $# -eq 0 ]; then
         # Default behavior: run everything
         setup_environment
-        setup_benchmark_output_dir "false" # Don't reset by default
+        setup_benchmark_output_dir "true" # Reset results by default
         update_and_rebuild_project
         run_python_benchmarks ""
         run_cpp_benchmarks ""

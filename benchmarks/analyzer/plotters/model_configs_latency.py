@@ -18,7 +18,6 @@ from benchmarks.analyzer.config import (
 )
 
 # Set up logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 STYLES = plot_utils.get_plot_styles()
@@ -261,9 +260,6 @@ def plot(
     # Set x-ticks and labels
     ax_throughput.set_xticks(index + (n_sources - 1) * bar_width / 2)
     ax_throughput.set_xticklabels(model_configs, rotation=45, ha="right")
-
-    # Adjust layout
-    plt.tight_layout()
 
     # Construct filename based on kernel filter
     filename = f"{kernel_filter}_model_configs_comparison.png" if kernel_filter else "model_configs_comparison.png"

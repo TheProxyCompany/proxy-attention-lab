@@ -19,7 +19,6 @@ from benchmarks.analyzer.config import (
 )
 
 # Set up logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 STYLES = plot_utils.get_plot_styles()
@@ -264,9 +263,6 @@ def plot(
         y_scale="log",
         include_legend=False,  # Legend already in latency plot
     )
-
-    # Adjust layout
-    plt.tight_layout()
 
     # Construct filename based on kernel filter
     filename = f"{kernel_filter}_latency_vs_effective_items.png" if kernel_filter else "latency_vs_effective_items.png"

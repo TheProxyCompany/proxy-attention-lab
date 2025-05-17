@@ -20,7 +20,6 @@ from benchmarks.analyzer.config import (
 )
 
 # Set up logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 STYLES = plot_utils.get_plot_styles()
@@ -276,9 +275,6 @@ def plot(
         include_legend=True,
     )
 
-    # Ensure all items are shown in the legend with appropriate styling
-    ax_latency.legend(loc="upper left", bbox_to_anchor=(1.05, 1), borderaxespad=0.0)
-
     # Add reference lines for throughput if we have enough data points
     valid_data_throughput = plot_df[
         plot_df[COL_THROUGHPUT].notna() & plot_df["seq_len"].notna() & (plot_df[COL_THROUGHPUT] > 0)
@@ -366,9 +362,6 @@ def plot(
         include_legend=True,
     )
 
-    # For ax_throughput, adjust legend and padding
-    ax_throughput.legend(loc="upper right", fontsize=styles["LEGEND_FONTSIZE"], frameon=False)
-
     # Add padding to axis limits for better visualization if needed
     # For ax_latency, use the stored data_y_min_latency, data_y_max_latency if available
     if data_y_min_latency is not None and data_y_max_latency is not None:
@@ -396,9 +389,6 @@ def plot(
             bottom = positive_ys.min() * 0.9 if not positive_ys.empty else 1e-3
         ax_latency.set_ylim(bottom=bottom, top=top)
 
-    # For ax_throughput, adjust legend and padding
-    ax_throughput.legend(loc="upper right", fontsize=styles["LEGEND_FONTSIZE"], frameon=False)
-
     # For ax_throughput, ensure y-limits are not degenerate and add a touch of padding
     if ax_throughput.get_lines():
         y_min, y_max = ax_throughput.get_ylim()
@@ -409,16 +399,15 @@ def plot(
     # Construct filename based on kernel filter
     filename = f"{kernel_filter}_latency_vs_seq_len.png" if kernel_filter else "latency_vs_seq_len.png"
 
+    # Configure tick formatting before saving
+    ax_latency.yaxis.set_major_locator(LogLocator(base=10))
+    ax_latency.yaxis.set_major_formatter(LogFormatter(labelOnlyBase=False))
+    ax_latency.minorticks_on()
+    ax_latency.grid(which="minor", linestyle=":", linewidth=0.5, alpha=0.3)
+
     # Save figure with a flourish of directory creation
     output_dir.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_dir / filename, dpi=300)
     plt.close(fig)
-
-    # Add y-axis ticks
-    ax_latency.yaxis.set_major_locator(LogLocator(base=10))
-    ax_latency.yaxis.set_major_formatter(LogFormatter(labelOnlyBase=False))
-
-    ax_latency.minorticks_on()
-    ax_latency.grid(which="minor", linestyle=":", linewidth=0.5, alpha=0.3)
 
     return filename

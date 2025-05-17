@@ -12,7 +12,7 @@ import pandas as pd
 
 from benchmarks.analyzer import config
 
-logging.basicConfig(level=logging.INFO)
+# Set up logging
 logger = logging.getLogger(__name__)
 
 # Registry of parameter parsers for different benchmark types
