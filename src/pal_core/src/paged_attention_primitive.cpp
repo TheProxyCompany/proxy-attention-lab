@@ -455,6 +455,10 @@ void PagedAttentionPrimitive::dispatch_metal_kernel(
   const size_t kSimdLanesPerGroup = 32;
   actual_threads_to_launch = ((actual_threads_to_launch + kSimdLanesPerGroup - 1) / kSimdLanesPerGroup) * kSimdLanesPerGroup;
 
+  // Align to the device's thread execution width
+  size_t thread_exec_width = kernel_pso->threadExecutionWidth();
+  actual_threads_to_launch = ((actual_threads_to_launch + thread_exec_width - 1) / thread_exec_width) * thread_exec_width;
+
   spdlog::debug("[PAL Primitive Dispatch] Using {} threads per threadgroup (original={}, tile_size_T={})",
                actual_threads_to_launch, threads_per_group_count, kernel_params.tile_size_T_runtime);
 

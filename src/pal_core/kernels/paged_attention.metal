@@ -145,8 +145,12 @@ using namespace metal;
     }
 
     // --- 6.1/10: Stage Q-Vector into Shared Memory ---
-    for (uint i = local_thread_idx; i < params.head_dim; i += tg_dim.x) {
-        q_shmem[i] = (float)q_vector_item_ptr[i] * params.inv_sqrt_head_dim;
+    device const half4* q_vec_h4 = reinterpret_cast<device const half4*>(q_vector_item_ptr);
+    threadgroup float4* q_vec_f4 = reinterpret_cast<threadgroup float4*>(q_shmem);
+
+    for (uint chunk = local_thread_idx; chunk < params.head_dim / 4; chunk += tg_dim.x) {
+        float4 v = float4(q_vec_h4[chunk]) * params.inv_sqrt_head_dim;
+        q_vec_f4[chunk] = v;
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
@@ -234,17 +238,10 @@ using namespace metal;
                     k_tile_entry_ptr[d_chunk * 4 + 2] = k_val_f4.z;
                     k_tile_entry_ptr[d_chunk * 4 + 3] = k_val_f4.w;
                 }
-            } else {
-                // Handle null K-vector pointer: fill corresponding K_tile entry with zeros
-                threadgroup float* k_tile_entry_ptr = K_tile + (local_thread_idx * padded_head_dim_hoisted);
-                zero_tile_row(k_tile_entry_ptr, params);
             }
-        } else {
-            // Thread is outside the current actual history tile length, zero out its K_tile row
-            threadgroup float* k_tile_entry_ptr = K_tile + (local_thread_idx * padded_head_dim_hoisted);
-            zero_tile_row(k_tile_entry_ptr, params);
         }
-        threadgroup_barrier(mem_flags::mem_threadgroup); // Ensure K_tile is fully populated before use
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
 
         // --- Load V-vectors into V_tile ---
         if (local_thread_idx < current_hist_tile_actual_len) {
@@ -277,14 +274,7 @@ using namespace metal;
                     v_tile_entry_ptr[d_chunk * 4 + 2] = v_val_f4.z;
                     v_tile_entry_ptr[d_chunk * 4 + 3] = v_val_f4.w;
                 }
-            } else {
-                // Handle null V-vector pointer: fill corresponding V_tile entry with zeros
-                zero_tile_row(v_tile_entry_ptr, params);
             }
-        } else {
-            // Thread is outside the current actual history tile length, zero out its V_tile row
-            threadgroup float* v_tile_entry_ptr = V_tile + (local_thread_idx * padded_head_dim_hoisted);
-            zero_tile_row(v_tile_entry_ptr, params);
         }
         threadgroup_barrier(mem_flags::mem_threadgroup); // Ensure V_tile is fully populated before use
 
