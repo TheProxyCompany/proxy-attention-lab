@@ -28,7 +28,7 @@ MODEL_CONFIG_PARAMETERS = {
         # PAL-specific parameters
         "tokens_per_page": 64,
         "num_sequences_in_batch": 1,
-        "pal_num_query_items": 64 * 64,  # 64 tokens in batch * 64 query heads
+        "pal_num_query_items": 4 * 1024 * 64,  # total query vectors budget
         # SDPA-specific parameters
         "sdpa_batch_size": 4,
     },
@@ -40,7 +40,7 @@ MODEL_CONFIG_PARAMETERS = {
         # PAL-specific parameters
         "tokens_per_page": 64,
         "num_sequences_in_batch": 1,
-        "pal_num_query_items": 64 * 32,  # 64 tokens in batch * 32 query heads
+        "pal_num_query_items": 4 * 1024 * 32,  # total query vectors budget
         # SDPA-specific parameters
         "sdpa_batch_size": 4,
     },
@@ -52,7 +52,7 @@ MODEL_CONFIG_PARAMETERS = {
         # PAL-specific parameters
         "tokens_per_page": 64,
         "num_sequences_in_batch": 1,
-        "pal_num_query_items": 64 * 128,  # 64 tokens in batch * 128 query heads
+        "pal_num_query_items": 4 * 1024 * 128,  # total query vectors budget
         # SDPA-specific parameters
         "sdpa_batch_size": 4,
     },

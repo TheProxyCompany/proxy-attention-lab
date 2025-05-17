@@ -17,8 +17,9 @@ def get_plot_styles() -> dict[str, str | float]:
     styles["PAL_PY_STYLE"] = "-"  # Solid
     styles["SDPA_CPP_STYLE"] = "-."  # Dash-dot
     styles["SDPA_PY_STYLE"] = ":"  # Dotted
-    styles["PAL_LINEWIDTH"] = 2.5
-    styles["SDPA_LINEWIDTH"] = 1.5
+    # Use consistent line widths for both kernels
+    styles["PAL_LINEWIDTH"] = 2.0
+    styles["SDPA_LINEWIDTH"] = 2.0
     styles["PAL_CPP_MARKER"] = "o"
     styles["PAL_PY_MARKER"] = "s"  # Square
     styles["SDPA_CPP_MARKER"] = "D"  # Diamond
