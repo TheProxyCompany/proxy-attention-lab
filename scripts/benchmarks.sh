@@ -314,17 +314,6 @@ analyze_results() {
     hr
     log "Analyzing benchmark results..."
 
-    # Get the directory where the script is located
-    local script_dir
-    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    local analyze_script="${script_dir}/analyze_benchmarks.py"
-
-    # Check if analysis script exists
-    if [ ! -f "${analyze_script}" ]; then
-        log "ERROR: Analysis script not found at ${analyze_script}"
-        return 1
-    fi
-
     # Check if there are benchmark results to analyze
     if [ ! -d "${BENCHMARK_OUTPUT_ROOT}" ] || [ -z "$(ls -A "${BENCHMARK_OUTPUT_ROOT}" 2>/dev/null)" ]; then
         log "WARNING: No benchmark results found in ${BENCHMARK_OUTPUT_ROOT}"
@@ -334,7 +323,7 @@ analyze_results() {
 
     # Run analysis script
     log "Running analysis script on results in ${BENCHMARK_OUTPUT_ROOT}..."
-    python "${analyze_script}" --results-dir "${BENCHMARK_OUTPUT_ROOT}" --output-dir "${BENCHMARK_OUTPUT_ROOT}" --verbose
+    python -m benchmark_analyzer --results-dir "${BENCHMARK_OUTPUT_ROOT}" --output-dir "${BENCHMARK_OUTPUT_ROOT}" --verbose
 
     log "Analysis complete. Results saved to ${BENCHMARK_OUTPUT_ROOT}"
     hr
