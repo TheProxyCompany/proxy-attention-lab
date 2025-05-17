@@ -5,6 +5,8 @@ cmake_policy(SET CMP0135 NEW)
 set(PROJECT_NAME proxy_attention_lab)  # Top-level project name
 set(EXTENSION_NAME pal_core)           # Python module name
 set(CORE_LIB_NAME pal_core_lib)        # C++ Static Library name
+# pal_core can contain multiple primitives/kernels. New sources should be added
+# under src/ and kernels/ and listed here as the project grows.
 
 # --- C++ Settings ---
 set(CMAKE_CXX_STANDARD 23)

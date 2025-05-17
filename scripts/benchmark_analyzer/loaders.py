@@ -11,6 +11,14 @@ import pandas as pd
 from . import config
 
 
+def _parse_source_info(json_file: Path) -> tuple[str, str]:
+    """Return (language, kernel_name) parsed from filename."""
+    parts = json_file.stem.split("_")
+    language = "python" if parts and parts[0] == "py" else "cpp"
+    kernel = parts[1] if len(parts) > 1 else "unknown"
+    return language, kernel
+
+
 def detect_format(json_file: Path) -> str:
     """Detect the benchmark JSON format."""
     with open(json_file) as f:
@@ -27,7 +35,8 @@ def parse_google_benchmark(json_file: Path) -> list[dict]:
     with open(json_file) as f:
         data = json.load(f)
     rows = []
-    source = "cpp_pal" if "pal" in json_file.stem else "cpp_sdpa"
+    language, kernel = _parse_source_info(json_file)
+    source = f"{language}_{kernel}"
     for bench in data.get("benchmarks", []):
         if bench.get("run_type") != "aggregate" or bench.get("aggregate_name") != "mean":
             continue
@@ -40,6 +49,8 @@ def parse_google_benchmark(json_file: Path) -> list[dict]:
                 config.COL_BENCHMARK_NAME_BASE: base_name,
                 "full_name": name,
                 config.COL_SOURCE: source,
+                config.COL_LANGUAGE: language,
+                config.COL_KERNEL_TESTED: kernel,
                 config.COL_MEAN_LATENCY: bench.get("real_time", 0) / 1_000_000.0,
                 config.COL_THROUGHPUT: bench.get("items_per_second"),
                 config.COL_PARAMS_STR: params_str,
@@ -53,7 +64,8 @@ def parse_pytest_benchmark(json_file: Path) -> list[dict]:
     with open(json_file) as f:
         data = json.load(f)
     rows = []
-    source = "python_pal" if "pal" in json_file.stem else "python_sdpa"
+    language, kernel = _parse_source_info(json_file)
+    source = f"{language}_{kernel}"
     for bench in data.get("benchmarks", []):
         name = bench.get("name", "")
         group = bench.get("group", "")
@@ -67,6 +79,8 @@ def parse_pytest_benchmark(json_file: Path) -> list[dict]:
                 config.COL_BENCHMARK_NAME_BASE: base_name,
                 "full_name": name,
                 config.COL_SOURCE: source,
+                config.COL_LANGUAGE: language,
+                config.COL_KERNEL_TESTED: kernel,
                 config.COL_MEAN_LATENCY: stats.get("mean", 0) * 1000.0,
                 config.COL_PARAMS_STR: params_str,
                 "rounds": stats.get("rounds"),
@@ -80,10 +94,7 @@ def load_all_results(json_files: list[Path]) -> pd.DataFrame:
     frames = []
     for jf in json_files:
         fmt = detect_format(jf)
-        if fmt == "google":
-            rows = parse_google_benchmark(jf)
-        else:
-            rows = parse_pytest_benchmark(jf)
+        rows = parse_google_benchmark(jf) if fmt == "google" else parse_pytest_benchmark(jf)
         frames.append(pd.DataFrame(rows))
     if not frames:
         return pd.DataFrame()
