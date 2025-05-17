@@ -249,30 +249,3 @@ static inline float dot_product_qk(
     }
     return score;
 }
-
-/**
- * Zeroes the [0, head_dim) region of a padded tile row.
- *
- * @param tile_row_ptr Base pointer to the row in threadgroup memory
- * @param kernel_params Kernel parameters providing head_dim
- */
-static inline void zero_tile_row(
-    threadgroup float* tile_row_ptr,
-    constant const PagedAttentionParams& kernel_params
-) {
-    for (uint d_chunk = 0; d_chunk < kernel_params.head_dim / 4; ++d_chunk) {
-        tile_row_ptr[d_chunk * 4 + 0] = 0.0f;
-        tile_row_ptr[d_chunk * 4 + 1] = 0.0f;
-        tile_row_ptr[d_chunk * 4 + 2] = 0.0f;
-        tile_row_ptr[d_chunk * 4 + 3] = 0.0f;
-    }
-}
-
-/**
- * @brief Calculates 1/sqrt(head_dim) for scaling.
- * @param head_dim_param The dimension of the attention head.
- * @return The calculated scale factor, or 1.0f if head_dim is 0.
- */
-static inline float compute_inv_sqrt_head_dim(uint head_dim_param) {
-    return head_dim_param > 0 ? rsqrt((float)head_dim_param) : 1.0f;
-}

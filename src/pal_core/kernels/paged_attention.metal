@@ -440,7 +440,6 @@ using namespace metal;
         if (simd_lane_id == 0) {
             tg_simd_v_chunk_sums[simd_group_id] = reduced_simd_group_final_chunk;
         }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
 
         if (local_thread_idx == 0) {
             float4 final_output_chunk = float4(0.0f);
