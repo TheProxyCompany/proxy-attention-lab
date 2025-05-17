@@ -19,8 +19,7 @@ BUILD_DIR="build" # CMake build directory
 UV_EXECUTABLE_PATH=""  # Will be detected
 
 # Directories for benchmark discovery
-PYTHON_BENCHMARK_ROOT_DIR="benchmarks" # Root for Python benchmark discovery
-CPP_BENCHMARK_BUILD_ROOT_DIR="build/tests" # Root for C++ benchmark executable discovery
+BENCHMARK_ROOT_DIR="benchmarks" # Root for benchmark discovery
 BENCHMARK_OUTPUT_ROOT=".benchmarks" # Output directory for benchmark results
 
 # Naming conventions for discovery (unused but kept for reference)
@@ -202,23 +201,23 @@ run_python_benchmarks() {
 
     python_benchmark_files=()
     if [ -n "${kernel}" ]; then
-        if [ -d "${PYTHON_BENCHMARK_ROOT_DIR}/${kernel}/python" ]; then
+        if [ -d "${BENCHMARK_ROOT_DIR}/${kernel}/python" ]; then
             while IFS= read -r -d $'\0' file; do
                 python_benchmark_files+=("$file")
-            done < <(find "${PYTHON_BENCHMARK_ROOT_DIR}/${kernel}/python" -maxdepth 1 -type f -name "*.py" -print0)
+            done < <(find "${BENCHMARK_ROOT_DIR}/${kernel}/python" -maxdepth 1 -type f -name "*.py" -print0)
         else
             log "WARNING: No Python benchmarks found for kernel '${kernel}'"
         fi
     else
         while IFS= read -r -d $'\0' file; do
             python_benchmark_files+=("$file")
-        done < <(find "${PYTHON_BENCHMARK_ROOT_DIR}" -type d -path "*/python" -print0 | while IFS= read -r -d $'\0' dir; do
+        done < <(find "${BENCHMARK_ROOT_DIR}" -type d -path "*/python" -print0 | while IFS= read -r -d $'\0' dir; do
             find "$dir" -maxdepth 1 -type f -name "*.py" -print0
         done)
     fi
 
     if [ ${#python_benchmark_files[@]} -eq 0 ]; then
-        log "No Python benchmark files found in any '*/python' subfolder under '${PYTHON_BENCHMARK_ROOT_DIR}'."
+        log "No Python benchmark files found in any '*/python' subfolder under '${BENCHMARK_ROOT_DIR}'."
     else
         for benchmark_file in "${python_benchmark_files[@]}"; do
             hr
@@ -270,15 +269,17 @@ run_cpp_benchmarks() {
     if [ -n "${kernel}" ]; then
         while IFS= read -r -d $'\0' file; do
             cpp_benchmark_executables+=("$file")
-        done < <(find "${CPP_BENCHMARK_BUILD_ROOT_DIR}" -type f -perm -u+x -name "*${kernel}*" -print0)
+        done < <(find "${BUILD_DIR}/${BENCHMARK_ROOT_DIR}/${kernel}/cpp" -type f -perm -u+x -print0)
     else
         while IFS= read -r -d $'\0' file; do
             cpp_benchmark_executables+=("$file")
-        done < <(find "${CPP_BENCHMARK_BUILD_ROOT_DIR}" -type f -perm -u+x -print0)
+        done < <(find "${BUILD_DIR}/${BENCHMARK_ROOT_DIR}" -type d -path "*/cpp" -print0 | while IFS= read -r -d $'\0' dir; do
+            find "$dir" -type f -perm -u+x -print0
+        done)
     fi
 
     if [ ${#cpp_benchmark_executables[@]} -eq 0 ]; then
-        log "No C++ benchmark executables found in '${CPP_BENCHMARK_BUILD_ROOT_DIR}'."
+        log "No C++ benchmark executables found in '${BUILD_DIR}/${BENCHMARK_ROOT_DIR}'."
         log "Ensure project was built correctly and executables are in the expected locations."
     else
         for benchmark_exe in "${cpp_benchmark_executables[@]}"; do
