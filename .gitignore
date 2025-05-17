@@ -183,4 +183,3 @@ build/
 .claude/
 CLAUDE.md
 .DS_Store
-.benchmarks/

@@ -6,8 +6,12 @@
 # - Can discover and run C++ Google Benchmark executables (all or filtered).
 # - Can analyze benchmark results from previous runs.
 
-set -euo pipefail # Exit on error, unset var, pipe failure
+set -euo pipefail
+# Trap any error and print a useful message
 trap 'echo "ERROR: Script failed at line $LINENO with exit code $?" >&2' ERR
+
+# Minimum required Python version
+REQUIRED_PYTHON="3.11"
 
 # --- Configuration ---
 VENV_DIR=".venv"
@@ -29,6 +33,29 @@ log() {
 
 hr() {
     printf "%80s\n" | tr ' ' '-'
+}
+
+# Verify that a required command exists in PATH
+check_command() {
+    local cmd="$1"
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        log "ERROR: Required command '$cmd' not found in PATH" >&2
+        exit 1
+    fi
+}
+
+# Ensure the active python meets the required version
+check_python_version() {
+    local pyver
+    pyver=$(python -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || echo '')
+    if [[ -z "$pyver" ]]; then
+        log "ERROR: python executable not found" >&2
+        exit 1
+    fi
+    if [[ $(printf '%s\n' "$REQUIRED_PYTHON" "$pyver" | sort -V | head -n1) != "$REQUIRED_PYTHON" ]]; then
+        log "ERROR: Python $REQUIRED_PYTHON or higher required, found $pyver" >&2
+        exit 1
+    fi
 }
 
 print_usage() {
@@ -65,6 +92,10 @@ setup_environment() {
     log "Setting up environment..."
     detect_uv
     activate_venv
+    # Verify required tools are available
+    check_command pytest
+    check_command cmake
+    check_python_version
 }
 
 detect_uv() {
@@ -100,6 +131,8 @@ update_and_rebuild_project() {
     local cmake_parallel_args=""
 
     log "Updating dependencies and rebuilding project..."
+
+    check_command cmake
 
     # Update dependencies
     "${UV_EXECUTABLE_PATH}" pip install --upgrade --no-deps "git+https://github.com/TheProxyCompany/mlx.git" "nanobind>=2.5.0"

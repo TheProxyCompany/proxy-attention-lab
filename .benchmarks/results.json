@@ -1,0 +1,278 @@
+{
+  "summary_metrics": {
+    "latency_vs_seq_len": [
+      {
+        "seq_len": 64,
+        "source": "python_pal",
+        "mean_latency_ms": 0.4579231799993977,
+        "throughput_items_per_sec": 139761.43334802176
+      },
+      {
+        "seq_len": 128,
+        "source": "python_pal",
+        "mean_latency_ms": 0.3595375818625307,
+        "throughput_items_per_sec": 178006.42611116637
+      },
+      {
+        "seq_len": 256,
+        "source": "python_pal",
+        "mean_latency_ms": 0.5076101073599544,
+        "throughput_items_per_sec": 126081.01980644089
+      },
+      {
+        "seq_len": 512,
+        "source": "python_pal",
+        "mean_latency_ms": 0.6874808220126862,
+        "throughput_items_per_sec": 93093.50595792911
+      },
+      {
+        "seq_len": 1024,
+        "source": "python_pal",
+        "mean_latency_ms": 1.0512562649599992,
+        "throughput_items_per_sec": 60879.54206145466
+      },
+      {
+        "seq_len": 2048,
+        "source": "python_pal",
+        "mean_latency_ms": 1.7680585205680845,
+        "throughput_items_per_sec": 36197.89687698602
+      },
+      {
+        "seq_len": 64,
+        "source": "python_sdpa",
+        "mean_latency_ms": 0.2093196215451033,
+        "throughput_items_per_sec": 305752.511530361
+      },
+      {
+        "seq_len": 128,
+        "source": "python_sdpa",
+        "mean_latency_ms": 0.2553739432750101,
+        "throughput_items_per_sec": 250612.88234516128
+      },
+      {
+        "seq_len": 256,
+        "source": "python_sdpa",
+        "mean_latency_ms": 0.4118071031446334,
+        "throughput_items_per_sec": 155412.56940758048
+      },
+      {
+        "seq_len": 512,
+        "source": "python_sdpa",
+        "mean_latency_ms": 1.0840142499987848,
+        "throughput_items_per_sec": 59039.81428295038
+      },
+      {
+        "seq_len": 1024,
+        "source": "python_sdpa",
+        "mean_latency_ms": 3.388097118475261,
+        "throughput_items_per_sec": 18889.659228187
+      },
+      {
+        "seq_len": 2048,
+        "source": "python_sdpa",
+        "mean_latency_ms": 12.437122910263007,
+        "throughput_items_per_sec": 5145.884660124067
+      }
+    ],
+    "latency_vs_head_dim": [
+      {
+        "head_dim": 64,
+        "source": "python_pal",
+        "mean_latency_ms": 0.25695745097742034,
+        "throughput_items_per_sec": 249068.47322992742
+      },
+      {
+        "head_dim": 128,
+        "source": "python_pal",
+        "mean_latency_ms": 0.34898837774016367,
+        "throughput_items_per_sec": 183387.19591301304
+      },
+      {
+        "head_dim": 160,
+        "source": "python_pal",
+        "mean_latency_ms": 0.43536886296980837,
+        "throughput_items_per_sec": 147001.78502300984
+      },
+      {
+        "head_dim": 192,
+        "source": "python_pal",
+        "mean_latency_ms": 0.5252163208033933,
+        "throughput_items_per_sec": 121854.5530003768
+      },
+      {
+        "head_dim": 256,
+        "source": "python_pal",
+        "mean_latency_ms": 0.8104963568498721,
+        "throughput_items_per_sec": 78963.95765274821
+      },
+      {
+        "head_dim": 64,
+        "source": "python_sdpa",
+        "mean_latency_ms": 0.23401125344075774,
+        "throughput_items_per_sec": 273491.1208712543
+      },
+      {
+        "head_dim": 128,
+        "source": "python_sdpa",
+        "mean_latency_ms": 0.26952783364774147,
+        "throughput_items_per_sec": 237452.28510850048
+      },
+      {
+        "head_dim": 160,
+        "source": "python_sdpa",
+        "mean_latency_ms": 0.3532714465240443,
+        "throughput_items_per_sec": 181163.80655645218
+      },
+      {
+        "head_dim": 192,
+        "source": "python_sdpa",
+        "mean_latency_ms": 0.3621416529115663,
+        "throughput_items_per_sec": 176726.42593153616
+      },
+      {
+        "head_dim": 256,
+        "source": "python_sdpa",
+        "mean_latency_ms": 0.392019846467185,
+        "throughput_items_per_sec": 163257.04062372586
+      }
+    ],
+    "latency_vs_num_items": [
+      {
+        "effective_items": 32,
+        "num_query_items": 32,
+        "source": "python_pal",
+        "mean_latency_ms": 0.3481192354606455,
+        "throughput_items_per_sec": 91922.52751462098
+      },
+      {
+        "effective_items": 64,
+        "num_query_items": 64,
+        "source": "python_pal",
+        "mean_latency_ms": 0.3490516020529001,
+        "throughput_items_per_sec": 183353.97867705693
+      },
+      {
+        "effective_items": 128,
+        "num_query_items": 128,
+        "source": "python_pal",
+        "mean_latency_ms": 0.5048044811161964,
+        "throughput_items_per_sec": 253563.51773457584
+      },
+      {
+        "effective_items": 256,
+        "num_query_items": 256,
+        "source": "python_pal",
+        "mean_latency_ms": 0.8582930294092692,
+        "throughput_items_per_sec": 298266.43259143695
+      },
+      {
+        "effective_items": 512,
+        "num_query_items": 512,
+        "source": "python_pal",
+        "mean_latency_ms": 1.2341666120474075,
+        "throughput_items_per_sec": 414854.8461788503
+      },
+      {
+        "effective_items": 32,
+        "batch_size": 32,
+        "source": "python_sdpa",
+        "mean_latency_ms": 0.2396151215650716,
+        "throughput_items_per_sec": 133547.49813362616
+      },
+      {
+        "effective_items": 64,
+        "batch_size": 64,
+        "source": "python_sdpa",
+        "mean_latency_ms": 0.2679620920443061,
+        "throughput_items_per_sec": 238839.75345817924
+      },
+      {
+        "effective_items": 128,
+        "batch_size": 128,
+        "source": "python_sdpa",
+        "mean_latency_ms": 0.3250560016144426,
+        "throughput_items_per_sec": 393778.300859752
+      },
+      {
+        "effective_items": 256,
+        "batch_size": 256,
+        "source": "python_sdpa",
+        "mean_latency_ms": 0.44352585870190026,
+        "throughput_items_per_sec": 577192.9527384357
+      },
+      {
+        "effective_items": 512,
+        "batch_size": 512,
+        "source": "python_sdpa",
+        "mean_latency_ms": 0.7642056919086244,
+        "throughput_items_per_sec": 669976.6900731479
+      }
+    ],
+    "model_configs": [
+      {
+        "model_config_name": "Llama3_70B_Sim",
+        "source": "python_pal",
+        "mean_latency_ms": 39.808461321415834,
+        "num_q_heads": 64,
+        "num_kv_heads": 8,
+        "head_dim": 128,
+        "seq_len": 1024
+      },
+      {
+        "model_config_name": "Qwen_8B_Sim",
+        "source": "python_pal",
+        "mean_latency_ms": 20.840732480019142,
+        "num_q_heads": 32,
+        "num_kv_heads": 32,
+        "head_dim": 128,
+        "seq_len": 1024
+      },
+      {
+        "model_config_name": "Qwen2.5_72B_Sim",
+        "source": "python_pal",
+        "mean_latency_ms": 78.55564592859666,
+        "num_q_heads": 128,
+        "num_kv_heads": 8,
+        "head_dim": 128,
+        "seq_len": 1024
+      },
+      {
+        "model_config_name": "Llama3_70B_Sim",
+        "source": "python_sdpa",
+        "mean_latency_ms": 12.396479962026667,
+        "batch_size": 4,
+        "num_q_heads": 64,
+        "num_kv_heads": 8,
+        "head_dim": 128,
+        "seq_len": 1024
+      },
+      {
+        "model_config_name": "Qwen_8B_Sim",
+        "source": "python_sdpa",
+        "mean_latency_ms": 6.406205644730945,
+        "batch_size": 4,
+        "num_q_heads": 32,
+        "num_kv_heads": 32,
+        "head_dim": 128,
+        "seq_len": 1024
+      },
+      {
+        "model_config_name": "Qwen2.5_72B_Sim",
+        "source": "python_sdpa",
+        "mean_latency_ms": 24.48262604876041,
+        "batch_size": 4,
+        "num_q_heads": 128,
+        "num_kv_heads": 8,
+        "head_dim": 128,
+        "seq_len": 1024
+      }
+    ]
+  },
+  "plot_files": {
+    "latency_vs_seq_len": "latency_vs_seq_len_comparison.png",
+    "latency_vs_head_dim": "latency_vs_head_dim_comparison.png",
+    "latency_vs_num_items": "latency_vs_num_items_comparison.png",
+    "model_configs": "model_configs_latency_comparison.png"
+  },
+  "generation_timestamp": "2025-05-17T09:42:05Z"
+}

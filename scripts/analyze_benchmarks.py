@@ -1,3 +1,5 @@
+"""Utility for aggregating and plotting benchmark results."""
+
 import argparse
 import json
 import re
@@ -6,6 +8,68 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+
+
+def get_plot_styles():
+    """
+    Return standardized plotting styles for consistent, publication-quality visualizations.
+
+    Returns:
+        dict: Dictionary containing style definitions for all plot elements
+    """
+    styles = {}
+
+    # Colors
+    styles["PAL_CPP_COLOR"] = "#024645"  # Dark green for PAL C++
+    styles["PAL_PY_COLOR"] = "#024645"  # Same dark green for PAL Python (consistent branding)
+    styles["SDPA_CPP_COLOR"] = "#000000"  # Black for SDPA C++
+    styles["SDPA_PY_COLOR"] = "#000000"  # Black for SDPA Python (consistent branding)
+
+    # Line styles
+    styles["PAL_CPP_STYLE"] = "--"  # Dashed line for PAL C++
+    styles["PAL_PY_STYLE"] = "-"  # Solid line for PAL Python
+    styles["SDPA_CPP_STYLE"] = "-."  # Dash-dot line for SDPA C++
+    styles["SDPA_PY_STYLE"] = ":"  # Dotted line for SDPA Python
+
+    # Line widths
+    styles["PAL_LINEWIDTH"] = 2.5  # Bold line for PAL
+    styles["SDPA_LINEWIDTH"] = 1.5  # Standard line for SDPA
+
+    # Markers
+    styles["PAL_CPP_MARKER"] = "o"  # Circle for PAL C++
+    styles["PAL_PY_MARKER"] = "o"  # Circle for PAL Python (consistent marker)
+    styles["SDPA_CPP_MARKER"] = "D"  # Diamond for SDPA C++
+    styles["SDPA_PY_MARKER"] = "D"  # Diamond for SDPA Python (consistent marker)
+
+    # Reference line styling
+    styles["REF_LINE_COLOR"] = "gray"  # Medium gray for reference lines
+    styles["REF_LINE_STYLE"] = "--"  # Dashed style for reference lines
+    styles["REF_LINE_WIDTH"] = 1.0  # Thin line for references
+    styles["REF_LINE_ALPHA"] = 0.6  # Slightly transparent
+
+    # Font sizes and weights
+    styles["TITLE_FONTSIZE"] = 14
+    styles["TITLE_FONTWEIGHT"] = "bold"
+    styles["AXIS_LABEL_FONTSIZE"] = 12
+    styles["TICK_LABEL_FONTSIZE"] = 12
+    styles["LEGEND_FONTSIZE"] = 12
+
+    # Grid styling
+    styles["GRID_COLOR"] = "#D3D3D3"  # Light gray
+    styles["GRID_ALPHA"] = 0.5  # Semi-transparent
+    styles["GRID_LINESTYLE"] = ":"  # Dotted
+
+    # Labels with LaTeX formatting for bold text
+    styles["PAL_CPP_LABEL"] = r"$\mathbf{Paged\ Attention\ (C++)}$"
+    styles["PAL_PY_LABEL"] = r"$\mathbf{Paged\ Attention\ (Python)}$"
+    styles["SDPA_CPP_LABEL"] = "MLX SDPA (C++)"
+    styles["SDPA_PY_LABEL"] = "MLX SDPA (Python)"
+
+    # Bar chart colors (for model configs)
+    styles["PAL_BAR_COLOR"] = "#024645"  # Dark green for PAL bars
+    styles["SDPA_BAR_COLOR"] = "#000000"  # Black for SDPA bars
+
+    return styles
 
 
 def detect_format(json_file: Path) -> str:
@@ -367,6 +431,9 @@ def plot_latency_vs_seq_len(df: pd.DataFrame, output_dir: Path) -> str:
     """
     print("\nGenerating latency vs. sequence length plot")
 
+    # Get standardized plot styles
+    styles = get_plot_styles()
+
     # Print unique benchmark names for debugging
     print("Available benchmark_name_base values:")
     print(df["benchmark_name_base"].unique())
@@ -415,39 +482,16 @@ def plot_latency_vs_seq_len(df: pd.DataFrame, output_dir: Path) -> str:
     # Create the plot with high-quality settings
     plt.figure(figsize=(12, 8), dpi=100)
 
-    # Define consistent styling for implementations
-    # Colors
-    PAL_CPP_COLOR = "#024645"  # Dark green for PAL C++
-    PAL_PY_COLOR = "#026645"  # Slightly different green for PAL Python
-    SDPA_CPP_COLOR = "#000000"  # Black for SDPA C++
-    SDPA_PY_COLOR = "#444444"  # Dark gray for SDPA Python for better differentiation
-
-    # Line styles
-    PAL_CPP_STYLE = "-"  # Solid line for PAL C++
-    PAL_PY_STYLE = "--"  # Dashed line for PAL Python
-    SDPA_CPP_STYLE = "-."  # Dash-dot line for SDPA C++
-    SDPA_PY_STYLE = ":"  # Dotted line for SDPA Python
-
-    # Line widths
-    PAL_LINEWIDTH = 2.5  # Bold line for PAL
-    SDPA_LINEWIDTH = 1.5  # Standard line for SDPA
-
-    # Markers
-    PAL_CPP_MARKER = "o"  # Circle for PAL C++
-    PAL_PY_MARKER = "s"  # Square for PAL Python
-    SDPA_CPP_MARKER = "^"  # Triangle for SDPA C++
-    SDPA_PY_MARKER = "D"  # Diamond for SDPA Python
-
     # Plot each implementation if data exists
     if not pal_cpp_df.empty:
         plt.plot(
             pal_cpp_df["seq_len"],
             pal_cpp_df["mean_latency_ms"],
-            marker=PAL_CPP_MARKER,
-            linestyle=PAL_CPP_STYLE,
-            linewidth=PAL_LINEWIDTH,
-            color=PAL_CPP_COLOR,
-            label=r"$\mathbf{Paged\ Attention\ (C++)}$",
+            marker=styles["PAL_CPP_MARKER"],
+            linestyle=styles["PAL_CPP_STYLE"],
+            linewidth=styles["PAL_LINEWIDTH"],
+            color=styles["PAL_CPP_COLOR"],
+            label=styles["PAL_CPP_LABEL"],
         )
         print("Plotted PAL C++ data")
 
@@ -455,11 +499,11 @@ def plot_latency_vs_seq_len(df: pd.DataFrame, output_dir: Path) -> str:
         plt.plot(
             pal_py_df["seq_len"],
             pal_py_df["mean_latency_ms"],
-            marker=PAL_PY_MARKER,
-            linestyle=PAL_PY_STYLE,
-            linewidth=PAL_LINEWIDTH,
-            color=PAL_PY_COLOR,
-            label=r"$\mathbf{Paged\ Attention\ (Python)}$",
+            marker=styles["PAL_PY_MARKER"],
+            linestyle=styles["PAL_PY_STYLE"],
+            linewidth=styles["PAL_LINEWIDTH"],
+            color=styles["PAL_PY_COLOR"],
+            label=styles["PAL_PY_LABEL"],
         )
         print("Plotted PAL Python data")
 
@@ -467,11 +511,11 @@ def plot_latency_vs_seq_len(df: pd.DataFrame, output_dir: Path) -> str:
         plt.plot(
             sdpa_cpp_df["seq_len"],
             sdpa_cpp_df["mean_latency_ms"],
-            marker=SDPA_CPP_MARKER,
-            linestyle=SDPA_CPP_STYLE,
-            linewidth=SDPA_LINEWIDTH,
-            color=SDPA_CPP_COLOR,
-            label="MLX SDPA (C++)",
+            marker=styles["SDPA_CPP_MARKER"],
+            linestyle=styles["SDPA_CPP_STYLE"],
+            linewidth=styles["SDPA_LINEWIDTH"],
+            color=styles["SDPA_CPP_COLOR"],
+            label=styles["SDPA_CPP_LABEL"],
         )
         print("Plotted SDPA C++ data")
 
@@ -479,25 +523,28 @@ def plot_latency_vs_seq_len(df: pd.DataFrame, output_dir: Path) -> str:
         plt.plot(
             sdpa_py_df["seq_len"],
             sdpa_py_df["mean_latency_ms"],
-            marker=SDPA_PY_MARKER,
-            linestyle=SDPA_PY_STYLE,
-            linewidth=SDPA_LINEWIDTH,
-            color=SDPA_PY_COLOR,
-            label="MLX SDPA (Python)",
+            marker=styles["SDPA_PY_MARKER"],
+            linestyle=styles["SDPA_PY_STYLE"],
+            linewidth=styles["SDPA_LINEWIDTH"],
+            color=styles["SDPA_PY_COLOR"],
+            label=styles["SDPA_PY_LABEL"],
         )
         print("Plotted SDPA Python data")
 
     # Set plot attributes with refined styling
-    plt.title("Paged Attention vs. MLX SDPA: Latency vs. Sequence Length", fontsize=16, fontweight="bold")
-    plt.xlabel("Sequence Length (tokens)", fontsize=14)
-    plt.ylabel("Mean Latency (ms)", fontsize=14)
+    plt.title(
+        "Paged Attention vs. MLX SDPA: Latency vs. Sequence Length",
+        fontsize=styles["TITLE_FONTSIZE"],
+        fontweight=styles["TITLE_FONTWEIGHT"],
+    )
+    plt.xlabel("Sequence Length (tokens)", fontsize=styles["AXIS_LABEL_FONTSIZE"])
+    plt.ylabel("Mean Latency (ms)", fontsize=styles["AXIS_LABEL_FONTSIZE"])
     plt.xscale("log")
     plt.yscale("log")
-    plt.grid(True, which="both", ls="-", alpha=0.2, color="lightgray")
-    plt.legend(loc="best", fontsize=12)  # Add legend
+    plt.grid(True, which="both", ls=styles["GRID_LINESTYLE"], alpha=styles["GRID_ALPHA"], color=styles["GRID_COLOR"])
 
     # Improve tick label readability
-    plt.tick_params(axis="both", which="major", labelsize=12)
+    plt.tick_params(axis="both", which="major", labelsize=styles["TICK_LABEL_FONTSIZE"])
 
     # Add reference slope
     # Collect all sequence length data that exists
@@ -514,7 +561,30 @@ def plot_latency_vs_seq_len(df: pd.DataFrame, output_dir: Path) -> str:
 
             # Linear reference (O(n))
             y_scale = max_latency / x_max if x_max > 0 else 1
-            plt.plot(x_vals, y_scale * x_vals, "k--", alpha=0.3, linewidth=1, label="O(n) reference")
+            plt.plot(
+                x_vals,
+                y_scale * x_vals,
+                linestyle=styles["REF_LINE_STYLE"],
+                alpha=styles["REF_LINE_ALPHA"],
+                linewidth=styles["REF_LINE_WIDTH"],
+                color=styles["REF_LINE_COLOR"],
+                label="O(n) reference",
+            )
+
+            # Add O(n log n) reference line for comparison
+            y_scale_logn = max_latency / (x_max * np.log(x_max)) if x_max > 1 else 1
+            plt.plot(
+                x_vals,
+                y_scale_logn * x_vals * np.log(x_vals),
+                linestyle=styles["REF_LINE_STYLE"],
+                alpha=styles["REF_LINE_ALPHA"],
+                linewidth=styles["REF_LINE_WIDTH"],
+                color=styles["REF_LINE_COLOR"],
+                label="O(n log n) reference",
+            )
+
+    # Always add the legend after all plot elements have been added
+    plt.legend(loc="best", fontsize=styles["LEGEND_FONTSIZE"])
 
     plt.tight_layout()
 
@@ -538,6 +608,9 @@ def plot_latency_vs_head_dim(df: pd.DataFrame, output_dir: Path) -> str:
         str: The filename of the saved plot
     """
     print("\nGenerating latency vs. head dimension plot")
+
+    # Get standardized plot styles
+    styles = get_plot_styles()
 
     # First define our benchmark base name patterns
     pal_py_base = "test_pal_latency_vs_head_dim"
@@ -581,37 +654,23 @@ def plot_latency_vs_head_dim(df: pd.DataFrame, output_dir: Path) -> str:
 
     # Define consistent styling for implementations
     # Colors
-    PAL_CPP_COLOR = "#024645"  # Dark green for PAL C++
-    PAL_PY_COLOR = "#026645"  # Slightly different green for PAL Python
-    SDPA_CPP_COLOR = "#000000"  # Black for SDPA C++
-    SDPA_PY_COLOR = "#444444"  # Dark gray for SDPA Python for better differentiation
 
     # Line styles
-    PAL_CPP_STYLE = "-"  # Solid line for PAL C++
-    PAL_PY_STYLE = "--"  # Dashed line for PAL Python
-    SDPA_CPP_STYLE = "-."  # Dash-dot line for SDPA C++
-    SDPA_PY_STYLE = ":"  # Dotted line for SDPA Python
 
     # Line widths
-    PAL_LINEWIDTH = 2.5  # Bold line for PAL
-    SDPA_LINEWIDTH = 1.5  # Standard line for SDPA
 
     # Markers
-    PAL_CPP_MARKER = "o"  # Circle for PAL C++
-    PAL_PY_MARKER = "s"  # Square for PAL Python
-    SDPA_CPP_MARKER = "^"  # Triangle for SDPA C++
-    SDPA_PY_MARKER = "D"  # Diamond for SDPA Python
 
     # Plot each implementation if data exists
     if not pal_cpp_df.empty:
         plt.plot(
             pal_cpp_df["head_dim"],
             pal_cpp_df["mean_latency_ms"],
-            marker=PAL_CPP_MARKER,
-            linestyle=PAL_CPP_STYLE,
-            linewidth=PAL_LINEWIDTH,
-            color=PAL_CPP_COLOR,
-            label=r"$\mathbf{Paged\ Attention\ (C++)}$",
+            marker=styles["PAL_CPP_MARKER"],
+            linestyle=styles["PAL_CPP_STYLE"],
+            linewidth=styles["PAL_LINEWIDTH"],
+            color=styles["PAL_CPP_COLOR"],
+            label=styles["PAL_CPP_LABEL"],
         )
         print("Plotted PAL C++ data")
 
@@ -619,11 +678,11 @@ def plot_latency_vs_head_dim(df: pd.DataFrame, output_dir: Path) -> str:
         plt.plot(
             pal_py_df["head_dim"],
             pal_py_df["mean_latency_ms"],
-            marker=PAL_PY_MARKER,
-            linestyle=PAL_PY_STYLE,
-            linewidth=PAL_LINEWIDTH,
-            color=PAL_PY_COLOR,
-            label=r"$\mathbf{Paged\ Attention\ (Python)}$",
+            marker=styles["PAL_PY_MARKER"],
+            linestyle=styles["PAL_PY_STYLE"],
+            linewidth=styles["PAL_LINEWIDTH"],
+            color=styles["PAL_PY_COLOR"],
+            label=styles["PAL_PY_LABEL"],
         )
         print("Plotted PAL Python data")
 
@@ -631,11 +690,11 @@ def plot_latency_vs_head_dim(df: pd.DataFrame, output_dir: Path) -> str:
         plt.plot(
             sdpa_cpp_df["head_dim"],
             sdpa_cpp_df["mean_latency_ms"],
-            marker=SDPA_CPP_MARKER,
-            linestyle=SDPA_CPP_STYLE,
-            linewidth=SDPA_LINEWIDTH,
-            color=SDPA_CPP_COLOR,
-            label="MLX SDPA (C++)",
+            marker=styles["SDPA_CPP_MARKER"],
+            linestyle=styles["SDPA_CPP_STYLE"],
+            linewidth=styles["SDPA_LINEWIDTH"],
+            color=styles["SDPA_CPP_COLOR"],
+            label=styles["SDPA_CPP_LABEL"],
         )
         print("Plotted SDPA C++ data")
 
@@ -643,23 +702,26 @@ def plot_latency_vs_head_dim(df: pd.DataFrame, output_dir: Path) -> str:
         plt.plot(
             sdpa_py_df["head_dim"],
             sdpa_py_df["mean_latency_ms"],
-            marker=SDPA_PY_MARKER,
-            linestyle=SDPA_PY_STYLE,
-            linewidth=SDPA_LINEWIDTH,
-            color=SDPA_PY_COLOR,
-            label="MLX SDPA (Python)",
+            marker=styles["SDPA_PY_MARKER"],
+            linestyle=styles["SDPA_PY_STYLE"],
+            linewidth=styles["SDPA_LINEWIDTH"],
+            color=styles["SDPA_PY_COLOR"],
+            label=styles["SDPA_PY_LABEL"],
         )
         print("Plotted SDPA Python data")
 
     # Set plot attributes with refined styling
-    plt.title("Paged Attention vs. MLX SDPA: Latency vs. Head Dimension", fontsize=16, fontweight="bold")
-    plt.xlabel("Head Dimension", fontsize=14)
-    plt.ylabel("Mean Latency (ms)", fontsize=14)
-    plt.grid(True, which="both", ls="-", alpha=0.2, color="lightgray")
-    plt.legend(loc="best", fontsize=12)  # Add legend
+    plt.title(
+        "Paged Attention vs. MLX SDPA: Latency vs. Head Dimension",
+        fontsize=styles["TITLE_FONTSIZE"],
+        fontweight=styles["TITLE_FONTWEIGHT"],
+    )
+    plt.xlabel("Head Dimension", fontsize=styles["AXIS_LABEL_FONTSIZE"])
+    plt.ylabel("Mean Latency (ms)", fontsize=styles["AXIS_LABEL_FONTSIZE"])
+    plt.grid(True, which="both", ls=styles["GRID_LINESTYLE"], alpha=styles["GRID_ALPHA"], color=styles["GRID_COLOR"])
 
     # Improve tick label readability
-    plt.tick_params(axis="both", which="major", labelsize=12)
+    plt.tick_params(axis="both", which="major", labelsize=styles["TICK_LABEL_FONTSIZE"])
 
     # Add reference O(d²) curve
     all_dim_data = pd.concat([pal_cpp_df, pal_py_df, sdpa_cpp_df, sdpa_py_df])
@@ -674,7 +736,30 @@ def plot_latency_vs_head_dim(df: pd.DataFrame, output_dir: Path) -> str:
             if x_max > 0:
                 max_latency = all_dim_data["mean_latency_ms"].max()
                 y_scale = max_latency / (x_max**2)
-                plt.plot(x_vals, y_scale * x_vals**2, "k--", alpha=0.3, linewidth=1, label="O(d²) reference")
+                plt.plot(
+                    x_vals,
+                    y_scale * x_vals**2,
+                    linestyle=styles["REF_LINE_STYLE"],
+                    alpha=styles["REF_LINE_ALPHA"],
+                    linewidth=styles["REF_LINE_WIDTH"],
+                    color=styles["REF_LINE_COLOR"],
+                    label="O(d²) reference",
+                )
+
+                # Also add a linear O(d) reference line for comparison
+                y_scale_linear = max_latency / x_max
+                plt.plot(
+                    x_vals,
+                    y_scale_linear * x_vals,
+                    linestyle=styles["REF_LINE_STYLE"],
+                    alpha=styles["REF_LINE_ALPHA"],
+                    linewidth=styles["REF_LINE_WIDTH"],
+                    color=styles["REF_LINE_COLOR"],
+                    label="O(d) reference",
+                )
+
+    # Always add the legend after all plot elements have been added
+    plt.legend(loc="best", fontsize=styles["LEGEND_FONTSIZE"])
 
     plt.tight_layout()
 
@@ -700,6 +785,9 @@ def plot_latency_vs_num_query_items(df: pd.DataFrame, output_dir: Path) -> str:
         str: The filename of the saved plot
     """
     print("\nGenerating latency vs. query items / batch size plot")
+
+    # Get standardized plot styles
+    styles = get_plot_styles()
 
     # First define our benchmark base name patterns
     pal_py_base = "test_pal_latency_vs_query_items"
@@ -745,37 +833,23 @@ def plot_latency_vs_num_query_items(df: pd.DataFrame, output_dir: Path) -> str:
 
     # Define consistent styling for implementations
     # Colors
-    PAL_CPP_COLOR = "#024645"  # Dark green for PAL C++
-    PAL_PY_COLOR = "#026645"  # Slightly different green for PAL Python
-    SDPA_CPP_COLOR = "#000000"  # Black for SDPA C++
-    SDPA_PY_COLOR = "#444444"  # Dark gray for SDPA Python for better differentiation
 
     # Line styles
-    PAL_CPP_STYLE = "-"  # Solid line for PAL C++
-    PAL_PY_STYLE = "--"  # Dashed line for PAL Python
-    SDPA_CPP_STYLE = "-."  # Dash-dot line for SDPA C++
-    SDPA_PY_STYLE = ":"  # Dotted line for SDPA Python
 
     # Line widths
-    PAL_LINEWIDTH = 2.5  # Bold line for PAL
-    SDPA_LINEWIDTH = 1.5  # Standard line for SDPA
 
     # Markers
-    PAL_CPP_MARKER = "o"  # Circle for PAL C++
-    PAL_PY_MARKER = "s"  # Square for PAL Python
-    SDPA_CPP_MARKER = "^"  # Triangle for SDPA C++
-    SDPA_PY_MARKER = "D"  # Diamond for SDPA Python
 
     # Plot each implementation if data exists
     if not pal_cpp_df.empty:
         plt.plot(
             pal_cpp_df["effective_items"],
             pal_cpp_df["mean_latency_ms"],
-            marker=PAL_CPP_MARKER,
-            linestyle=PAL_CPP_STYLE,
-            linewidth=PAL_LINEWIDTH,
-            color=PAL_CPP_COLOR,
-            label=r"$\mathbf{Paged\ Attention\ (C++)}$",
+            marker=styles["PAL_CPP_MARKER"],
+            linestyle=styles["PAL_CPP_STYLE"],
+            linewidth=styles["PAL_LINEWIDTH"],
+            color=styles["PAL_CPP_COLOR"],
+            label=styles["PAL_CPP_LABEL"],
         )
         print("Plotted PAL C++ data")
 
@@ -783,11 +857,11 @@ def plot_latency_vs_num_query_items(df: pd.DataFrame, output_dir: Path) -> str:
         plt.plot(
             pal_py_df["effective_items"],
             pal_py_df["mean_latency_ms"],
-            marker=PAL_PY_MARKER,
-            linestyle=PAL_PY_STYLE,
-            linewidth=PAL_LINEWIDTH,
-            color=PAL_PY_COLOR,
-            label=r"$\mathbf{Paged\ Attention\ (Python)}$",
+            marker=styles["PAL_PY_MARKER"],
+            linestyle=styles["PAL_PY_STYLE"],
+            linewidth=styles["PAL_LINEWIDTH"],
+            color=styles["PAL_PY_COLOR"],
+            label=styles["PAL_PY_LABEL"],
         )
         print("Plotted PAL Python data")
 
@@ -795,11 +869,11 @@ def plot_latency_vs_num_query_items(df: pd.DataFrame, output_dir: Path) -> str:
         plt.plot(
             sdpa_cpp_df["effective_items"],
             sdpa_cpp_df["mean_latency_ms"],
-            marker=SDPA_CPP_MARKER,
-            linestyle=SDPA_CPP_STYLE,
-            linewidth=SDPA_LINEWIDTH,
-            color=SDPA_CPP_COLOR,
-            label="MLX SDPA (C++)",
+            marker=styles["SDPA_CPP_MARKER"],
+            linestyle=styles["SDPA_CPP_STYLE"],
+            linewidth=styles["SDPA_LINEWIDTH"],
+            color=styles["SDPA_CPP_COLOR"],
+            label=styles["SDPA_CPP_LABEL"],
         )
         print("Plotted SDPA C++ data")
 
@@ -807,25 +881,30 @@ def plot_latency_vs_num_query_items(df: pd.DataFrame, output_dir: Path) -> str:
         plt.plot(
             sdpa_py_df["effective_items"],
             sdpa_py_df["mean_latency_ms"],
-            marker=SDPA_PY_MARKER,
-            linestyle=SDPA_PY_STYLE,
-            linewidth=SDPA_LINEWIDTH,
-            color=SDPA_PY_COLOR,
-            label="MLX SDPA (Python)",
+            marker=styles["SDPA_PY_MARKER"],
+            linestyle=styles["SDPA_PY_STYLE"],
+            linewidth=styles["SDPA_LINEWIDTH"],
+            color=styles["SDPA_PY_COLOR"],
+            label=styles["SDPA_PY_LABEL"],
         )
         print("Plotted SDPA Python data")
 
     # Set plot attributes with refined styling
-    plt.title("Paged Attention vs. MLX SDPA: Latency vs. Processing Items", fontsize=16, fontweight="bold")
-    plt.xlabel("Number of Effective Items (PAL: Query Items, SDPA: Batch Size x Heads)", fontsize=14)
-    plt.ylabel("Mean Latency (ms)", fontsize=14)
+    plt.title(
+        "Paged Attention vs. MLX SDPA: Latency vs. Processing Items",
+        fontsize=styles["TITLE_FONTSIZE"],
+        fontweight=styles["TITLE_FONTWEIGHT"],
+    )
+    plt.xlabel(
+        "Number of Effective Items (PAL: Query Items, SDPA: Batch Size x Heads)", fontsize=styles["AXIS_LABEL_FONTSIZE"]
+    )
+    plt.ylabel("Mean Latency (ms)", fontsize=styles["AXIS_LABEL_FONTSIZE"])
     plt.xscale("log")
     plt.yscale("log")
-    plt.grid(True, which="both", ls="-", alpha=0.2, color="lightgray")
-    plt.legend(loc="best", fontsize=12)  # Add legend
+    plt.grid(True, which="both", ls=styles["GRID_LINESTYLE"], alpha=styles["GRID_ALPHA"], color=styles["GRID_COLOR"])
 
     # Improve tick label readability
-    plt.tick_params(axis="both", which="major", labelsize=12)
+    plt.tick_params(axis="both", which="major", labelsize=styles["TICK_LABEL_FONTSIZE"])
 
     # Add reference O(n) line for linear scaling
     all_item_data = pd.concat([pal_cpp_df, pal_py_df, sdpa_cpp_df, sdpa_py_df])
@@ -839,8 +918,33 @@ def plot_latency_vs_num_query_items(df: pd.DataFrame, output_dir: Path) -> str:
             # Calculate scaling factor
             if x_max > 0:
                 max_latency = all_item_data["mean_latency_ms"].max()
+
+                # Linear reference O(n)
                 y_scale = max_latency / x_max
-                plt.plot(x_vals, y_scale * x_vals, "k--", alpha=0.3, linewidth=1, label="O(n) reference")
+                plt.plot(
+                    x_vals,
+                    y_scale * x_vals,
+                    linestyle=styles["REF_LINE_STYLE"],
+                    alpha=styles["REF_LINE_ALPHA"],
+                    linewidth=styles["REF_LINE_WIDTH"],
+                    color=styles["REF_LINE_COLOR"],
+                    label="O(n) reference",
+                )
+
+                # Square root reference O(√n) for sub-linear scaling example
+                y_scale_sqrt = max_latency / np.sqrt(x_max)
+                plt.plot(
+                    x_vals,
+                    y_scale_sqrt * np.sqrt(x_vals),
+                    linestyle=styles["REF_LINE_STYLE"],
+                    alpha=styles["REF_LINE_ALPHA"],
+                    linewidth=styles["REF_LINE_WIDTH"],
+                    color=styles["REF_LINE_COLOR"],
+                    label="O(√n) reference",
+                )
+
+    # Always add the legend after all plot elements have been added
+    plt.legend(loc="best", fontsize=styles["LEGEND_FONTSIZE"])
 
     plt.tight_layout()
 
@@ -864,6 +968,9 @@ def plot_model_configs_latency(df: pd.DataFrame, output_dir: Path) -> dict[str, 
         dict[str, str]: Dictionary mapping plot descriptions to filenames
     """
     print("\nGenerating model configurations latency plot")
+
+    # Get standardized plot styles
+    styles = get_plot_styles()
 
     # Dictionary to track all plot filenames created
     plot_filenames = {}
@@ -995,20 +1102,20 @@ def plot_model_configs_latency(df: pd.DataFrame, output_dir: Path) -> dict[str, 
         # Create the grouped bar chart with high-quality settings
         plt.figure(figsize=(14, 8), dpi=100)
 
-        # Define colors that match our line plot scheme
+        # Define colors and labels from our unified style dictionary
         colors = {
-            "pal_cpp_latency_ms": "#024645",  # Dark green for PAL C++
-            "pal_py_latency_ms": "#026645",  # Slightly different green for PAL Python
-            "sdpa_cpp_latency_ms": "#000000",  # Black for SDPA C++
-            "sdpa_py_latency_ms": "#444444",  # Dark gray for SDPA Python for better differentiation
+            "pal_cpp_latency_ms": styles["PAL_CPP_COLOR"],
+            "pal_py_latency_ms": styles["PAL_PY_COLOR"],
+            "sdpa_cpp_latency_ms": styles["SDPA_CPP_COLOR"],
+            "sdpa_py_latency_ms": styles["SDPA_PY_COLOR"],
         }
 
         # Define labels
         labels = {
-            "pal_cpp_latency_ms": r"$\mathbf{Paged\ Attention\ (C++)}$",
-            "pal_py_latency_ms": r"$\mathbf{Paged\ Attention\ (Python)}$",
-            "sdpa_cpp_latency_ms": "MLX SDPA (C++)",
-            "sdpa_py_latency_ms": "MLX SDPA (Python)",
+            "pal_cpp_latency_ms": styles["PAL_CPP_LABEL"],
+            "pal_py_latency_ms": styles["PAL_PY_LABEL"],
+            "sdpa_cpp_latency_ms": styles["SDPA_CPP_LABEL"],
+            "sdpa_py_latency_ms": styles["SDPA_PY_LABEL"],
         }
 
         # Define bar width and positions
@@ -1113,19 +1220,32 @@ def plot_model_configs_latency(df: pd.DataFrame, output_dir: Path) -> dict[str, 
                     )
 
         # Set x-axis tick labels
-        plt.xticks(positions, plot_df["model_config_name"].tolist(), rotation=45, ha="right", fontsize=10)
+        plt.xticks(
+            positions,
+            plot_df["model_config_name"].tolist(),
+            rotation=45,
+            ha="right",
+            fontsize=styles["TICK_LABEL_FONTSIZE"],
+        )
 
         # Set plot attributes with refined styling
-        plt.title("Paged Attention vs. MLX SDPA: Model Configuration Latencies", fontsize=16, fontweight="bold")
-        plt.xlabel("Model Configuration", fontsize=14)
-        plt.ylabel("Mean Latency (ms)", fontsize=14)
-        plt.grid(True, axis="y", ls="-", alpha=0.2, color="lightgray")
+        plt.title(
+            "Paged Attention vs. MLX SDPA: Model Configuration Latencies",
+            fontsize=styles["TITLE_FONTSIZE"],
+            fontweight=styles["TITLE_FONTWEIGHT"],
+        )
+        plt.xlabel("Model Configuration", fontsize=styles["AXIS_LABEL_FONTSIZE"])
+        plt.ylabel("Mean Latency (ms)", fontsize=styles["AXIS_LABEL_FONTSIZE"])
+        plt.grid(True, axis="y", ls=styles["GRID_LINESTYLE"], alpha=styles["GRID_ALPHA"], color=styles["GRID_COLOR"])
 
         # Improve tick label readability
-        plt.tick_params(axis="both", which="major", labelsize=12)
+        plt.tick_params(axis="both", which="major", labelsize=styles["TICK_LABEL_FONTSIZE"])
 
         # Add some padding at the top for the ratios
         plt.ylim(0, plt.ylim()[1] * 1.2)
+
+        # Add legend with consistent styling
+        plt.legend(loc="best", fontsize=styles["LEGEND_FONTSIZE"])
 
         plt.tight_layout()
 
@@ -2198,6 +2318,8 @@ def extract_and_normalize_parameters(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def main():
+    """Entry point for command-line execution."""
+
     parser = argparse.ArgumentParser(description="Analyze benchmark results from Python and C++ benchmarks.")
     parser.add_argument(
         "--results-dir", type=Path, default=Path(".benchmarks"), help="Directory containing benchmark JSON output files"
@@ -2310,7 +2432,7 @@ def main():
     if plot_filenames:
         print(f"✅ Generated plots: {', '.join(plot_filenames.values())}")
     else:
-        print("⚠️ No plots were generated - check debug output for errors")
+        print("⚠ No plots generated")
     print("✅ Generated JSON report: results.json")
 
 
