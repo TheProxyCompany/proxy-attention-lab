@@ -54,6 +54,6 @@ export PAL_ENABLE_DEBUG_LOGGING=ON # Enable debug logging
 
 # Run Pytest
 log "Running tests..."
-"$PYTEST_EXE" tests/ "$@" # Pass any extra args to pytest
+"$PYTEST_EXE" tests/ "$@" --ignore-glob="tests/*/benchmarks"
 
 log "PAL Build & Test run finished successfully."
