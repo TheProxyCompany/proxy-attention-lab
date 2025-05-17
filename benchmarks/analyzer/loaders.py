@@ -75,21 +75,18 @@ def parse_google_benchmark(json_file: Path) -> list[dict]:
         data = json.load(f)
     rows = []
 
-    # Get default source based on filename for fallback purposes
-    filename_stem = json_file.stem  # e.g., "cpp_pal_BM_PAL_LatencyVsSeqLen_20250517_103000"
+    # Determine a fallback source based on filename. This is only used when we
+    # cannot infer the source from the benchmark name itself.
+    filename_stem = json_file.stem
     default_source = None
     if filename_stem.startswith("cpp_pal_"):
         default_source = "cpp_pal"
     elif filename_stem.startswith("cpp_sdpa_"):
         default_source = "cpp_sdpa"
-    elif filename_stem.startswith("cpp_all_"):
-        # For combined files, there is no clear default
-        default_source = None
-    else:
-        # Fallback to basic detection if filename format doesn't match expected pattern
-        default_source = (
-            "cpp_pal" if "pal" in filename_stem.lower() and "sdpa" not in filename_stem.lower() else "cpp_sdpa"
-        )
+    elif "pal" in filename_stem.lower() and "sdpa" not in filename_stem.lower():
+        default_source = "cpp_pal"
+    elif "sdpa" in filename_stem.lower():
+        default_source = "cpp_sdpa"
 
     for bench in data.get("benchmarks", []):
         if bench.get("run_type") != "aggregate" or bench.get("aggregate_name") != "mean":
@@ -148,30 +145,29 @@ def parse_pytest_benchmark(json_file: Path) -> list[dict]:
         data = json.load(f)
     rows = []
 
-    # Determine source based on filename
-    filename_stem = json_file.stem  # e.g., "py_pal_test_pal_latency_vs_seq_len_20250517_103000"
+    # Determine a fallback source from the filename. Individual benchmark entries
+    # may override this based on their name.
+    filename_stem = json_file.stem
+    default_source = None
     if filename_stem.startswith("py_pal_") or filename_stem.startswith("python_pal_"):
-        source = "python_pal"
+        default_source = "python_pal"
     elif filename_stem.startswith("py_sdpa_") or filename_stem.startswith("python_sdpa_"):
-        source = "python_sdpa"
-    elif filename_stem.startswith("py_all_") or filename_stem.startswith("python_all_"):
-        # Default based on test_pal or test_sdpa in the name
-        source = "python_pal" if "test_pal_" in filename_stem else "python_sdpa"
-    else:
-        # Fallback to more basic detection if filename format doesn't match expected pattern
-        if "pal" in filename_stem.lower() and "sdpa" not in filename_stem.lower():
-            source = "python_pal"
-        else:
-            source = "python_sdpa"
+        default_source = "python_sdpa"
+    elif "pal" in filename_stem.lower() and "sdpa" not in filename_stem.lower():
+        default_source = "python_pal"
+    elif "sdpa" in filename_stem.lower():
+        default_source = "python_sdpa"
 
     for bench in data.get("benchmarks", []):
         name = bench.get("name", "")
 
-        # Auto-detect source from test name
+        # Determine source for this benchmark based on its name
         if "test_pal_" in name:
-            source = "python_pal"
+            bench_source = "python_pal"
         elif "test_sdpa_" in name:
-            source = "python_sdpa"
+            bench_source = "python_sdpa"
+        else:
+            bench_source = default_source or "python_pal"
 
         # Extract kernel name from benchmark name or filename
         kernel_name = extract_kernel_name(filename_stem, name)
@@ -204,7 +200,7 @@ def parse_pytest_benchmark(json_file: Path) -> list[dict]:
         row = {
             config.COL_BENCHMARK_NAME_BASE: base_name,
             "full_name": name,
-            config.COL_SOURCE: source,
+            config.COL_SOURCE: bench_source,
             config.COL_KERNEL_NAME: kernel_name,  # Add the extracted kernel name
             config.COL_MEAN_LATENCY: stats.get("mean", 0) * 1000.0,  # Convert to ms
             config.COL_PARAMS_STR: params_str,

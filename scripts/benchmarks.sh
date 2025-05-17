@@ -19,7 +19,7 @@ BUILD_DIR="build" # CMake build directory
 UV_EXECUTABLE_PATH=""  # Will be detected
 
 # Directories for benchmark discovery
-PYTHON_BENCHMARK_ROOT_DIR="tests" # Root for Python benchmark discovery
+PYTHON_BENCHMARK_ROOT_DIR="benchmarks" # Root for Python benchmark discovery
 CPP_BENCHMARK_BUILD_ROOT_DIR="build/tests" # Root for C++ benchmark executable discovery
 BENCHMARK_OUTPUT_ROOT=".benchmarks" # Output directory for benchmark results
 
@@ -202,23 +202,23 @@ run_python_benchmarks() {
 
     python_benchmark_files=()
     if [ -n "${kernel}" ]; then
-        if [ -d "tests/${kernel}/benchmarks/python" ]; then
+        if [ -d "${PYTHON_BENCHMARK_ROOT_DIR}/${kernel}/python" ]; then
             while IFS= read -r -d $'\0' file; do
                 python_benchmark_files+=("$file")
-            done < <(find "tests/${kernel}/benchmarks/python" -maxdepth 1 -type f -name "*.py" -print0)
+            done < <(find "${PYTHON_BENCHMARK_ROOT_DIR}/${kernel}/python" -maxdepth 1 -type f -name "*.py" -print0)
         else
             log "WARNING: No Python benchmarks found for kernel '${kernel}'"
         fi
     else
         while IFS= read -r -d $'\0' file; do
             python_benchmark_files+=("$file")
-        done < <(find "${PYTHON_BENCHMARK_ROOT_DIR}" -type d -path "*/benchmarks/python" -print0 | while IFS= read -r -d $'\0' dir; do
+        done < <(find "${PYTHON_BENCHMARK_ROOT_DIR}" -type d -path "*/python" -print0 | while IFS= read -r -d $'\0' dir; do
             find "$dir" -maxdepth 1 -type f -name "*.py" -print0
         done)
     fi
 
     if [ ${#python_benchmark_files[@]} -eq 0 ]; then
-        log "No Python benchmark files found in any 'benchmark/python' subfolder under '${PYTHON_BENCHMARK_ROOT_DIR}'."
+        log "No Python benchmark files found in any '*/python' subfolder under '${PYTHON_BENCHMARK_ROOT_DIR}'."
     else
         for benchmark_file in "${python_benchmark_files[@]}"; do
             hr

@@ -64,9 +64,15 @@ def _extract_cpp_pal_latency_vs_seq_len(params_str: str) -> dict[str, Any]:
         result["num_query_items"] = _parse_int(parts[0])
         result["seq_len"] = _parse_int(parts[1])
     elif len(parts) == 1:
-        # Only seq_len provided
         result["seq_len"] = _parse_int(parts[0])
         result["num_query_items"] = config.DEFAULT_NUM_QUERY_ITEMS
+
+    # Fill remaining fixed parameters
+    result.setdefault("head_dim", config.DEFAULT_HEAD_DIM)
+    result.setdefault("num_q_heads", config.DEFAULT_NUM_Q_HEADS)
+    result.setdefault("num_kv_heads", config.DEFAULT_NUM_KV_HEADS)
+    result.setdefault("tokens_per_page", config.DEFAULT_TOKENS_PER_PAGE)
+    result.setdefault("num_sequences_in_batch", config.DEFAULT_NUM_SEQUENCES_IN_BATCH)
 
     return result
 
@@ -82,9 +88,14 @@ def _extract_cpp_pal_latency_vs_head_dim(params_str: str) -> dict[str, Any]:
         result["num_query_items"] = _parse_int(parts[0])
         result["head_dim"] = _parse_int(parts[1])
     elif len(parts) == 1:
-        # Only head_dim provided
         result["head_dim"] = _parse_int(parts[0])
         result["num_query_items"] = config.DEFAULT_NUM_QUERY_ITEMS
+
+    result.setdefault("seq_len", config.DEFAULT_SEQ_LEN)
+    result.setdefault("num_q_heads", config.DEFAULT_NUM_Q_HEADS)
+    result.setdefault("num_kv_heads", config.DEFAULT_NUM_KV_HEADS)
+    result.setdefault("tokens_per_page", config.DEFAULT_TOKENS_PER_PAGE)
+    result.setdefault("num_sequences_in_batch", config.DEFAULT_NUM_SEQUENCES_IN_BATCH)
 
     return result
 
@@ -98,6 +109,13 @@ def _extract_cpp_pal_latency_vs_num_items(params_str: str) -> dict[str, Any]:
     parts = params_str.split("/")
     if len(parts) >= 1:
         result["num_query_items"] = _parse_int(parts[0])
+
+    result.setdefault("seq_len", config.DEFAULT_SEQ_LEN)
+    result.setdefault("head_dim", config.DEFAULT_HEAD_DIM)
+    result.setdefault("num_q_heads", config.DEFAULT_NUM_Q_HEADS)
+    result.setdefault("num_kv_heads", config.DEFAULT_NUM_KV_HEADS)
+    result.setdefault("tokens_per_page", config.DEFAULT_TOKENS_PER_PAGE)
+    result.setdefault("num_sequences_in_batch", config.DEFAULT_NUM_SEQUENCES_IN_BATCH)
 
     return result
 
@@ -113,9 +131,12 @@ def _extract_cpp_sdpa_latency_vs_seq_len(params_str: str) -> dict[str, Any]:
         result["batch_size"] = _parse_int(parts[0])
         result["seq_len"] = _parse_int(parts[1])
     elif len(parts) == 1:
-        # Only seq_len provided
         result["seq_len"] = _parse_int(parts[0])
         result["batch_size"] = config.DEFAULT_BATCH_SIZE
+
+    result.setdefault("head_dim", config.DEFAULT_HEAD_DIM)
+    result.setdefault("num_q_heads", config.DEFAULT_NUM_Q_HEADS)
+    result.setdefault("num_kv_heads", config.DEFAULT_NUM_KV_HEADS)
 
     return result
 
@@ -131,9 +152,12 @@ def _extract_cpp_sdpa_latency_vs_head_dim(params_str: str) -> dict[str, Any]:
         result["batch_size"] = _parse_int(parts[0])
         result["head_dim"] = _parse_int(parts[1])
     elif len(parts) == 1:
-        # Only head_dim provided
         result["head_dim"] = _parse_int(parts[0])
         result["batch_size"] = config.DEFAULT_BATCH_SIZE
+
+    result.setdefault("seq_len", config.DEFAULT_SEQ_LEN)
+    result.setdefault("num_q_heads", config.DEFAULT_NUM_Q_HEADS)
+    result.setdefault("num_kv_heads", config.DEFAULT_NUM_KV_HEADS)
 
     return result
 
@@ -147,6 +171,11 @@ def _extract_cpp_sdpa_latency_vs_num_items(params_str: str) -> dict[str, Any]:
     parts = params_str.split("/")
     if len(parts) >= 1:
         result["batch_size"] = _parse_int(parts[0])
+
+    result.setdefault("seq_len", config.DEFAULT_SEQ_LEN)
+    result.setdefault("head_dim", config.DEFAULT_HEAD_DIM)
+    result.setdefault("num_q_heads", config.DEFAULT_NUM_Q_HEADS)
+    result.setdefault("num_kv_heads", config.DEFAULT_NUM_KV_HEADS)
 
     return result
 
@@ -166,6 +195,8 @@ def _extract_python_pal_latency_vs_seq_len(params_str: str) -> dict[str, Any]:
     # Add default values for other parameters
     result["num_query_items"] = config.DEFAULT_NUM_QUERY_ITEMS
     result["head_dim"] = config.DEFAULT_HEAD_DIM
+    result["tokens_per_page"] = config.DEFAULT_TOKENS_PER_PAGE
+    result["num_sequences_in_batch"] = config.DEFAULT_NUM_SEQUENCES_IN_BATCH
 
     return result
 
@@ -185,6 +216,8 @@ def _extract_python_pal_latency_vs_head_dim(params_str: str) -> dict[str, Any]:
     # Add default values for other parameters
     result["num_query_items"] = config.DEFAULT_NUM_QUERY_ITEMS
     result["seq_len"] = config.DEFAULT_SEQ_LEN
+    result["tokens_per_page"] = config.DEFAULT_TOKENS_PER_PAGE
+    result["num_sequences_in_batch"] = config.DEFAULT_NUM_SEQUENCES_IN_BATCH
 
     return result
 
@@ -204,6 +237,8 @@ def _extract_python_pal_latency_vs_query_items(params_str: str) -> dict[str, Any
     # Add default values for other parameters
     result["head_dim"] = config.DEFAULT_HEAD_DIM
     result["seq_len"] = config.DEFAULT_SEQ_LEN
+    result["tokens_per_page"] = config.DEFAULT_TOKENS_PER_PAGE
+    result["num_sequences_in_batch"] = config.DEFAULT_NUM_SEQUENCES_IN_BATCH
 
     return result
 
@@ -223,6 +258,7 @@ def _extract_python_sdpa_latency_vs_seq_len(params_str: str) -> dict[str, Any]:
     # Add default values for other parameters
     result["batch_size"] = config.DEFAULT_BATCH_SIZE
     result["num_q_heads"] = config.DEFAULT_NUM_Q_HEADS
+    result["num_kv_heads"] = config.DEFAULT_NUM_KV_HEADS
     result["head_dim"] = config.DEFAULT_HEAD_DIM
 
     return result
@@ -243,6 +279,7 @@ def _extract_python_sdpa_latency_vs_head_dim(params_str: str) -> dict[str, Any]:
     # Add default values for other parameters
     result["batch_size"] = config.DEFAULT_BATCH_SIZE
     result["num_q_heads"] = config.DEFAULT_NUM_Q_HEADS
+    result["num_kv_heads"] = config.DEFAULT_NUM_KV_HEADS
     result["seq_len"] = config.DEFAULT_SEQ_LEN
 
     return result
@@ -262,6 +299,7 @@ def _extract_python_sdpa_latency_vs_batch_size(params_str: str) -> dict[str, Any
 
     # Add default values for other parameters
     result["num_q_heads"] = config.DEFAULT_NUM_Q_HEADS
+    result["num_kv_heads"] = config.DEFAULT_NUM_KV_HEADS
     result["head_dim"] = config.DEFAULT_HEAD_DIM
     result["seq_len"] = config.DEFAULT_SEQ_LEN
 
@@ -713,13 +751,16 @@ def extract_and_normalize_parameters(df: pd.DataFrame) -> pd.DataFrame:
         for param_name, param_value in extracted_params.items():
             df.at[idx, param_name] = param_value
 
+        # Re-fetch the updated row for calculations
+        updated_row = df.loc[idx].to_dict()  # type: ignore[call-overload]
+
         # Calculate throughput if not already present
-        throughput = _calculate_throughput(row.to_dict())
+        throughput = _calculate_throughput(updated_row)
         if throughput is not None:
             df.at[idx, config.COL_THROUGHPUT] = throughput
 
         # Calculate effective items (for fair comparison between PAL and SDPA)
-        effective_items = _calculate_effective_items(row.to_dict())
+        effective_items = _calculate_effective_items(updated_row)
         if effective_items is not None:
             df.at[idx, "effective_items"] = effective_items
 
