@@ -223,4 +223,9 @@ def load_all_results(json_files: list[Path]) -> pd.DataFrame:
         frames.append(pd.DataFrame(rows))
     if not frames:
         return pd.DataFrame()
-    return pd.concat(frames, ignore_index=True)
+    df = pd.concat(frames, ignore_index=True)
+
+    if config.COL_KERNEL_NAME not in df.columns:
+        logger.warning("No COL_KERNEL_NAME column found in loaded benchmark data; results may be miscategorized")
+
+    return df

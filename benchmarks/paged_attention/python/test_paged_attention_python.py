@@ -61,9 +61,12 @@ from proxy_attention_lab import paged_attention
 
 logger = logging.getLogger(__name__)
 
+# Baseline number of query vectors processed in each benchmark
+BASELINE_QUERY_VECTORS = 64 * 128  # 64 sequences of 128 tokens each
+
 # Define baseline configuration for benchmarks
 BASELINE_CONFIG = {
-    "num_query_items": 64,  # Total items dispatched to kernel
+    "num_query_items": BASELINE_QUERY_VECTORS,  # Total query vectors (tokens * heads)
     "num_q_heads": 1,
     "num_kv_heads": 1,
     "head_dim": 128,
@@ -74,8 +77,10 @@ BASELINE_CONFIG = {
 }
 
 # Define baseline configuration for SDPA benchmarks
+# This matches BASELINE_QUERY_VECTORS when seq_len * batch_size * num_q_heads
+# equals BASELINE_QUERY_VECTORS.
 BASELINE_CONFIG_FOR_SDPA = {
-    "batch_size": 64,  # Number of sequences in SDPA batch
+    "batch_size": 64,  # 64 sequences
     "num_q_heads": 1,
     "num_kv_heads": 1,
     "head_dim": 128,
@@ -288,8 +293,14 @@ def test_sdpa_latency_vs_seq_len(benchmark, seq_len_val):
         seq_len_val: sequence length value to test
     """
     # Create test parameters from baseline with specified sequence length
+    # Adjust batch_size so that the total number of query vectors remains
+    # constant across the sweep.
     params = BASELINE_CONFIG_FOR_SDPA.copy()
     params["seq_len"] = seq_len_val
+    total_vectors = BASELINE_QUERY_VECTORS
+    params["batch_size"] = total_vectors // (seq_len_val * params["num_q_heads"])
+    if params["batch_size"] < 1:
+        pytest.skip("Configuration would process fewer than one sequence")
 
     # Setup input tensors (evaluated during setup)
     q, k, v, scale, mask = setup_sdpa_benchmark_inputs(params)
@@ -432,9 +443,12 @@ def test_sdpa_latency_vs_batch_size(benchmark, batch_size_val):
         benchmark: pytest-benchmark fixture for performance measurement
         batch_size_val: batch size to test
     """
-    # Create test parameters from baseline with specified batch size
+    # Create test parameters from baseline with specified batch size.
+    # Use seq_len=1 so that the batch size directly represents the number of
+    # query vectors, matching the PAL batch-size sweep.
     params = BASELINE_CONFIG_FOR_SDPA.copy()
     params["batch_size"] = batch_size_val
+    params["seq_len"] = 1
 
     # Setup input tensors (evaluated during setup)
     q, k, v, scale, mask = setup_sdpa_benchmark_inputs(params)

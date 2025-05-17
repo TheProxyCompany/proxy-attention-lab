@@ -837,7 +837,7 @@ def _calculate_effective_items(row: dict[str, Any]) -> int | None:
 
     This is a critical measure for comparing different kernels:
     - For PAL: effective_items = num_query_items
-    - For SDPA: effective_items = batch_size * num_q_heads
+    - For SDPA: effective_items = batch_size * num_q_heads * seq_len
 
     Both represent the total number of query vectors processed by the attention kernel.
     """
@@ -856,18 +856,26 @@ def _calculate_effective_items(row: dict[str, Any]) -> int | None:
         return 0
 
     elif "sdpa" in source or kernel_name == "sdpa":
-        # For SDPA, effective items is batch_size * num_q_heads
+        # For SDPA, effective items is batch_size * num_q_heads * seq_len
         batch_size = row.get("batch_size", 0)
         num_q_heads = row.get("num_q_heads", config.DEFAULT_NUM_Q_HEADS)
+        seq_len = row.get("seq_len", config.DEFAULT_SEQ_LEN)
 
-        if batch_size is not None and num_q_heads is not None and batch_size > 0 and num_q_heads > 0:
-            effective = batch_size * num_q_heads
+        if (
+            batch_size is not None
+            and num_q_heads is not None
+            and seq_len is not None
+            and batch_size > 0
+            and num_q_heads > 0
+            and seq_len > 0
+        ):
+            effective = batch_size * num_q_heads * seq_len
             logger.debug(
-                f"SDPA effective_items for {full_name}: {effective} (batch_size={batch_size} * num_q_heads={num_q_heads})"
+                f"SDPA effective_items for {full_name}: {effective} (batch_size={batch_size} * num_q_heads={num_q_heads} * seq_len={seq_len})"
             )
             return effective
 
-        logger.warning(f"SDPA benchmark without valid batch_size or num_q_heads: {full_name}")
+        logger.warning(f"SDPA benchmark without valid batch_size, num_q_heads, or seq_len: {full_name}")
         return 0
 
     logger.warning(f"Unknown source/kernel for effective_items calculation: {source}/{kernel_name} in {full_name}")

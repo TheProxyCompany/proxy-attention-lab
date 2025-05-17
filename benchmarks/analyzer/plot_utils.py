@@ -38,8 +38,8 @@ def get_plot_styles() -> dict[str, str | float]:
     styles["GRID_LINESTYLE"] = ":"
     styles["PAL_CPP_LABEL"] = r"$\mathbf{Paged\ Attention\ (C++)}$"
     styles["PAL_PY_LABEL"] = r"$\mathbf{Paged\ Attention\ (Python)}$"
-    styles["SDPA_CPP_LABEL"] = "MLX SDPA (C++)"
-    styles["SDPA_PY_LABEL"] = "MLX SDPA (Python)"
+    styles["SDPA_CPP_LABEL"] = r"$\mathbf{SDPA\ (C++)}$"
+    styles["SDPA_PY_LABEL"] = r"$\mathbf{SDPA\ (Python)}$"
     styles["PAL_BAR_COLOR"] = "#024645"
     styles["SDPA_BAR_COLOR"] = "#000000"
     return styles
