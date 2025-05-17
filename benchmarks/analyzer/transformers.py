@@ -580,47 +580,66 @@ def _calculate_throughput(row: dict[str, Any]) -> float | None:
         # Already have throughput value
         return row[config.COL_THROUGHPUT]
 
-    # Calculate based on source and available parameters
-    source = row.get(config.COL_SOURCE, "")
-    mean_latency_ms = row.get(config.COL_MEAN_LATENCY, 0)
+    # Get the effective items if already calculated
+    effective_items = row.get("effective_items")
+    if effective_items is None:
+        # Calculate effective items based on source
+        effective_items = _calculate_effective_items(row)
 
+    # If we still don't have effective items, we can't calculate throughput
+    if effective_items is None or effective_items <= 0:
+        return None
+
+    # Get the mean latency
+    mean_latency_ms = row.get(config.COL_MEAN_LATENCY, 0)
     if mean_latency_ms <= 0:
         return None
 
-    # Convert ms to seconds for throughput calculation
+    # Calculate throughput: items per second = items / (latency in seconds)
     mean_latency_s = mean_latency_ms / 1000.0
+    throughput = effective_items / mean_latency_s
 
-    if "pal" in source:
-        # For PAL, use num_query_items
-        num_query_items = row.get("num_query_items", 0)
-        if num_query_items is not None and num_query_items > 0:
-            return num_query_items / mean_latency_s
-    elif "sdpa" in source:
-        # For SDPA, use batch_size * num_q_heads
-        batch_size = row.get("batch_size", 0)
-        num_q_heads = row.get("num_q_heads", config.DEFAULT_NUM_Q_HEADS)
-        if batch_size is not None and num_q_heads is not None and batch_size > 0 and num_q_heads > 0:
-            return (batch_size * num_q_heads) / mean_latency_s
+    logger.debug(f"Calculated throughput for {row.get('full_name', '')}: {throughput:.2f} items/sec")
+    logger.debug(f"  effective_items={effective_items}, mean_latency_ms={mean_latency_ms:.2f}")
 
-    return None
+    return throughput
 
 
 def _calculate_effective_items(row: dict[str, Any]) -> int | None:
-    """Calculate effective items for fair comparison between PAL and SDPA."""
-    source = row.get(config.COL_SOURCE, "")
+    """
+    Calculate effective items for fair comparison between PAL and SDPA.
 
-    if "pal" in source:
+    This is a critical measure for comparing different kernels:
+    - For PAL: effective_items = num_query_items
+    - For SDPA: effective_items = batch_size * num_q_heads
+
+    Both represent the total number of query vectors processed by the attention kernel.
+    """
+    source = row.get(config.COL_SOURCE, "")
+    kernel_name = row.get(config.COL_KERNEL_NAME, "")
+
+    # Use both source and kernel_name for more reliable detection
+    if "pal" in source or kernel_name == "paged_attention":
         # For PAL, effective items is num_query_items
         num_query_items = row.get("num_query_items", 0)
-        return num_query_items if num_query_items is not None else 0
-    elif "sdpa" in source:
+        if num_query_items is not None and num_query_items > 0:
+            return num_query_items
+        logger.warning(f"PAL benchmark without valid num_query_items: {row.get('full_name', '')}")
+        return 0
+
+    elif "sdpa" in source or kernel_name == "sdpa":
         # For SDPA, effective items is batch_size * num_q_heads
         batch_size = row.get("batch_size", 0)
         num_q_heads = row.get("num_q_heads", config.DEFAULT_NUM_Q_HEADS)
+
         if batch_size is not None and num_q_heads is not None and batch_size > 0 and num_q_heads > 0:
-            return batch_size * num_q_heads
+            effective = batch_size * num_q_heads
+            return effective
+
+        logger.warning(f"SDPA benchmark without valid batch_size or num_q_heads: {row.get('full_name', '')}")
         return 0
 
+    logger.warning(f"Unknown source/kernel for effective_items calculation: {source}/{kernel_name}")
     return None
 
 
@@ -736,16 +755,56 @@ def extract_and_normalize_parameters(df: pd.DataFrame) -> pd.DataFrame:
         source = row[config.COL_SOURCE]
         kernel_name = row.get(config.COL_KERNEL_NAME, "unknown")
 
+        logger.debug(f"Processing benchmark: name={base_name}, source={source}, kernel={kernel_name}")
+
         # Get the appropriate parser function for this benchmark
         parser_func = _get_parser_for_benchmark(kernel_name, source, base_name)
 
-        # Extract parameters using the parser function
+        # Extract varying parameters using the parser function
         extracted_params = parser_func(params_str)
+        logger.debug(f"Extracted varying parameters: {extracted_params}")
 
         # Additional processing for model config benchmarks
         if "model_configs" in base_name or "ModelConfig" in base_name:
             model_config_params = _extract_model_config_params(row.to_dict())
+            logger.debug(f"Extracted model config parameters: {model_config_params}")
             extracted_params.update(model_config_params)
+        else:
+            # For non-model-config benchmarks, ensure all standard parameters have defaults
+            # If not already populated by the parser_func
+            # This ensures a complete set of parameters for each benchmark type
+
+            if "pal" in source or kernel_name == "paged_attention":
+                # Fill in standard PAL parameters
+                if "num_query_items" not in extracted_params:
+                    extracted_params["num_query_items"] = config.DEFAULT_NUM_QUERY_ITEMS
+                if "head_dim" not in extracted_params:
+                    extracted_params["head_dim"] = config.DEFAULT_HEAD_DIM
+                if "seq_len" not in extracted_params:
+                    extracted_params["seq_len"] = config.DEFAULT_SEQ_LEN
+                if "num_q_heads" not in extracted_params:
+                    extracted_params["num_q_heads"] = config.DEFAULT_NUM_Q_HEADS
+                if "num_kv_heads" not in extracted_params:
+                    extracted_params["num_kv_heads"] = config.DEFAULT_NUM_KV_HEADS
+                if "tokens_per_page" not in extracted_params:
+                    extracted_params["tokens_per_page"] = config.DEFAULT_TOKENS_PER_PAGE
+                if "num_sequences_in_batch" not in extracted_params:
+                    extracted_params["num_sequences_in_batch"] = config.DEFAULT_NUM_SEQUENCES_IN_BATCH
+
+            elif "sdpa" in source or kernel_name == "sdpa":
+                # Fill in standard SDPA parameters
+                if "batch_size" not in extracted_params:
+                    extracted_params["batch_size"] = config.DEFAULT_BATCH_SIZE
+                if "head_dim" not in extracted_params:
+                    extracted_params["head_dim"] = config.DEFAULT_HEAD_DIM
+                if "seq_len" not in extracted_params:
+                    extracted_params["seq_len"] = config.DEFAULT_SEQ_LEN
+                if "num_q_heads" not in extracted_params:
+                    extracted_params["num_q_heads"] = config.DEFAULT_NUM_Q_HEADS
+                if "num_kv_heads" not in extracted_params:
+                    extracted_params["num_kv_heads"] = config.DEFAULT_NUM_KV_HEADS
+
+        logger.debug(f"Final parameters after defaults: {extracted_params}")
 
         # Update the DataFrame with extracted parameters
         for param_name, param_value in extracted_params.items():
@@ -754,15 +813,17 @@ def extract_and_normalize_parameters(df: pd.DataFrame) -> pd.DataFrame:
         # Re-fetch the updated row for calculations
         updated_row = df.loc[idx].to_dict()  # type: ignore[call-overload]
 
+        # Calculate effective items (for fair comparison between PAL and SDPA)
+        # Important: Calculate effective_items before throughput
+        effective_items = _calculate_effective_items(updated_row)
+        if effective_items is not None:
+            df.at[idx, "effective_items"] = effective_items
+            updated_row["effective_items"] = effective_items
+
         # Calculate throughput if not already present
         throughput = _calculate_throughput(updated_row)
         if throughput is not None:
             df.at[idx, config.COL_THROUGHPUT] = throughput
-
-        # Calculate effective items (for fair comparison between PAL and SDPA)
-        effective_items = _calculate_effective_items(updated_row)
-        if effective_items is not None:
-            df.at[idx, "effective_items"] = effective_items
 
     # Ensure all relevant columns have proper numeric dtypes
     numeric_cols = [

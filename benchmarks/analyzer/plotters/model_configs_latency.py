@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -15,6 +16,10 @@ from benchmarks.analyzer.config import (
     COL_SOURCE,
     COL_THROUGHPUT,
 )
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 STYLES = plot_utils.get_plot_styles()
 
@@ -44,9 +49,27 @@ def plot(
 
     # Filter by kernel if specified
     if kernel_filter and COL_KERNEL_NAME in cfg_df.columns:
-        cfg_df = cfg_df[cfg_df[COL_KERNEL_NAME] == kernel_filter]
+        filtered_df = cfg_df[cfg_df[COL_KERNEL_NAME] == kernel_filter]
+        if filtered_df.empty:
+            logger.warning(f"No data found for kernel '{kernel_filter}' in model_configs_latency plot.")
+            return ""
+        cfg_df = filtered_df
 
     if cfg_df.empty:
+        logger.warning("No data available for model_configs_latency plot.")
+        return ""
+
+    # Log what we're working with
+    logger.debug(f"Model config benchmark sources: {cfg_df[COL_SOURCE].unique().tolist()}")
+    logger.debug(f"Model config names: {cfg_df['model_config_name'].unique().tolist()}")
+
+    # Check if we have enough data to plot
+    if len(cfg_df["model_config_name"].unique()) == 0:
+        logger.warning("No model configurations available to plot")
+        return ""
+
+    if len(cfg_df[COL_SOURCE].unique()) == 0:
+        logger.warning("No sources available in model configurations data")
         return ""
 
     # Create two plots: one for latency, one for throughput
@@ -56,12 +79,15 @@ def plot(
     model_configs = cfg_df["model_config_name"].unique()
     sources = cfg_df[COL_SOURCE].unique()
 
+    # Log what we're plotting
+    logger.info(f"Plotting model configs: {model_configs.tolist()} for sources: {sources.tolist()}")
+
     # Number of groups and bars
     n_configs = len(model_configs)
     n_sources = len(sources)
 
     # Set the width of a bar and positions of the bars
-    bar_width = 0.8 / n_sources
+    bar_width = 0.8 / max(1, n_sources)  # Avoid division by zero
     index = np.arange(n_configs)
 
     # Color mapping for sources
@@ -87,6 +113,13 @@ def plot(
     for i, source in enumerate(sources):
         source_data = cfg_df[cfg_df[COL_SOURCE] == source]
 
+        # Check if we have data for this source
+        if source_data.empty or len(source_data) == 0:
+            logger.warning(f"No data for source {source} in model configs")
+            continue
+
+        logger.debug(f"Processing model config data for source {source}: {len(source_data)} rows")
+
         # Create mapping from model config to latency/throughput for this source
         latency_map = {row["model_config_name"]: row[COL_MEAN_LATENCY] for _, row in source_data.iterrows()}
 
@@ -96,8 +129,23 @@ def plot(
             if pd.notna(row[COL_THROUGHPUT])
         }
 
+        # Check if we have latency data to plot
+        if not latency_map:
+            logger.warning(f"No latency data for source {source} in model configs")
+            continue
+
+        # Log the data we're plotting
+        logger.debug(f"Latency data for {source}: {latency_map}")
+        logger.debug(f"Throughput data for {source}: {throughput_map}")
+
         # Plot latency bars
         latency_values = [latency_map.get(config, np.nan) for config in model_configs]
+
+        # Skip if all values are NaN
+        if all(np.isnan(v) for v in latency_values):
+            logger.warning(f"All latency values are NaN for source {source}")
+            continue
+
         bars = ax_latency.bar(
             index + i * bar_width,
             latency_values,
@@ -110,8 +158,10 @@ def plot(
         )
 
         # Add value labels on top of bars
-        for _j, bar in enumerate(bars):
+        for j, bar in enumerate(bars):
             if not np.isnan(bar.get_height()):
+                config_name = model_configs[j] if j < len(model_configs) else "unknown"
+                logger.debug(f"Bar for {source} - {config_name}: {bar.get_height():.1f}")
                 ax_latency.text(
                     bar.get_x() + bar.get_width() / 2,
                     bar.get_height() + 0.1,
@@ -125,6 +175,12 @@ def plot(
         # Plot throughput bars if data exists
         if throughput_map:
             throughput_values = [throughput_map.get(config, np.nan) for config in model_configs]
+
+            # Skip if all values are NaN
+            if all(np.isnan(v) for v in throughput_values):
+                logger.warning(f"All throughput values are NaN for source {source}")
+                continue
+
             bars = ax_throughput.bar(
                 index + i * bar_width,
                 throughput_values,
@@ -137,8 +193,10 @@ def plot(
             )
 
             # Add value labels on top of bars
-            for _j, bar in enumerate(bars):
+            for j, bar in enumerate(bars):
                 if not np.isnan(bar.get_height()):
+                    config_name = model_configs[j] if j < len(model_configs) else "unknown"
+                    logger.debug(f"Throughput bar for {source} - {config_name}: {bar.get_height():.1f}")
                     ax_throughput.text(
                         bar.get_x() + bar.get_width() / 2,
                         bar.get_height() + 0.1,

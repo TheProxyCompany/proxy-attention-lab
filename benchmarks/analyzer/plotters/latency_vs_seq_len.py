@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -16,6 +17,10 @@ from benchmarks.analyzer.config import (
     COL_SOURCE,
     COL_THROUGHPUT,
 )
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 STYLES = plot_utils.get_plot_styles()
 
@@ -58,9 +63,14 @@ def plot(
 
     # Filter by kernel if specified
     if kernel_filter and COL_KERNEL_NAME in plot_df.columns:
-        plot_df = plot_df[plot_df[COL_KERNEL_NAME] == kernel_filter]
+        filtered_df = plot_df[plot_df[COL_KERNEL_NAME] == kernel_filter]
+        if filtered_df.empty:
+            logger.warning(f"No data found for kernel '{kernel_filter}' in latency_vs_seq_len plot.")
+            return ""
+        plot_df = filtered_df
 
     if plot_df.empty:
+        logger.warning("No data available for latency_vs_seq_len plot.")
         return ""
 
     # Create figure with two subplots: latency and throughput
@@ -100,6 +110,10 @@ def plot(
 
     # Plot latency for each source
     for src, group in plot_df.groupby(COL_SOURCE):
+        if len(group) < 2:
+            logger.warning(f"Not enough data points for source {src} in latency_vs_seq_len plot (found {len(group)})")
+            continue
+
         # Sort by sequence length
         group = group.sort_values("seq_len")
 
@@ -109,46 +123,79 @@ def plot(
             # Default style if source not in mapping
             source_style = {"color": "gray", "linestyle": "-", "linewidth": 2, "marker": "o", "label": src}
 
-        # Plot latency
-        ax_latency.plot(group["seq_len"], group[COL_MEAN_LATENCY], **source_style)
+        # Plot latency (check for valid data)
+        if not group[COL_MEAN_LATENCY].isna().all() and len(group["seq_len"].unique()) > 1:
+            ax_latency.plot(group["seq_len"], group[COL_MEAN_LATENCY], **source_style)
+        else:
+            logger.warning(f"Missing latency data for source {src} in latency_vs_seq_len plot")
 
         # Plot throughput if available
-        if COL_THROUGHPUT in group.columns and not group[COL_THROUGHPUT].isna().all():
+        if (
+            COL_THROUGHPUT in group.columns
+            and not group[COL_THROUGHPUT].isna().all()
+            and len(group["seq_len"].unique()) > 1
+        ):
             ax_throughput.plot(group["seq_len"], group[COL_THROUGHPUT], **source_style)
+        else:
+            logger.debug(f"Missing throughput data for source {src} in latency_vs_seq_len plot")
 
-    # Add reference lines
-    seq_lens = plot_df["seq_len"].unique()
-    if len(seq_lens) > 1:
+    # Add reference lines if we have enough data points
+    valid_data = plot_df[plot_df[COL_MEAN_LATENCY].notna()]
+    seq_lens = valid_data["seq_len"].unique()
+
+    if len(seq_lens) > 1 and not valid_data.empty:
         min_seq = min(seq_lens)
         max_seq = max(seq_lens)
 
-        # Linear reference line O(n)
-        x_linear = np.array([min_seq, max_seq])
-        scale_factor = min(plot_df[COL_MEAN_LATENCY]) / min_seq
-        y_linear = x_linear * scale_factor
+        # Find a suitable reference point for scaling
+        # Use the median point for more stability
+        ref_idx = valid_data["seq_len"].searchsorted(min_seq)
+        if ref_idx < len(valid_data):
+            ref_point = valid_data.iloc[ref_idx]
+            ref_latency = ref_point[COL_MEAN_LATENCY]
+            ref_seq_len = ref_point["seq_len"]
 
-        ax_latency.plot(
-            x_linear,
-            y_linear,
-            color=styles["REF_LINE_COLOR"],
-            linestyle=styles["REF_LINE_STYLE"],
-            linewidth=styles["REF_LINE_WIDTH"],
-            alpha=styles["REF_LINE_ALPHA"],
-            label="O(n)",
-        )
+            if ref_latency > 0 and ref_seq_len > 0:
+                # Linear reference line O(n)
+                x_linear = np.array([min_seq, max_seq])
+                scale_factor = ref_latency / ref_seq_len
+                y_linear = x_linear * scale_factor
 
-        # Quadratic reference line O(n²)
-        y_quadratic = x_linear**2 * (scale_factor / min_seq)
+                ax_latency.plot(
+                    x_linear,
+                    y_linear,
+                    color=styles["REF_LINE_COLOR"],
+                    linestyle=styles["REF_LINE_STYLE"],
+                    linewidth=styles["REF_LINE_WIDTH"],
+                    alpha=styles["REF_LINE_ALPHA"],
+                    label="O(n)",
+                )
 
-        ax_latency.plot(
-            x_linear,
-            y_quadratic,
-            color=styles["REF_LINE_COLOR"],
-            linestyle=":",
-            linewidth=styles["REF_LINE_WIDTH"],
-            alpha=styles["REF_LINE_ALPHA"],
-            label="O(n²)",
-        )
+                # Quadratic reference line O(n²)
+                y_quadratic = x_linear**2 * (scale_factor / ref_seq_len)
+
+                ax_latency.plot(
+                    x_linear,
+                    y_quadratic,
+                    color=styles["REF_LINE_COLOR"],
+                    linestyle=":",
+                    linewidth=styles["REF_LINE_WIDTH"],
+                    alpha=styles["REF_LINE_ALPHA"],
+                    label="O(n²)",
+                )
+
+                # Log-linear reference line O(n log n)
+                y_nlogn = x_linear * np.log2(x_linear) * (scale_factor / (ref_seq_len * np.log2(ref_seq_len)))
+
+                ax_latency.plot(
+                    x_linear,
+                    y_nlogn,
+                    color=styles["REF_LINE_COLOR"],
+                    linestyle="-.",
+                    linewidth=styles["REF_LINE_WIDTH"],
+                    alpha=styles["REF_LINE_ALPHA"],
+                    label="O(n log n)",
+                )
 
     # Set title based on whether we're filtering by kernel
     title_prefix = ""

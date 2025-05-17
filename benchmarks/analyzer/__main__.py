@@ -83,36 +83,69 @@ def main() -> None:
     kernel_filter = args.kernel
     if kernel_filter:
         logger.info(f"Filtering results for kernel: {kernel_filter}")
+        # Verify kernel exists in data before proceeding
+        if config.COL_KERNEL_NAME in df.columns:
+            kernels = df[config.COL_KERNEL_NAME].unique()
+            if kernel_filter not in kernels:
+                logger.warning(
+                    f"Warning: Selected kernel '{kernel_filter}' not found in data. Available kernels: {kernels.tolist()}"
+                )
+        else:
+            logger.warning(
+                f"Warning: No kernel_name column found in data, filter '{kernel_filter}' may not be applied correctly"
+            )
 
     # Plot latency vs sequence length
+    logger.info("Generating latency vs sequence length plot...")
     seq_len_plot = latency_vs_seq_len.plot(df, args.output_dir, styles, kernel_filter)
     if seq_len_plot:
         plot_filenames["latency_vs_seq_len"] = seq_len_plot
-        logger.info(f"Generated latency vs sequence length plot{' for ' + kernel_filter if kernel_filter else ''}")
+        logger.info(f"Successfully generated latency vs sequence length plot: {seq_len_plot}")
+    else:
+        logger.warning("Failed to generate latency vs sequence length plot - no suitable data found")
 
     # Plot latency vs head dimension
+    logger.info("Generating latency vs head dimension plot...")
     head_dim_plot = latency_vs_head_dim.plot(df, args.output_dir, styles, kernel_filter)
     if head_dim_plot:
         plot_filenames["latency_vs_head_dim"] = head_dim_plot
-        logger.info(f"Generated latency vs head dimension plot{' for ' + kernel_filter if kernel_filter else ''}")
+        logger.info(f"Successfully generated latency vs head dimension plot: {head_dim_plot}")
+    else:
+        logger.warning("Failed to generate latency vs head dimension plot - no suitable data found")
 
     # Plot latency vs effective items
+    logger.info("Generating latency vs effective items plot...")
     effective_items_plot = latency_vs_effective_items.plot(df, args.output_dir, styles, kernel_filter)
     if effective_items_plot:
         plot_filenames["latency_vs_effective_items"] = effective_items_plot
-        logger.info(f"Generated latency vs effective items plot{' for ' + kernel_filter if kernel_filter else ''}")
+        logger.info(f"Successfully generated latency vs effective items plot: {effective_items_plot}")
+    else:
+        logger.warning("Failed to generate latency vs effective items plot - no suitable data found")
 
     # Plot model configurations latency
+    logger.info("Generating model configurations plot...")
     model_plot = model_configs_latency.plot(df, args.output_dir, styles, kernel_filter)
     if model_plot:
         plot_filenames["model_configs_latency"] = model_plot
-        logger.info(f"Generated model configurations plot{' for ' + kernel_filter if kernel_filter else ''}")
+        logger.info(f"Successfully generated model configurations plot: {model_plot}")
+    else:
+        logger.warning("Failed to generate model configurations plot - no suitable data found")
 
     # Generate JSON report with summary metrics
     logger.info("Generating JSON report...")
     reporters.generate_json_report(df, args.output_dir, plot_filenames, kernel_filter)
 
-    logger.info("Analysis complete. Results saved to %s", args.output_dir)
+    # Log summary of what was generated
+    num_plots = len(plot_filenames)
+    kernel_info = f" for kernel '{kernel_filter}'" if kernel_filter else ""
+    logger.info(f"Analysis complete. Generated {num_plots} plots{kernel_info}.")
+    logger.info(f"Results saved to: {args.output_dir}/results.json")
+    if plot_filenames:
+        logger.info("Generated plots:")
+        for category, filename in plot_filenames.items():
+            logger.info(f"  - {category}: {filename}")
+    else:
+        logger.warning("No plots were generated - check logs for errors or data issues")
 
 
 if __name__ == "__main__":

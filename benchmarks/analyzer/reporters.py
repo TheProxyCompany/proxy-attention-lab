@@ -84,17 +84,23 @@ def _filter_for_plot_category(df: pd.DataFrame, category: str) -> pd.DataFrame:
     return pd.DataFrame()
 
 
-def _get_metric_records(df: pd.DataFrame, category: str) -> list[dict[str, Any]]:
-    """Convert filtered DataFrame to a list of metric records for the summary."""
+def _get_metric_records(df: pd.DataFrame, category: str) -> dict[str, list[dict[str, Any]]] | list[dict[str, Any]]:
+    """Convert filtered DataFrame to metrics records grouped by kernel (if available) or a flat list.
+
+    Returns:
+        Either a dictionary mapping kernel names to lists of records, or a flat list of records
+        if kernel information is not available.
+    """
     records = []
 
     # Get the filtered data for this category
     filtered_df = _filter_for_plot_category(df, category)
     if filtered_df.empty:
+        logger.warning(f"No data for category {category} in metric records")
         return records
 
     # Define the columns to include in the metrics
-    common_cols = [COL_SOURCE, COL_MEAN_LATENCY, COL_THROUGHPUT]
+    common_cols = [COL_SOURCE, COL_KERNEL_NAME, COL_MEAN_LATENCY, COL_THROUGHPUT]
 
     # Add category-specific columns
     if category == "latency_vs_seq_len":
@@ -128,7 +134,21 @@ def _get_metric_records(df: pd.DataFrame, category: str) -> list[dict[str, Any]]
     # Fill NaN values with Python None (better for JSON serialization)
     records = column_subset.replace({pd.NA: None}).to_dict(orient="records")
 
-    return records  # type: ignore[reportMismatchedReturnType]
+    # Group records by kernel if kernel_name is available
+    if COL_KERNEL_NAME in filtered_df.columns:
+        kernel_records = {}
+        for record in records:
+            kernel = record.get(COL_KERNEL_NAME, "unknown")
+            if kernel not in kernel_records:
+                kernel_records[kernel] = []
+            kernel_records[kernel].append(record)
+
+        # Convert to the final format if we have kernel information
+        if kernel_records:
+            return kernel_records
+
+    # Otherwise return flat list of records
+    return records
 
 
 def generate_json_report(
@@ -150,32 +170,40 @@ def generate_json_report(
     """
     report = {"summary_metrics": {}, "plot_files": plot_filenames}
 
+    # Store kernel filter in report if provided
+    if kernel_filter:
+        report["kernel_filter"] = kernel_filter
+        logger.info(f"Applying kernel filter: {kernel_filter}")
+
     # Filter by kernel if specified
+    filtered_df = df
     if kernel_filter and COL_KERNEL_NAME in df.columns:
         filtered_df = df[df[COL_KERNEL_NAME] == kernel_filter]
-        if not filtered_df.empty:
-            df = filtered_df
-            report["kernel_filter"] = kernel_filter
+        if filtered_df.empty:
+            logger.warning(f"No data found for kernel filter: {kernel_filter}")
+            # Fall back to using all data, but note this in the report
+            filtered_df = df
+            report["warning"] = f"No data found for kernel filter '{kernel_filter}'. Using all kernels."
 
-    if not df.empty:
+    if not filtered_df.empty:
         # Overall metrics
-        report["summary_metrics"]["rows"] = len(df)
+        report["summary_metrics"]["rows"] = len(filtered_df)
 
         # Count unique sources
-        if COL_SOURCE in df.columns:
-            sources = df[COL_SOURCE].unique().tolist()
+        if COL_SOURCE in filtered_df.columns:
+            sources = filtered_df[COL_SOURCE].unique().tolist()
             report["summary_metrics"]["sources"] = sources
             report["summary_metrics"]["source_count"] = len(sources)
 
         # Count unique benchmark types
-        if COL_BENCHMARK_NAME_BASE in df.columns:
-            benchmarks = df[COL_BENCHMARK_NAME_BASE].unique().tolist()
+        if COL_BENCHMARK_NAME_BASE in filtered_df.columns:
+            benchmarks = filtered_df[COL_BENCHMARK_NAME_BASE].unique().tolist()
             report["summary_metrics"]["benchmarks"] = benchmarks
             report["summary_metrics"]["benchmark_count"] = len(benchmarks)
 
         # Count unique kernels
-        if COL_KERNEL_NAME in df.columns:
-            kernels = df[COL_KERNEL_NAME].unique().tolist()
+        if COL_KERNEL_NAME in filtered_df.columns:
+            kernels = filtered_df[COL_KERNEL_NAME].unique().tolist()
             report["summary_metrics"]["kernels"] = kernels
             report["summary_metrics"]["kernel_count"] = len(kernels)
 
@@ -188,10 +216,21 @@ def generate_json_report(
         ]
 
         for category in plot_categories:
-            # Get data points for this category
-            metrics = _get_metric_records(df, category)
+            # Get data points for this category (organized by kernel or flat)
+            metrics = _get_metric_records(filtered_df, category)
             if metrics:
+                # Add metrics to the report
                 report["summary_metrics"][category] = metrics
+
+                # Log metrics structure for debugging
+                if isinstance(metrics, dict):
+                    logger.debug(f"Category {category} has metrics for kernels: {list(metrics.keys())}")
+                    logger.info(
+                        f"Added {sum(len(v) for v in metrics.values())} records for {len(metrics)} kernels in category {category}"
+                    )
+                else:
+                    logger.debug(f"Category {category} has {len(metrics)} metrics without kernel organization")
+                    logger.info(f"Added {len(metrics)} records in category {category}")
 
     # Write report to file
     try:

@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from pathlib import Path
 
 import pandas as pd
 
 from benchmarks.analyzer import config
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 def detect_format(json_file: Path) -> str:
@@ -93,21 +98,26 @@ def parse_google_benchmark(json_file: Path) -> list[dict]:
             continue
         name = bench.get("name", "")
 
-        # Determine source for each individual benchmark based on its name
-        # This ensures correct source assignment even if a single JSON contains both PAL and SDPA benchmarks
+        # Determine kernel_name and source directly from benchmark name for C++
+        # This ensures more accurate and consistent classification
+        # The benchmark name is more reliable than the filename for C++ google benchmarks
         if "BM_PAL_" in name:
+            kernel_name = "paged_attention"
             source = "cpp_pal"
         elif "BM_SDPA_" in name:
+            kernel_name = "sdpa"
             source = "cpp_sdpa"
         elif default_source:
-            # Use the default source if we can't determine from benchmark name
+            # Use the default source from filename
             source = default_source
+            # Extract kernel name from filename or benchmark name
+            kernel_name = extract_kernel_name(filename_stem, name)
         else:
             # Last resort fallback - should rarely happen
             source = "cpp_pal" if "pal" in name.lower() and "sdpa" not in name.lower() else "cpp_sdpa"
+            kernel_name = extract_kernel_name(filename_stem, name)
 
-        # Extract kernel name from benchmark name or filename
-        kernel_name = extract_kernel_name(filename_stem, name)
+        logger.debug(f"C++ benchmark: {name} → source={source}, kernel={kernel_name}")
 
         base_match = re.match(r"(?P<base>[^/]+)", name)
         base_name = base_match.group("base") if base_match else name
@@ -120,6 +130,7 @@ def parse_google_benchmark(json_file: Path) -> list[dict]:
             model_match = re.search(r"ModelConfig_([^/]+)", name)
             if model_match:
                 model_config_name = model_match.group(1)
+                logger.debug(f"Extracted C++ model config: {model_config_name} from {name}")
 
         row = {
             config.COL_BENCHMARK_NAME_BASE: base_name,
@@ -161,16 +172,24 @@ def parse_pytest_benchmark(json_file: Path) -> list[dict]:
     for bench in data.get("benchmarks", []):
         name = bench.get("name", "")
 
-        # Determine source for this benchmark based on its name
+        # Determine kernel_name and source directly from benchmark name for Python
+        # This ensures more accurate and consistent classification
         if "test_pal_" in name:
+            kernel_name = "paged_attention"
             bench_source = "python_pal"
         elif "test_sdpa_" in name:
+            kernel_name = "sdpa"
             bench_source = "python_sdpa"
+        elif default_source:
+            bench_source = default_source
+            # Extract kernel name from filename or benchmark name
+            kernel_name = extract_kernel_name(filename_stem, name)
         else:
-            bench_source = default_source or "python_pal"
+            # Last resort fallback - should rarely happen
+            bench_source = "python_pal" if "pal" in name.lower() and "sdpa" not in name.lower() else "python_sdpa"
+            kernel_name = extract_kernel_name(filename_stem, name)
 
-        # Extract kernel name from benchmark name or filename
-        kernel_name = extract_kernel_name(filename_stem, name)
+        logger.debug(f"Python benchmark: {name} → source={bench_source}, kernel={kernel_name}")
 
         group = bench.get("group", "")
         base_name = group if group else name.split("[")[0]
@@ -196,6 +215,7 @@ def parse_pytest_benchmark(json_file: Path) -> list[dict]:
                 # Save model params if available
                 if len(param_parts) > 1 and param_parts[1].startswith("{") and param_parts[1].endswith("}"):
                     model_params_raw = param_parts[1]
+                logger.debug(f"Extracted Python model config: {model_config_name} with params: {model_params_raw}")
 
         row = {
             config.COL_BENCHMARK_NAME_BASE: base_name,
