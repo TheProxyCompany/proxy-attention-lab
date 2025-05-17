@@ -33,25 +33,7 @@ def _filter_for_plot_category(df: pd.DataFrame, category: str) -> pd.DataFrame:
             "test_pal_latency_vs_seq_len",
             "BM_SDPA_LatencyVsSeqLen",
             "test_sdpa_latency_vs_seq_len",
-        ],
-        "latency_vs_head_dim": [
-            "BM_PAL_LatencyVsHeadDim",
-            "test_pal_latency_vs_head_dim",
-            "BM_SDPA_LatencyVsHeadDim",
-            "test_sdpa_latency_vs_head_dim",
-        ],
-        "latency_vs_effective_items": [
-            "BM_PAL_LatencyVsNumItems",
-            "test_pal_latency_vs_query_items",
-            "BM_SDPA_LatencyVsNumItems",
-            "test_sdpa_latency_vs_batch_size",
-        ],
-        "model_configs_latency": [
-            "BM_PAL_ModelConfig",
-            "test_pal_latency_model_configs",
-            "BM_SDPA_ModelConfig",
-            "test_sdpa_latency_model_configs",
-        ],
+        ]
     }
 
     benchmarks = category_benchmark_mapping.get(category, [])
@@ -73,12 +55,6 @@ def _filter_for_plot_category(df: pd.DataFrame, category: str) -> pd.DataFrame:
     # Try to filter based on the data columns relevant to each category
     if category == "latency_vs_seq_len":
         return df[df["seq_len"].notna()]
-    elif category == "latency_vs_head_dim":
-        return df[df["head_dim"].notna()]
-    elif category == "latency_vs_effective_items":
-        return df[df["effective_items"].notna()]
-    elif category == "model_configs_latency":
-        return df[df["model_config_name"].notna()]
 
     return pd.DataFrame()
 
@@ -104,22 +80,6 @@ def _get_metric_records(df: pd.DataFrame, category: str) -> dict[str, list[dict[
     # Add category-specific columns
     if category == "latency_vs_seq_len":
         specific_cols = ["seq_len", "head_dim", "num_query_items", "batch_size", "num_q_heads"]
-    elif category == "latency_vs_head_dim":
-        specific_cols = ["head_dim", "seq_len", "num_query_items", "batch_size", "num_q_heads"]
-    elif category == "latency_vs_effective_items":
-        specific_cols = ["effective_items", "seq_len", "head_dim", "num_query_items", "batch_size", "num_q_heads"]
-    elif category == "model_configs_latency":
-        specific_cols = [
-            "model_config_name",
-            "seq_len",
-            "head_dim",
-            "num_query_items",
-            "batch_size",
-            "num_q_heads",
-            "num_kv_heads",
-            "tokens_per_page",
-            "num_sequences_in_batch",
-        ]
     else:
         specific_cols = []
 
@@ -147,7 +107,7 @@ def _get_metric_records(df: pd.DataFrame, category: str) -> dict[str, list[dict[
             return kernel_records
 
     # Otherwise return flat list of records
-    return records
+    return records  # type: ignore[reportUnknownReturnType]
 
 
 def generate_json_report(
@@ -207,12 +167,7 @@ def generate_json_report(
             report["summary_metrics"]["kernel_count"] = len(kernels)
 
         # Add data for each plot category
-        plot_categories = [
-            "latency_vs_seq_len",
-            "latency_vs_head_dim",
-            "latency_vs_effective_items",
-            "model_configs_latency",
-        ]
+        plot_categories = ["latency_vs_seq_len"]
 
         for category in plot_categories:
             # Get data points for this category (organized by kernel or flat)

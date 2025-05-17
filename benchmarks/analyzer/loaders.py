@@ -67,14 +67,23 @@ def parse_google_benchmark(json_file: Path) -> list[dict]:
     elif "sdpa" in filename_stem.lower():
         default_source = "cpp_sdpa"
 
+    # Track benchmark names for debugging
+    raw_benchmark_names = []
+
     for bench in data.get("benchmarks", []):
-        if bench.get("run_type") != "aggregate" or bench.get("aggregate_name") != "mean":
+        if bench.get("run_type") == "aggregate" and bench.get("aggregate_name") != "mean":
+            # Skip non-mean aggregates
             continue
+
         name = bench.get("name", "")
+        raw_benchmark_names.append(name)
 
         # Determine kernel_name and source directly from benchmark name for C++
         # This ensures more accurate and consistent classification
-        # The benchmark name is more reliable than the filename for C++ google benchmarks
+        kernel_name = None
+        source = None
+
+        # Check for specific benchmark prefixes first
         if "BM_PAL_" in name:
             kernel_name = "paged_attention"
             source = "cpp_pal"
@@ -88,8 +97,21 @@ def parse_google_benchmark(json_file: Path) -> list[dict]:
             kernel_name = extract_kernel_name(filename_stem, name)
         else:
             # Last resort fallback - should rarely happen
-            source = "cpp_pal" if "pal" in name.lower() and "sdpa" not in name.lower() else "cpp_sdpa"
-            kernel_name = extract_kernel_name(filename_stem, name)
+            if "pal" in name.lower() and "sdpa" not in name.lower():
+                source = "cpp_pal"
+                kernel_name = "paged_attention"
+            elif "sdpa" in name.lower():
+                source = "cpp_sdpa"
+                kernel_name = "sdpa"
+            else:
+                # Truly unknown, use filename for inference
+                source = "cpp_unknown"
+                kernel_name = extract_kernel_name(filename_stem, name)
+
+        # Make absolutely sure we have a kernel name
+        if not kernel_name:
+            logger.warning(f"Failed to extract kernel name for benchmark: {name}")
+            kernel_name = "unknown_kernel"
 
         logger.debug(f"C++ benchmark: {name} → source={source}, kernel={kernel_name}")
 
@@ -112,7 +134,7 @@ def parse_google_benchmark(json_file: Path) -> list[dict]:
             config.COL_SOURCE: source,
             config.COL_KERNEL_NAME: kernel_name,  # Add the extracted kernel name
             config.COL_MEAN_LATENCY: bench.get("real_time", 0) / 1_000_000.0,
-            config.COL_THROUGHPUT: bench.get("items_per_second"),
+            config.COL_THROUGHPUT: bench.get("items_per_second", None),
             config.COL_PARAMS_STR: params_str,
         }
 
@@ -121,6 +143,15 @@ def parse_google_benchmark(json_file: Path) -> list[dict]:
             row["model_config_name"] = model_config_name
 
         rows.append(row)
+
+    if not rows and raw_benchmark_names:
+        logger.warning(f"No rows extracted from {len(raw_benchmark_names)} benchmarks in {json_file.name}")
+        logger.debug(
+            f"Raw benchmark names: {raw_benchmark_names[:5]}..."
+            if len(raw_benchmark_names) > 5
+            else raw_benchmark_names
+        )
+
     return rows
 
 
@@ -143,11 +174,18 @@ def parse_pytest_benchmark(json_file: Path) -> list[dict]:
     elif "sdpa" in filename_stem.lower():
         default_source = "python_sdpa"
 
+    # Track benchmark names for debugging
+    raw_benchmark_names = []
+
     for bench in data.get("benchmarks", []):
         name = bench.get("name", "")
+        raw_benchmark_names.append(name)
 
         # Determine kernel_name and source directly from benchmark name for Python
-        # This ensures more accurate and consistent classification
+        kernel_name = None
+        bench_source = None
+
+        # First try to identify by test name pattern
         if "test_pal_" in name:
             kernel_name = "paged_attention"
             bench_source = "python_pal"
@@ -155,13 +193,27 @@ def parse_pytest_benchmark(json_file: Path) -> list[dict]:
             kernel_name = "sdpa"
             bench_source = "python_sdpa"
         elif default_source:
+            # Use default source from filename
             bench_source = default_source
             # Extract kernel name from filename or benchmark name
             kernel_name = extract_kernel_name(filename_stem, name)
         else:
-            # Last resort fallback - should rarely happen
-            bench_source = "python_pal" if "pal" in name.lower() and "sdpa" not in name.lower() else "python_sdpa"
-            kernel_name = extract_kernel_name(filename_stem, name)
+            # Last resort fallback based on name contents
+            if "pal" in name.lower() and "sdpa" not in name.lower():
+                bench_source = "python_pal"
+                kernel_name = "paged_attention"
+            elif "sdpa" in name.lower():
+                bench_source = "python_sdpa"
+                kernel_name = "sdpa"
+            else:
+                # Truly unknown
+                bench_source = "python_unknown"
+                kernel_name = extract_kernel_name(filename_stem, name)
+
+        # Make absolutely sure we have a kernel name
+        if not kernel_name:
+            logger.warning(f"Failed to extract kernel name for benchmark: {name}")
+            kernel_name = "unknown_kernel"
 
         logger.debug(f"Python benchmark: {name} → source={bench_source}, kernel={kernel_name}")
 
@@ -211,6 +263,15 @@ def parse_pytest_benchmark(json_file: Path) -> list[dict]:
         # This will be refined in the transformers module after we extract all parameters
 
         rows.append(row)
+
+    if not rows and raw_benchmark_names:
+        logger.warning(f"No rows extracted from {len(raw_benchmark_names)} benchmarks in {json_file.name}")
+        logger.debug(
+            f"Raw benchmark names: {raw_benchmark_names[:5]}..."
+            if len(raw_benchmark_names) > 5
+            else raw_benchmark_names
+        )
+
     return rows
 
 
@@ -218,14 +279,68 @@ def load_all_results(json_files: list[Path]) -> pd.DataFrame:
     """Load all benchmark results into a DataFrame."""
     frames = []
     for jf in json_files:
-        fmt = detect_format(jf)
-        rows = parse_google_benchmark(jf) if fmt == "google" else parse_pytest_benchmark(jf)
-        frames.append(pd.DataFrame(rows))
+        try:
+            fmt = detect_format(jf)
+            rows = parse_google_benchmark(jf) if fmt == "google" else parse_pytest_benchmark(jf)
+
+            # Skip empty result sets
+            if not rows:
+                logger.warning(f"No benchmark data extracted from {jf.name}")
+                continue
+
+            # Create a DataFrame and ensure it has the kernel_name column
+            df_chunk = pd.DataFrame(rows)
+
+            # Check if kernel_name column is missing
+            if config.COL_KERNEL_NAME not in df_chunk.columns:
+                logger.warning(f"Missing kernel_name column in {jf.name} - inferring from filename")
+                # Provide a fallback kernel_name based on the filename
+                kernel_name = extract_kernel_name(jf.stem)
+                df_chunk[config.COL_KERNEL_NAME] = kernel_name
+                logger.info(f"Added kernel_name column with value '{kernel_name}' to data from {jf.name}")
+
+            # Verify that all rows have a valid kernel_name
+            missing_kernel_names = df_chunk[config.COL_KERNEL_NAME].isna().sum()
+            if missing_kernel_names > 0:
+                logger.warning(f"{missing_kernel_names} rows from {jf.name} have missing kernel_name values")
+                # Extract a kernel name from filename as fallback
+                default_kernel = extract_kernel_name(jf.stem)
+                df_chunk[config.COL_KERNEL_NAME] = df_chunk[config.COL_KERNEL_NAME].fillna(default_kernel)
+                logger.info(f"Filled missing kernel_name values with '{default_kernel}'")
+
+            frames.append(df_chunk)
+        except Exception as e:
+            logger.error(f"Error processing benchmark file {jf.name}: {e}")
+
     if not frames:
+        logger.error("No valid benchmark data frames were created from any input files")
         return pd.DataFrame()
+
+    # Debug: log frame info before concatenation
+    for i, frame in enumerate(frames):
+        logger.debug(f"Frame {i} from file: columns={frame.columns.tolist()}, rows={len(frame)}")
+        if config.COL_KERNEL_NAME not in frame.columns:
+            logger.error(f"Frame {i} is still missing {config.COL_KERNEL_NAME} column!")
+            # Add the column to prevent concat failure
+            frame[config.COL_KERNEL_NAME] = "unknown_kernel"
+
+    # Concatenate all frames
     df = pd.concat(frames, ignore_index=True)
 
+    # Final validation after concatenation
     if config.COL_KERNEL_NAME not in df.columns:
-        logger.warning("No COL_KERNEL_NAME column found in loaded benchmark data; results may be miscategorized")
+        logger.error("CRITICAL: No kernel_name column in final concatenated DataFrame")
+        # Add the column as last resort
+        df[config.COL_KERNEL_NAME] = "unknown_kernel"
+    elif df[config.COL_KERNEL_NAME].isna().any():
+        missing_count = df[config.COL_KERNEL_NAME].isna().sum()
+        logger.warning(f"{missing_count} rows have missing kernel_name values after concatenation")
+        # Fill missing values with default
+        df[config.COL_KERNEL_NAME] = df[config.COL_KERNEL_NAME].fillna("unknown_kernel")
+
+    # Log kernel name distribution for debugging
+    if not df.empty:
+        kernel_counts = df[config.COL_KERNEL_NAME].value_counts().to_dict()
+        logger.info(f"Kernel name distribution in loaded data: {kernel_counts}")
 
     return df

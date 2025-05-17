@@ -18,42 +18,5 @@ COL_PARAMS_STR = "params_str"
 COL_MEAN_LATENCY = "mean_latency_ms"
 COL_THROUGHPUT = "throughput_items_per_sec"
 
-# Model configuration parameters
-MODEL_CONFIG_PARAMETERS = {
-    "Llama3_70B_Sim": {
-        "num_q_heads": 64,
-        "num_kv_heads": 8,
-        "head_dim": 128,
-        "seq_len": 1024,
-        # PAL-specific parameters
-        "tokens_per_page": 64,
-        "num_sequences_in_batch": 1,
-        "pal_num_query_items": 4 * 1024 * 64,  # total query vectors budget
-        # SDPA-specific parameters
-        "sdpa_batch_size": 4,
-    },
-    "Qwen_8B_Sim": {
-        "num_q_heads": 32,
-        "num_kv_heads": 32,
-        "head_dim": 128,
-        "seq_len": 1024,
-        # PAL-specific parameters
-        "tokens_per_page": 64,
-        "num_sequences_in_batch": 1,
-        "pal_num_query_items": 4 * 1024 * 32,  # total query vectors budget
-        # SDPA-specific parameters
-        "sdpa_batch_size": 4,
-    },
-    "Qwen2.5_72B_Sim": {
-        "num_q_heads": 128,
-        "num_kv_heads": 8,
-        "head_dim": 128,
-        "seq_len": 1024,
-        # PAL-specific parameters
-        "tokens_per_page": 64,
-        "num_sequences_in_batch": 1,
-        "pal_num_query_items": 4 * 1024 * 128,  # total query vectors budget
-        # SDPA-specific parameters
-        "sdpa_batch_size": 4,
-    },
-}
+# Model configuration parameters have been removed
+MODEL_CONFIG_PARAMETERS = {}

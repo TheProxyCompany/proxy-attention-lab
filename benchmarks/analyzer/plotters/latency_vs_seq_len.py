@@ -328,6 +328,14 @@ def plot(
                             zorder=1,
                         )
                         logger.debug(f"Added O(1/n) throughput reference line, scale_factor={scale_inv_n}")
+                        ax_throughput.text(
+                            ref_s_val_t,
+                            ref_t_val,
+                            "O(1/n)",
+                            color=DISTINCT_REF_LINE_COLOR,
+                            alpha=0.8,
+                            fontsize=styles["REF_LINE_FONTSIZE"],
+                        )
 
                     # O(1/(n log n)) reference line for throughput
                     valid_x_for_log_t = x_vals_t[x_vals_t > 1]
@@ -345,6 +353,14 @@ def plot(
                             zorder=1,
                         )
                         logger.debug(f"Added O(1/(n log n)) throughput reference line, scale_factor={scale_inv_nlogn}")
+                        ax_throughput.text(
+                            ref_s_val_t,
+                            ref_t_val * 0.7,  # Position slightly below the other label
+                            "O(1/(n log n))",
+                            color=DISTINCT_REF_LINE_COLOR,
+                            alpha=0.8,
+                            fontsize=styles["REF_LINE_FONTSIZE"],
+                        )
                 else:
                     logger.warning("Could not determine valid reference point for scaling throughput reference lines.")
         except Exception as e:

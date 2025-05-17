@@ -8,12 +8,7 @@ import sys
 from pathlib import Path
 
 from benchmarks.analyzer import config, loaders, plot_utils, reporters, transformers
-from benchmarks.analyzer.plotters import (
-    latency_vs_effective_items,
-    latency_vs_head_dim,
-    latency_vs_seq_len,
-    model_configs_latency,
-)
+from benchmarks.analyzer.plotters import latency_vs_seq_len
 
 # Set up logging
 logging.basicConfig(
@@ -103,33 +98,6 @@ def main() -> None:
         logger.info(f"Successfully generated latency vs sequence length plot: {seq_len_plot}")
     else:
         logger.warning("Failed to generate latency vs sequence length plot - no suitable data found")
-
-    # Plot latency vs head dimension
-    logger.info("Generating latency vs head dimension plot...")
-    head_dim_plot = latency_vs_head_dim.plot(df, args.output_dir, styles, kernel_filter)
-    if head_dim_plot:
-        plot_filenames["latency_vs_head_dim"] = head_dim_plot
-        logger.info(f"Successfully generated latency vs head dimension plot: {head_dim_plot}")
-    else:
-        logger.warning("Failed to generate latency vs head dimension plot - no suitable data found")
-
-    # Plot latency vs effective items
-    logger.info("Generating latency vs effective items plot...")
-    effective_items_plot = latency_vs_effective_items.plot(df, args.output_dir, styles, kernel_filter)
-    if effective_items_plot:
-        plot_filenames["latency_vs_effective_items"] = effective_items_plot
-        logger.info(f"Successfully generated latency vs effective items plot: {effective_items_plot}")
-    else:
-        logger.warning("Failed to generate latency vs effective items plot - no suitable data found")
-
-    # Plot model configurations latency
-    logger.info("Generating model configurations plot...")
-    model_plot = model_configs_latency.plot(df, args.output_dir, styles, kernel_filter)
-    if model_plot:
-        plot_filenames["model_configs_latency"] = model_plot
-        logger.info(f"Successfully generated model configurations plot: {model_plot}")
-    else:
-        logger.warning("Failed to generate model configurations plot - no suitable data found")
 
     # Generate JSON report with summary metrics
     logger.info("Generating JSON report...")
