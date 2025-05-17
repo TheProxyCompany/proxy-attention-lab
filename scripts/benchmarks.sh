@@ -40,10 +40,12 @@ Options:
                            Valid targets: all, py, cpp, py_pal, py_sdpa, cpp_pal, cpp_sdpa
   --analyze                Only analyze existing benchmark results
   --rebuild-only           Only update dependencies and rebuild the project
+  --reset                  Clear all existing benchmark results before running
   --help                   Show this help message
 
 Combined Options:
   --run ... --analyze      Run the specified benchmarks and then analyze the results
+  --run ... --reset        Clear all benchmarks before running new ones
 
 Examples:
   $(basename "$0")                             # Default: rebuild, run all, analyze
@@ -51,6 +53,7 @@ Examples:
   $(basename "$0") --run py_pal                # Rebuild, run only Python PAL benchmarks
   $(basename "$0") --run cpp_sdpa              # Rebuild, run only C++ SDPA benchmarks
   $(basename "$0") --run py --analyze          # Run Python benchmarks and analyze results
+  $(basename "$0") --run --reset               # Reset benchmark dir, then run all benchmarks
   $(basename "$0") --analyze                   # Only analyze existing data
   $(basename "$0") --rebuild-only              # Only update deps and rebuild
 EOF
@@ -142,8 +145,15 @@ update_and_rebuild_project() {
 }
 
 setup_benchmark_output_dir() {
+    local reset="${1:-false}"
+
     log "Setting up benchmark output directory: ${BENCHMARK_OUTPUT_ROOT}"
-    rm -rf "${BENCHMARK_OUTPUT_ROOT}"
+
+    if [ "${reset}" = "true" ]; then
+        log "Hard reset requested. Clearing all benchmark results."
+        rm -rf "${BENCHMARK_OUTPUT_ROOT}"
+    fi
+
     mkdir -p "${BENCHMARK_OUTPUT_ROOT}"
 }
 
@@ -188,10 +198,15 @@ run_python_benchmarks() {
             hr
             log "Running Python benchmarks in: ${benchmark_file}"
 
-            # Generate a unique JSON output name based on the benchmark file name
+            # Generate a unique JSON output name based on the benchmark file name, target and date
             local benchmark_basename
             benchmark_basename=$(basename "${benchmark_file}" .py)
-            local python_json_output="${BENCHMARK_OUTPUT_ROOT}/${benchmark_basename}_results.json"
+            local timestamp=$(date +"%Y%m%d_%H%M%S")
+            local test_type="${target}"
+            if [ "${test_type}" = "all" ] || [ "${test_type}" = "py" ]; then
+                test_type="py_all"
+            fi
+            local python_json_output="${BENCHMARK_OUTPUT_ROOT}/${test_type}_${benchmark_basename}_${timestamp}.json"
 
             # Run pytest with appropriate filters
             pytest "${benchmark_file}" \
@@ -253,7 +268,12 @@ run_cpp_benchmarks() {
 
             local benchmark_exename
             benchmark_exename=$(basename "${benchmark_exe}")
-            local cpp_json_output="${BENCHMARK_OUTPUT_ROOT}/${benchmark_exename}_results.json"
+            local timestamp=$(date +"%Y%m%d_%H%M%S")
+            local test_type="${target}"
+            if [ "${test_type}" = "all" ] || [ "${test_type}" = "cpp" ]; then
+                test_type="cpp_all"
+            fi
+            local cpp_json_output="${BENCHMARK_OUTPUT_ROOT}/${test_type}_${benchmark_exename}_${timestamp}.json"
 
             SPDLOG_LEVEL=warn "${benchmark_exe}" \
                 --benchmark_format=json \
@@ -295,7 +315,7 @@ analyze_results() {
 
     # Run analysis script
     log "Running analysis script on results in ${BENCHMARK_OUTPUT_ROOT}..."
-    python "${analyze_script}" --results-dir "${BENCHMARK_OUTPUT_ROOT}" --output-dir "${BENCHMARK_OUTPUT_ROOT}"
+    python "${analyze_script}" --results-dir "${BENCHMARK_OUTPUT_ROOT}" --output-dir "${BENCHMARK_OUTPUT_ROOT}" --verbose
 
     log "Analysis complete. Results saved to ${BENCHMARK_OUTPUT_ROOT}"
     hr
@@ -308,6 +328,7 @@ main() {
     local RUN_REQUESTED=false
     local ANALYZE_ONLY=false
     local REBUILD_ONLY=false
+    local RESET_BENCHMARKS=false
     local TARGET_SUITE="all"
 
     hr
@@ -326,7 +347,7 @@ main() {
     if [ $# -eq 0 ]; then
         # Default behavior: run everything
         setup_environment
-        setup_benchmark_output_dir
+        setup_benchmark_output_dir "false" # Don't reset by default
         update_and_rebuild_project
         run_python_benchmarks "all"
         run_cpp_benchmarks "all"
@@ -355,6 +376,9 @@ main() {
                     ;;
                 --rebuild-only)
                     REBUILD_ONLY=true
+                    ;;
+                --reset)
+                    RESET_BENCHMARKS=true
                     ;;
                 --help)
                     print_usage
@@ -394,7 +418,7 @@ main() {
 
         if [ "${RUN_REQUESTED}" = true ]; then
             log "Run mode: target=${TARGET_SUITE}"
-            setup_benchmark_output_dir
+            setup_benchmark_output_dir "${RESET_BENCHMARKS}"
             update_and_rebuild_project
 
             # Run appropriate benchmark suites
