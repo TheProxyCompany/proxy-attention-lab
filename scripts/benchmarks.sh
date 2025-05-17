@@ -18,7 +18,7 @@ PYTHON_BENCHMARK_ROOT_DIR="tests" # Root for Python benchmark discovery
 CPP_BENCHMARK_BUILD_ROOT_DIR="build/tests" # Root for C++ benchmark executable discovery
 
 # Naming conventions for discovery
-PYTHON_BENCHMARK_PATTERN="test_*performance*.py" # Pattern for Python benchmark files
+PYTHON_BENCHMARK_PATTERN="paged_attention/benchmarks/python/*.py" # Pattern for Python benchmark files
 
 # --- Helper Functions ---
 log() {
@@ -108,8 +108,6 @@ main() {
 
     log "Building C++ benchmarks..."
     cmake --build "${BUILD_DIR}" ${cmake_parallel_args} # Build all targets, including benchmarks
-    # Alternatively, to build only the specific benchmark target if known and desired:
-    # cmake --build "${BUILD_DIR}" --target pal_op_benchmarks ${cmake_parallel_args}
     log "C++ benchmarks built."
     hr
 
@@ -119,15 +117,16 @@ main() {
 
     python_start=$(date +%s)
 
-    # Use find to locate Python benchmark files
-    # Adjust depth or path if benchmark files are nested differently
+    # Find all .py files in any benchmarks/python subfolder under tests/
     python_benchmark_files=()
     while IFS= read -r -d $'\0' file; do
         python_benchmark_files+=("$file")
-    done < <(find "${PYTHON_BENCHMARK_ROOT_DIR}" -type f -name "${PYTHON_BENCHMARK_PATTERN}" -print0)
+    done < <(find "${PYTHON_BENCHMARK_ROOT_DIR}" -type d -path "*/benchmarks/python" -print0 | while IFS= read -r -d $'\0' dir; do
+        find "$dir" -maxdepth 1 -type f -name "*.py" -print0
+    done)
 
     if [ ${#python_benchmark_files[@]} -eq 0 ]; then
-        log "No Python benchmark files found matching pattern '${PYTHON_BENCHMARK_PATTERN}' in '${PYTHON_BENCHMARK_ROOT_DIR}'."
+        log "No Python benchmark files found in any 'benchmark/python' subfolder under '${PYTHON_BENCHMARK_ROOT_DIR}'."
     else
         for benchmark_file in "${python_benchmark_files[@]}"; do
             hr
