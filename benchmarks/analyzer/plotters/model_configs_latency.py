@@ -159,18 +159,30 @@ def plot(
 
         # Add value labels on top of bars
         for j, bar in enumerate(bars):
-            if not np.isnan(bar.get_height()):
-                config_name = model_configs[j] if j < len(model_configs) else "unknown"
-                logger.debug(f"Bar for {source} - {config_name}: {bar.get_height():.1f}")
-                ax_latency.text(
-                    bar.get_x() + bar.get_width() / 2,
-                    bar.get_height() + 0.1,
-                    f"{bar.get_height():.1f}",
-                    ha="center",
-                    va="bottom",
-                    rotation=90,
-                    fontsize=styles.get("LEGEND_FONTSIZE", 8),
-                )
+            try:
+                height = bar.get_height()
+                if not np.isnan(height):
+                    config_name = model_configs[j] if j < len(model_configs) else "unknown"
+                    # Format differently based on value magnitude
+                    if height < 1:
+                        value_text = f"{height:.3f}"
+                    elif height < 10:
+                        value_text = f"{height:.2f}"
+                    else:
+                        value_text = f"{height:.1f}"
+
+                    logger.debug(f"Bar for {source} - {config_name}: {height:.3f}")
+                    ax_latency.text(
+                        bar.get_x() + bar.get_width() / 2,
+                        height + 0.1,
+                        value_text,
+                        ha="center",
+                        va="bottom",
+                        rotation=90,
+                        fontsize=styles.get("LEGEND_FONTSIZE", 8),
+                    )
+            except Exception as e:
+                logger.warning(f"Error adding bar label for {source} model config {j}: {e}")
 
         # Plot throughput bars if data exists
         if throughput_map:
@@ -194,18 +206,30 @@ def plot(
 
             # Add value labels on top of bars
             for j, bar in enumerate(bars):
-                if not np.isnan(bar.get_height()):
-                    config_name = model_configs[j] if j < len(model_configs) else "unknown"
-                    logger.debug(f"Throughput bar for {source} - {config_name}: {bar.get_height():.1f}")
-                    ax_throughput.text(
-                        bar.get_x() + bar.get_width() / 2,
-                        bar.get_height() + 0.1,
-                        f"{bar.get_height():.1f}",
-                        ha="center",
-                        va="bottom",
-                        rotation=90,
-                        fontsize=styles.get("LEGEND_FONTSIZE", 8),
-                    )
+                try:
+                    height = bar.get_height()
+                    if not np.isnan(height):
+                        config_name = model_configs[j] if j < len(model_configs) else "unknown"
+                        # Format differently based on value magnitude
+                        if height < 1:
+                            value_text = f"{height:.3f}"
+                        elif height < 100:
+                            value_text = f"{height:.1f}"
+                        else:
+                            value_text = f"{int(height)}"
+
+                        logger.debug(f"Throughput bar for {source} - {config_name}: {height:.1f}")
+                        ax_throughput.text(
+                            bar.get_x() + bar.get_width() / 2,
+                            height + (height * 0.03),  # Dynamic spacing based on height
+                            value_text,
+                            ha="center",
+                            va="bottom",
+                            rotation=90,
+                            fontsize=styles.get("LEGEND_FONTSIZE", 8),
+                        )
+                except Exception as e:
+                    logger.warning(f"Error adding throughput bar label for {source} model config {j}: {e}")
 
     # Set title based on whether we're filtering by kernel
     title_prefix = ""

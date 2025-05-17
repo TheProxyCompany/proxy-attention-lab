@@ -27,6 +27,7 @@ def get_plot_styles() -> dict[str, str | float]:
     styles["REF_LINE_STYLE"] = "--"
     styles["REF_LINE_WIDTH"] = 1.0
     styles["REF_LINE_ALPHA"] = 0.6
+    styles["REF_LINE_FONTSIZE"] = 12
     styles["TITLE_FONTSIZE"] = 16
     styles["TITLE_FONTWEIGHT"] = "bold"
     styles["AXIS_LABEL_FONTSIZE"] = 12

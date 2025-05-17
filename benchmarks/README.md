@@ -4,7 +4,7 @@ Each kernel in PAL has a dedicated subdirectory under `benchmarks/`.
 
 ```
 benchmarks/
-  paged_attention/ # peformance / profiling tests
+  paged_attention/  # Kernel name
     python/         # pytest-benchmark scripts
     cpp/            # Google Benchmark executables
 ```

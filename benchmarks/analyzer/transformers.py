@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -59,12 +60,53 @@ def _extract_cpp_pal_latency_vs_seq_len(params_str: str) -> dict[str, Any]:
     if not params_str:
         return result
 
+    # Log the input parameters string for debugging
+    logger.debug(f"Parsing C++ PAL seq_len parameters: '{params_str}'")
+
     parts = params_str.split("/")
     if len(parts) >= 2:
-        result["num_query_items"] = _parse_int(parts[0])
-        result["seq_len"] = _parse_int(parts[1])
+        # For C++ benchmarks with _mean suffix (Google Benchmark format)
+        if "_mean" in parts[1]:
+            seq_len_str = parts[1].split("_mean")[0]
+            try:
+                seq_len = int(seq_len_str)
+                logger.debug(f"  Extracted seq_len={seq_len} from {parts[1]}")
+            except ValueError:
+                logger.warning(f"Failed to parse seq_len from '{parts[1]}'")
+                seq_len = config.DEFAULT_SEQ_LEN
+        else:
+            seq_len = _parse_int(parts[1])
+
+        # For first part (num_query_items)
+        if "_mean" in parts[0]:
+            num_items_str = parts[0].split("_mean")[0]
+            try:
+                num_query_items = int(num_items_str)
+                logger.debug(f"  Extracted num_query_items={num_query_items} from {parts[0]}")
+            except ValueError:
+                logger.warning(f"Failed to parse num_query_items from '{parts[0]}'")
+                num_query_items = config.DEFAULT_NUM_QUERY_ITEMS
+        else:
+            num_query_items = _parse_int(parts[0])
+
+        logger.debug(f"  Extracted: num_query_items={num_query_items}, seq_len={seq_len}")
+        result["num_query_items"] = num_query_items
+        result["seq_len"] = seq_len
     elif len(parts) == 1:
-        result["seq_len"] = _parse_int(parts[0])
+        # For C++ benchmarks with _mean suffix (Google Benchmark format)
+        if "_mean" in parts[0]:
+            seq_len_str = parts[0].split("_mean")[0]
+            try:
+                seq_len = int(seq_len_str)
+                logger.debug(f"  Extracted seq_len={seq_len} from {parts[0]}")
+            except ValueError:
+                logger.warning(f"Failed to parse seq_len from '{parts[0]}'")
+                seq_len = config.DEFAULT_SEQ_LEN
+        else:
+            seq_len = _parse_int(parts[0])
+
+        logger.debug(f"  Extracted: seq_len={seq_len}, using default num_query_items")
+        result["seq_len"] = seq_len
         result["num_query_items"] = config.DEFAULT_NUM_QUERY_ITEMS
 
     # Fill remaining fixed parameters
@@ -83,12 +125,53 @@ def _extract_cpp_pal_latency_vs_head_dim(params_str: str) -> dict[str, Any]:
     if not params_str:
         return result
 
+    # Log the input parameters string for debugging
+    logger.debug(f"Parsing C++ PAL head_dim parameters: '{params_str}'")
+
     parts = params_str.split("/")
     if len(parts) >= 2:
-        result["num_query_items"] = _parse_int(parts[0])
-        result["head_dim"] = _parse_int(parts[1])
+        # For C++ benchmarks with _mean suffix (Google Benchmark format)
+        if "_mean" in parts[1]:
+            head_dim_str = parts[1].split("_mean")[0]
+            try:
+                head_dim = int(head_dim_str)
+                logger.debug(f"  Extracted head_dim={head_dim} from {parts[1]}")
+            except ValueError:
+                logger.warning(f"Failed to parse head_dim from '{parts[1]}'")
+                head_dim = config.DEFAULT_HEAD_DIM
+        else:
+            head_dim = _parse_int(parts[1])
+
+        # For first part (num_query_items)
+        if "_mean" in parts[0]:
+            num_items_str = parts[0].split("_mean")[0]
+            try:
+                num_query_items = int(num_items_str)
+                logger.debug(f"  Extracted num_query_items={num_query_items} from {parts[0]}")
+            except ValueError:
+                logger.warning(f"Failed to parse num_query_items from '{parts[0]}'")
+                num_query_items = config.DEFAULT_NUM_QUERY_ITEMS
+        else:
+            num_query_items = _parse_int(parts[0])
+
+        logger.debug(f"  Extracted: num_query_items={num_query_items}, head_dim={head_dim}")
+        result["num_query_items"] = num_query_items
+        result["head_dim"] = head_dim
     elif len(parts) == 1:
-        result["head_dim"] = _parse_int(parts[0])
+        # For C++ benchmarks with _mean suffix (Google Benchmark format)
+        if "_mean" in parts[0]:
+            head_dim_str = parts[0].split("_mean")[0]
+            try:
+                head_dim = int(head_dim_str)
+                logger.debug(f"  Extracted head_dim={head_dim} from {parts[0]}")
+            except ValueError:
+                logger.warning(f"Failed to parse head_dim from '{parts[0]}'")
+                head_dim = config.DEFAULT_HEAD_DIM
+        else:
+            head_dim = _parse_int(parts[0])
+
+        logger.debug(f"  Extracted: head_dim={head_dim}, using default num_query_items")
+        result["head_dim"] = head_dim
         result["num_query_items"] = config.DEFAULT_NUM_QUERY_ITEMS
 
     result.setdefault("seq_len", config.DEFAULT_SEQ_LEN)
@@ -106,9 +189,24 @@ def _extract_cpp_pal_latency_vs_num_items(params_str: str) -> dict[str, Any]:
     if not params_str:
         return result
 
+    # Log the input parameters string for debugging
+    logger.debug(f"Parsing C++ PAL num_items parameters: '{params_str}'")
+
     parts = params_str.split("/")
     if len(parts) >= 1:
-        result["num_query_items"] = _parse_int(parts[0])
+        # For C++ benchmarks with _mean suffix (Google Benchmark format)
+        # Extract the number from patterns like "32_mean"
+        if "_mean" in parts[0]:
+            num_items_str = parts[0].split("_mean")[0]
+            try:
+                result["num_query_items"] = int(num_items_str)
+                logger.debug(f"Extracted num_query_items={result['num_query_items']} from {parts[0]}")
+            except ValueError:
+                logger.warning(f"Failed to parse num_query_items from '{parts[0]}'")
+                result["num_query_items"] = config.DEFAULT_NUM_QUERY_ITEMS
+        else:
+            result["num_query_items"] = _parse_int(parts[0])
+            logger.debug(f"Extracted num_query_items={result['num_query_items']}")
 
     result.setdefault("seq_len", config.DEFAULT_SEQ_LEN)
     result.setdefault("head_dim", config.DEFAULT_HEAD_DIM)
@@ -126,12 +224,53 @@ def _extract_cpp_sdpa_latency_vs_seq_len(params_str: str) -> dict[str, Any]:
     if not params_str:
         return result
 
+    # Log the input parameters string for debugging
+    logger.debug(f"Parsing C++ SDPA seq_len parameters: '{params_str}'")
+
     parts = params_str.split("/")
     if len(parts) >= 2:
-        result["batch_size"] = _parse_int(parts[0])
-        result["seq_len"] = _parse_int(parts[1])
+        # For C++ benchmarks with _mean suffix (Google Benchmark format)
+        if "_mean" in parts[1]:
+            seq_len_str = parts[1].split("_mean")[0]
+            try:
+                seq_len = int(seq_len_str)
+                logger.debug(f"  Extracted seq_len={seq_len} from {parts[1]}")
+            except ValueError:
+                logger.warning(f"Failed to parse seq_len from '{parts[1]}'")
+                seq_len = config.DEFAULT_SEQ_LEN
+        else:
+            seq_len = _parse_int(parts[1])
+
+        # For first part (batch_size)
+        if "_mean" in parts[0]:
+            batch_size_str = parts[0].split("_mean")[0]
+            try:
+                batch_size = int(batch_size_str)
+                logger.debug(f"  Extracted batch_size={batch_size} from {parts[0]}")
+            except ValueError:
+                logger.warning(f"Failed to parse batch_size from '{parts[0]}'")
+                batch_size = config.DEFAULT_BATCH_SIZE
+        else:
+            batch_size = _parse_int(parts[0])
+
+        logger.debug(f"  Extracted: batch_size={batch_size}, seq_len={seq_len}")
+        result["batch_size"] = batch_size
+        result["seq_len"] = seq_len
     elif len(parts) == 1:
-        result["seq_len"] = _parse_int(parts[0])
+        # For C++ benchmarks with _mean suffix (Google Benchmark format)
+        if "_mean" in parts[0]:
+            seq_len_str = parts[0].split("_mean")[0]
+            try:
+                seq_len = int(seq_len_str)
+                logger.debug(f"  Extracted seq_len={seq_len} from {parts[0]}")
+            except ValueError:
+                logger.warning(f"Failed to parse seq_len from '{parts[0]}'")
+                seq_len = config.DEFAULT_SEQ_LEN
+        else:
+            seq_len = _parse_int(parts[0])
+
+        logger.debug(f"  Extracted: seq_len={seq_len}, using default batch_size")
+        result["seq_len"] = seq_len
         result["batch_size"] = config.DEFAULT_BATCH_SIZE
 
     result.setdefault("head_dim", config.DEFAULT_HEAD_DIM)
@@ -147,12 +286,53 @@ def _extract_cpp_sdpa_latency_vs_head_dim(params_str: str) -> dict[str, Any]:
     if not params_str:
         return result
 
+    # Log the input parameters string for debugging
+    logger.debug(f"Parsing C++ SDPA head_dim parameters: '{params_str}'")
+
     parts = params_str.split("/")
     if len(parts) >= 2:
-        result["batch_size"] = _parse_int(parts[0])
-        result["head_dim"] = _parse_int(parts[1])
+        # For C++ benchmarks with _mean suffix (Google Benchmark format)
+        if "_mean" in parts[1]:
+            head_dim_str = parts[1].split("_mean")[0]
+            try:
+                head_dim = int(head_dim_str)
+                logger.debug(f"  Extracted head_dim={head_dim} from {parts[1]}")
+            except ValueError:
+                logger.warning(f"Failed to parse head_dim from '{parts[1]}'")
+                head_dim = config.DEFAULT_HEAD_DIM
+        else:
+            head_dim = _parse_int(parts[1])
+
+        # For first part (batch_size)
+        if "_mean" in parts[0]:
+            batch_size_str = parts[0].split("_mean")[0]
+            try:
+                batch_size = int(batch_size_str)
+                logger.debug(f"  Extracted batch_size={batch_size} from {parts[0]}")
+            except ValueError:
+                logger.warning(f"Failed to parse batch_size from '{parts[0]}'")
+                batch_size = config.DEFAULT_BATCH_SIZE
+        else:
+            batch_size = _parse_int(parts[0])
+
+        logger.debug(f"  Extracted: batch_size={batch_size}, head_dim={head_dim}")
+        result["batch_size"] = batch_size
+        result["head_dim"] = head_dim
     elif len(parts) == 1:
-        result["head_dim"] = _parse_int(parts[0])
+        # For C++ benchmarks with _mean suffix (Google Benchmark format)
+        if "_mean" in parts[0]:
+            head_dim_str = parts[0].split("_mean")[0]
+            try:
+                head_dim = int(head_dim_str)
+                logger.debug(f"  Extracted head_dim={head_dim} from {parts[0]}")
+            except ValueError:
+                logger.warning(f"Failed to parse head_dim from '{parts[0]}'")
+                head_dim = config.DEFAULT_HEAD_DIM
+        else:
+            head_dim = _parse_int(parts[0])
+
+        logger.debug(f"  Extracted: head_dim={head_dim}, using default batch_size")
+        result["head_dim"] = head_dim
         result["batch_size"] = config.DEFAULT_BATCH_SIZE
 
     result.setdefault("seq_len", config.DEFAULT_SEQ_LEN)
@@ -168,9 +348,24 @@ def _extract_cpp_sdpa_latency_vs_num_items(params_str: str) -> dict[str, Any]:
     if not params_str:
         return result
 
+    # Log the input parameters string for debugging
+    logger.debug(f"Parsing C++ SDPA num_items parameters: '{params_str}'")
+
     parts = params_str.split("/")
     if len(parts) >= 1:
-        result["batch_size"] = _parse_int(parts[0])
+        # For C++ benchmarks with _mean suffix (Google Benchmark format)
+        # Extract the number from patterns like "32_mean"
+        if "_mean" in parts[0]:
+            batch_size_str = parts[0].split("_mean")[0]
+            try:
+                result["batch_size"] = int(batch_size_str)
+                logger.debug(f"Extracted batch_size={result['batch_size']} from {parts[0]}")
+            except ValueError:
+                logger.warning(f"Failed to parse batch_size from '{parts[0]}'")
+                result["batch_size"] = config.DEFAULT_BATCH_SIZE
+        else:
+            result["batch_size"] = _parse_int(parts[0])
+            logger.debug(f"Extracted batch_size={result['batch_size']}")
 
     result.setdefault("seq_len", config.DEFAULT_SEQ_LEN)
     result.setdefault("head_dim", config.DEFAULT_HEAD_DIM)
@@ -501,6 +696,16 @@ def _extract_model_config_params(row: dict[str, Any]) -> dict[str, Any]:
     if not model_config_name:
         return result
 
+    # Clean up model name - remove _mean, _median, etc suffixes that might be in C++ benchmarks
+    clean_model_name = re.sub(r"_(mean|median|stddev|cv)$", "", model_config_name)
+
+    # Handle special case for Qwen2.5 vs Qwen2_5 naming differences
+    if "Qwen2_5" in clean_model_name:
+        clean_model_name = clean_model_name.replace("Qwen2_5", "Qwen2.5")
+
+    model_config_name = clean_model_name
+    logger.debug(f"Processing model config: {model_config_name} (cleaned from {row.get('model_config_name')})")
+
     # Check if we have this model config in our config parameters
     if model_config_name in config.MODEL_CONFIG_PARAMETERS:
         model_params = config.MODEL_CONFIG_PARAMETERS[model_config_name]
@@ -511,73 +716,86 @@ def _extract_model_config_params(row: dict[str, Any]) -> dict[str, Any]:
         result["head_dim"] = model_params["head_dim"]
         result["seq_len"] = model_params["seq_len"]
 
+        # Update the model_config_name to use the cleaned version
+        result["model_config_name"] = model_config_name
+
         # Different parameter extraction based on source
         source = row.get(config.COL_SOURCE, "")
+        kernel_name = row.get(config.COL_KERNEL_NAME, "")
 
         # Add source-specific parameters
-        if "pal" in source.lower():
+        if "pal" in source.lower() or kernel_name == "paged_attention":
             result["tokens_per_page"] = model_params.get("tokens_per_page", config.DEFAULT_TOKENS_PER_PAGE)
             result["num_sequences_in_batch"] = model_params.get(
                 "num_sequences_in_batch", config.DEFAULT_NUM_SEQUENCES_IN_BATCH
             )
             result["num_query_items"] = model_params.get("pal_num_query_items", config.DEFAULT_NUM_QUERY_ITEMS)
-        elif "sdpa" in source.lower():
+        elif "sdpa" in source.lower() or kernel_name == "sdpa":
             result["batch_size"] = model_params.get("sdpa_batch_size", config.DEFAULT_BATCH_SIZE)
+            # Make sure num_q_heads is set for SDPA to calculate effective_items correctly
+            result["num_q_heads"] = model_params["num_q_heads"]
 
+        logger.debug(f"Extracted model params for {model_config_name}: {result}")
         return result
+    else:
+        logger.warning(f"Model config '{model_config_name}' not found in config.MODEL_CONFIG_PARAMETERS")
 
-    # Python benchmark might have raw parameters
-    source = row.get(config.COL_SOURCE, "")
-    base_name = row.get(config.COL_BENCHMARK_NAME_BASE, "")
+        # Try to handle Python benchmark parameters from raw params
+        source = row.get(config.COL_SOURCE, "")
+        base_name = row.get(config.COL_BENCHMARK_NAME_BASE, "")
 
-    if "python_pal" in source or "test_pal_" in base_name:
-        # For Python PAL, check if we have raw model params
-        if "model_params_raw" in row:
+        if "python_pal" in source or "test_pal_" in base_name:
+            # For Python PAL, check if we have raw model params
+            if "model_params_raw" in row:
+                try:
+                    # Try to parse the raw parameter string as JSON
+                    params_raw = row.get("model_params_raw")
+                    params_dict = {}
+                    if isinstance(params_raw, str):
+                        # Attempt to parse as JSON if it looks like a dict
+                        try:
+                            params_dict = json.loads(params_raw)
+                        except json.JSONDecodeError as e:
+                            logger.warning(f"Failed to parse model_params_raw as JSON: {e}")
+                            return result
+
+                        # Extract relevant parameters
+                        result["num_query_items"] = params_dict.get("num_query_items", config.DEFAULT_NUM_QUERY_ITEMS)
+                        result["num_q_heads"] = params_dict.get("num_q_heads", config.DEFAULT_NUM_Q_HEADS)
+                        result["num_kv_heads"] = params_dict.get("num_kv_heads", config.DEFAULT_NUM_KV_HEADS)
+                        result["head_dim"] = params_dict.get("head_dim", config.DEFAULT_HEAD_DIM)
+                        result["seq_len"] = params_dict.get("seq_len", config.DEFAULT_SEQ_LEN)
+                        result["tokens_per_page"] = params_dict.get("tokens_per_page", config.DEFAULT_TOKENS_PER_PAGE)
+                        result["num_sequences_in_batch"] = params_dict.get(
+                            "num_sequences_in_batch", config.DEFAULT_NUM_SEQUENCES_IN_BATCH
+                        )
+                except Exception as e:
+                    logger.warning(f"Failed to parse model_params_raw: {e}")
+
+        elif ("python_sdpa" in source or "test_sdpa_" in base_name) and "model_params_raw" in row:
             try:
-                # Try to parse the raw parameter string as JSON
-                params_raw = row.get("model_params_raw")
-                params_dict = {}
-                if isinstance(params_raw, str):
-                    # Attempt to parse as JSON if it looks like a dict
-                    try:
-                        params_dict = json.loads(params_raw)
-                    except json.JSONDecodeError as e:
-                        logger.warning(f"Failed to parse model_params_raw as JSON: {e}")
-                        return result
-
-                    # Extract relevant parameters
-                    result["num_query_items"] = params_dict.get("num_query_items", config.DEFAULT_NUM_QUERY_ITEMS)
+                params_raw = row["model_params_raw"]
+                if isinstance(params_raw, str) and params_raw.startswith("{") and params_raw.endswith("}"):
+                    params_dict = json.loads(params_raw)
+                    result["batch_size"] = params_dict.get("batch_size", config.DEFAULT_BATCH_SIZE)
                     result["num_q_heads"] = params_dict.get("num_q_heads", config.DEFAULT_NUM_Q_HEADS)
                     result["num_kv_heads"] = params_dict.get("num_kv_heads", config.DEFAULT_NUM_KV_HEADS)
                     result["head_dim"] = params_dict.get("head_dim", config.DEFAULT_HEAD_DIM)
                     result["seq_len"] = params_dict.get("seq_len", config.DEFAULT_SEQ_LEN)
-                    result["tokens_per_page"] = params_dict.get("tokens_per_page", config.DEFAULT_TOKENS_PER_PAGE)
-                    result["num_sequences_in_batch"] = params_dict.get(
-                        "num_sequences_in_batch", config.DEFAULT_NUM_SEQUENCES_IN_BATCH
-                    )
             except Exception as e:
                 logger.warning(f"Failed to parse model_params_raw: {e}")
-
-    elif ("python_sdpa" in source or "test_sdpa_" in base_name) and "model_params_raw" in row:
-        try:
-            params_raw = row["model_params_raw"]
-            if isinstance(params_raw, str) and params_raw.startswith("{") and params_raw.endswith("}"):
-                params_dict = json.loads(params_raw)
-                result["batch_size"] = params_dict.get("batch_size", config.DEFAULT_BATCH_SIZE)
-                result["num_q_heads"] = params_dict.get("num_q_heads", config.DEFAULT_NUM_Q_HEADS)
-                result["num_kv_heads"] = params_dict.get("num_kv_heads", config.DEFAULT_NUM_KV_HEADS)
-                result["head_dim"] = params_dict.get("head_dim", config.DEFAULT_HEAD_DIM)
-                result["seq_len"] = params_dict.get("seq_len", config.DEFAULT_SEQ_LEN)
-        except Exception as e:
-            logger.warning(f"Failed to parse model_params_raw: {e}")
 
     return result
 
 
 def _calculate_throughput(row: dict[str, Any]) -> float | None:
     """Calculate throughput in items per second if not already present."""
+    source = row.get(config.COL_SOURCE, "")
+    full_name = row.get("full_name", "unknown")
+
     if config.COL_THROUGHPUT in row and row[config.COL_THROUGHPUT] is not None and row[config.COL_THROUGHPUT] > 0:
         # Already have throughput value
+        logger.debug(f"Using existing throughput for {full_name}: {row[config.COL_THROUGHPUT]:.2f} items/sec")
         return row[config.COL_THROUGHPUT]
 
     # Get the effective items if already calculated
@@ -585,22 +803,30 @@ def _calculate_throughput(row: dict[str, Any]) -> float | None:
     if effective_items is None:
         # Calculate effective items based on source
         effective_items = _calculate_effective_items(row)
+        logger.debug(f"Calculated effective_items for {full_name}: {effective_items}")
 
     # If we still don't have effective items, we can't calculate throughput
     if effective_items is None or effective_items <= 0:
+        logger.warning(f"Cannot calculate throughput for {full_name}: no valid effective_items")
         return None
 
     # Get the mean latency
     mean_latency_ms = row.get(config.COL_MEAN_LATENCY, 0)
     if mean_latency_ms <= 0:
+        logger.warning(f"Cannot calculate throughput for {full_name}: invalid latency {mean_latency_ms}")
         return None
 
     # Calculate throughput: items per second = items / (latency in seconds)
     mean_latency_s = mean_latency_ms / 1000.0
     throughput = effective_items / mean_latency_s
 
-    logger.debug(f"Calculated throughput for {row.get('full_name', '')}: {throughput:.2f} items/sec")
-    logger.debug(f"  effective_items={effective_items}, mean_latency_ms={mean_latency_ms:.2f}")
+    # Special handling for Python benchmarks which often need throughput calculated
+    if source.startswith("python_"):
+        logger.info(f"Python benchmark throughput for {full_name}: {throughput:.2f} items/sec")
+        logger.info(f"  effective_items={effective_items}, mean_latency_ms={mean_latency_ms:.2f} ms")
+    else:
+        logger.debug(f"Calculated throughput for {full_name}: {throughput:.2f} items/sec")
+        logger.debug(f"  effective_items={effective_items}, mean_latency_ms={mean_latency_ms:.2f} ms")
 
     return throughput
 
@@ -617,14 +843,16 @@ def _calculate_effective_items(row: dict[str, Any]) -> int | None:
     """
     source = row.get(config.COL_SOURCE, "")
     kernel_name = row.get(config.COL_KERNEL_NAME, "")
+    full_name = row.get("full_name", "unknown")
 
     # Use both source and kernel_name for more reliable detection
     if "pal" in source or kernel_name == "paged_attention":
         # For PAL, effective items is num_query_items
         num_query_items = row.get("num_query_items", 0)
         if num_query_items is not None and num_query_items > 0:
+            logger.debug(f"PAL effective_items for {full_name}: {num_query_items} (num_query_items)")
             return num_query_items
-        logger.warning(f"PAL benchmark without valid num_query_items: {row.get('full_name', '')}")
+        logger.warning(f"PAL benchmark without valid num_query_items: {full_name}")
         return 0
 
     elif "sdpa" in source or kernel_name == "sdpa":
@@ -634,12 +862,15 @@ def _calculate_effective_items(row: dict[str, Any]) -> int | None:
 
         if batch_size is not None and num_q_heads is not None and batch_size > 0 and num_q_heads > 0:
             effective = batch_size * num_q_heads
+            logger.debug(
+                f"SDPA effective_items for {full_name}: {effective} (batch_size={batch_size} * num_q_heads={num_q_heads})"
+            )
             return effective
 
-        logger.warning(f"SDPA benchmark without valid batch_size or num_q_heads: {row.get('full_name', '')}")
+        logger.warning(f"SDPA benchmark without valid batch_size or num_q_heads: {full_name}")
         return 0
 
-    logger.warning(f"Unknown source/kernel for effective_items calculation: {source}/{kernel_name}")
+    logger.warning(f"Unknown source/kernel for effective_items calculation: {source}/{kernel_name} in {full_name}")
     return None
 
 
@@ -748,12 +979,31 @@ def extract_and_normalize_parameters(df: pd.DataFrame) -> pd.DataFrame:
         if col not in df.columns:
             df[col] = pd.NA
 
+    # Count by source for debugging
+    source_counts = df[config.COL_SOURCE].value_counts().to_dict()
+    logger.info(f"Processing {len(df)} rows: {source_counts}")
+
+    # First pass: Extract model config names and clean them
+    for idx, row in df.iterrows():
+        if (
+            "model_configs" in row[config.COL_BENCHMARK_NAME_BASE]
+            or "ModelConfig" in row[config.COL_BENCHMARK_NAME_BASE]
+        ):
+            model_config_name = row.get("model_config_name")
+            if model_config_name and isinstance(model_config_name, str):
+                # Clean up model name - remove _mean, _median, etc suffixes from C++ benchmarks
+                clean_model_name = re.sub(r"_(mean|median|stddev|cv)$", "", model_config_name)
+                if clean_model_name != model_config_name:
+                    logger.info(f"Cleaned model config name: {model_config_name} -> {clean_model_name}")
+                    df.at[idx, "model_config_name"] = clean_model_name
+
     # Process each row to extract and normalize parameters
     for idx, row in df.iterrows():
         base_name = row[config.COL_BENCHMARK_NAME_BASE]
         params_str = row[config.COL_PARAMS_STR]
         source = row[config.COL_SOURCE]
         kernel_name = row.get(config.COL_KERNEL_NAME, "unknown")
+        full_name = row.get("full_name", "unknown")
 
         logger.debug(f"Processing benchmark: name={base_name}, source={source}, kernel={kernel_name}")
 
@@ -762,12 +1012,12 @@ def extract_and_normalize_parameters(df: pd.DataFrame) -> pd.DataFrame:
 
         # Extract varying parameters using the parser function
         extracted_params = parser_func(params_str)
-        logger.debug(f"Extracted varying parameters: {extracted_params}")
+        logger.debug(f"Extracted varying parameters for {full_name}: {extracted_params}")
 
         # Additional processing for model config benchmarks
         if "model_configs" in base_name or "ModelConfig" in base_name:
             model_config_params = _extract_model_config_params(row.to_dict())
-            logger.debug(f"Extracted model config parameters: {model_config_params}")
+            logger.debug(f"Extracted model config parameters for {full_name}: {model_config_params}")
             extracted_params.update(model_config_params)
         else:
             # For non-model-config benchmarks, ensure all standard parameters have defaults
@@ -804,26 +1054,30 @@ def extract_and_normalize_parameters(df: pd.DataFrame) -> pd.DataFrame:
                 if "num_kv_heads" not in extracted_params:
                     extracted_params["num_kv_heads"] = config.DEFAULT_NUM_KV_HEADS
 
-        logger.debug(f"Final parameters after defaults: {extracted_params}")
+        logger.debug(f"Final parameters after defaults for {full_name}: {extracted_params}")
 
         # Update the DataFrame with extracted parameters
         for param_name, param_value in extracted_params.items():
             df.at[idx, param_name] = param_value
 
-        # Re-fetch the updated row for calculations
-        updated_row = df.loc[idx].to_dict()  # type: ignore[call-overload]
+    # After setting initial parameters, make a second pass for calculations
+    for idx, row in df.iterrows():
+        full_name = row.get("full_name", "unknown")
 
         # Calculate effective items (for fair comparison between PAL and SDPA)
         # Important: Calculate effective_items before throughput
-        effective_items = _calculate_effective_items(updated_row)
+        effective_items = _calculate_effective_items(row.to_dict())
         if effective_items is not None:
             df.at[idx, "effective_items"] = effective_items
-            updated_row["effective_items"] = effective_items
+
+        # Re-fetch the row to include the effective_items we just set
+        updated_row = df.loc[idx].to_dict()  # type: ignore[reportCallIssue]
 
         # Calculate throughput if not already present
         throughput = _calculate_throughput(updated_row)
         if throughput is not None:
             df.at[idx, config.COL_THROUGHPUT] = throughput
+            logger.debug(f"Set throughput for {full_name} to {throughput:.2f} items/sec")
 
     # Ensure all relevant columns have proper numeric dtypes
     numeric_cols = [
@@ -843,6 +1097,27 @@ def extract_and_normalize_parameters(df: pd.DataFrame) -> pd.DataFrame:
     for col in numeric_cols:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # Print summary stats after processing
+    logger.info(f"After processing: {len(df)} rows")
+    for col in numeric_cols:
+        if col in df.columns:
+            non_null_count = df[col].count()
+            null_count = df[col].isna().sum()
+            valid_ratio = non_null_count / len(df) if len(df) > 0 else 0
+            logger.info(f"Column {col}: {non_null_count} non-null, {null_count} null (valid ratio: {valid_ratio:.2f})")
+
+    # Log a few examples for debugging
+    for source in df[config.COL_SOURCE].unique():
+        sample = df[df[config.COL_SOURCE] == source].head(1)
+        if not sample.empty:
+            row = sample.iloc[0].to_dict()
+            throughput = row.get(config.COL_THROUGHPUT)
+            throughput_str = f"{throughput:.2f}" if throughput is not None else "None"
+            logger.info(
+                f"Sample {source} row: seq_len={row.get('seq_len')}, head_dim={row.get('head_dim')}, "
+                + f"effective_items={row.get('effective_items')}, throughput={throughput_str}"
+            )
 
     return df
 

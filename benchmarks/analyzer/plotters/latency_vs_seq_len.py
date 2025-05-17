@@ -8,6 +8,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from matplotlib.ticker import LogFormatter, LogLocator
 
 from benchmarks.analyzer import plot_utils
 from benchmarks.analyzer.config import (
@@ -23,6 +24,9 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 STYLES = plot_utils.get_plot_styles()
+# Define a distinct color for reference lines to avoid clash with grid/data
+# Using a light, desaturated blue/purple for subtlety but distinctiveness
+DISTINCT_REF_LINE_COLOR = "#B0C4DE"  # LightSteelBlue, can be adjusted
 
 
 def plot(
@@ -80,33 +84,40 @@ def plot(
     source_styles = {
         "cpp_pal": {
             "color": styles["PAL_CPP_COLOR"],
-            "linestyle": styles["PAL_CPP_STYLE"],
+            "linestyle": "-",  # Solid line for clarity
             "linewidth": styles["PAL_LINEWIDTH"],
             "marker": styles["PAL_CPP_MARKER"],
             "label": styles["PAL_CPP_LABEL"],
+            "zorder": 3,  # Ensure data lines are on top
         },
         "python_pal": {
             "color": styles["PAL_PY_COLOR"],
-            "linestyle": styles["PAL_PY_STYLE"],
+            "linestyle": "-",  # Solid line for clarity
             "linewidth": styles["PAL_LINEWIDTH"],
             "marker": styles["PAL_PY_MARKER"],
             "label": styles["PAL_PY_LABEL"],
+            "zorder": 3,
         },
         "cpp_sdpa": {
             "color": styles["SDPA_CPP_COLOR"],
-            "linestyle": styles["SDPA_CPP_STYLE"],
+            "linestyle": "-",  # Solid line for clarity
             "linewidth": styles["SDPA_LINEWIDTH"],
             "marker": styles["SDPA_CPP_MARKER"],
             "label": styles["SDPA_CPP_LABEL"],
+            "zorder": 3,
         },
         "python_sdpa": {
             "color": styles["SDPA_PY_COLOR"],
-            "linestyle": styles["SDPA_PY_STYLE"],
+            "linestyle": "-",  # Solid line for clarity
             "linewidth": styles["SDPA_LINEWIDTH"],
             "marker": styles["SDPA_PY_MARKER"],
             "label": styles["SDPA_PY_LABEL"],
+            "zorder": 3,
         },
     }
+
+    # Track which sources we actually plotted
+    plotted_sources = []
 
     # Plot latency for each source
     for src, group in plot_df.groupby(COL_SOURCE):
@@ -126,8 +137,10 @@ def plot(
         # Plot latency (check for valid data)
         if not group[COL_MEAN_LATENCY].isna().all() and len(group["seq_len"].unique()) > 1:
             ax_latency.plot(group["seq_len"], group[COL_MEAN_LATENCY], **source_style)
+            plotted_sources.append(src)
+            logger.info(f"Plotted latency data for source: {src}")
         else:
-            logger.warning(f"Missing latency data for source {src} in latency_vs_seq_len plot")
+            logger.warning(f"Missing or insufficient latency data for source {src} in latency_vs_seq_len plot")
 
         # Plot throughput if available
         if (
@@ -136,66 +149,113 @@ def plot(
             and len(group["seq_len"].unique()) > 1
         ):
             ax_throughput.plot(group["seq_len"], group[COL_THROUGHPUT], **source_style)
+            logger.info(f"Plotted throughput data for source: {src}")
         else:
             logger.debug(f"Missing throughput data for source {src} in latency_vs_seq_len plot")
+
+    # Log summary of what was plotted
+    logger.info(f"Successfully plotted data for {len(plotted_sources)} sources: {', '.join(plotted_sources)}")
+
+    # Store current Y limits of ax_latency based on DATA ONLY, before reference lines
+    data_y_min_latency, data_y_max_latency = None, None
+    if ax_latency.get_lines():  # Check if any data was actually plotted
+        data_y_min_latency, data_y_max_latency = ax_latency.get_ylim()
 
     # Add reference lines if we have enough data points
     valid_data = plot_df[plot_df[COL_MEAN_LATENCY].notna()]
     seq_lens = valid_data["seq_len"].unique()
 
     if len(seq_lens) > 1 and not valid_data.empty:
-        min_seq = min(seq_lens)
-        max_seq = max(seq_lens)
+        try:
+            min_seq = min(s for s in seq_lens if s > 0)  # Ensure min_seq is positive for logspace
+            max_seq = max(seq_lens)
 
-        # Find a suitable reference point for scaling
-        # Use the median point for more stability
-        ref_idx = valid_data["seq_len"].searchsorted(min_seq)
-        if ref_idx < len(valid_data):
-            ref_point = valid_data.iloc[ref_idx]
-            ref_latency = ref_point[COL_MEAN_LATENCY]
-            ref_seq_len = ref_point["seq_len"]
+            # Skip reference lines if min/max are too close or invalid
+            if min_seq <= 0 or max_seq <= 0 or max_seq <= min_seq:  # also check max_seq > 0
+                logger.warning(f"Cannot add reference lines: invalid sequence length range [{min_seq}, {max_seq}]")
+            else:
+                # Find a representative point from actual data for scaling reference lines
+                # Use the minimum latency point as reference for scaling
+                ref_data_for_scaling = valid_data.loc[valid_data[COL_MEAN_LATENCY].idxmin()]
 
-            if ref_latency > 0 and ref_seq_len > 0:
-                # Linear reference line O(n)
-                x_linear = np.array([min_seq, max_seq])
-                scale_factor = ref_latency / ref_seq_len
-                y_linear = x_linear * scale_factor
+                if (
+                    pd.notna(ref_data_for_scaling["seq_len"])
+                    and ref_data_for_scaling["seq_len"] > 0
+                    and pd.notna(ref_data_for_scaling[COL_MEAN_LATENCY])
+                    and ref_data_for_scaling[COL_MEAN_LATENCY] > 0
+                ):
+                    ref_x_val = ref_data_for_scaling["seq_len"]
+                    ref_y_val = ref_data_for_scaling[COL_MEAN_LATENCY]
 
-                ax_latency.plot(
-                    x_linear,
-                    y_linear,
-                    color=styles["REF_LINE_COLOR"],
-                    linestyle=styles["REF_LINE_STYLE"],
-                    linewidth=styles["REF_LINE_WIDTH"],
-                    alpha=styles["REF_LINE_ALPHA"],
-                    label="O(n)",
-                )
+                    logger.info(f"Using reference point for scaling: seq_len={ref_x_val}, latency={ref_y_val}")
 
-                # Quadratic reference line O(n²)
-                y_quadratic = x_linear**2 * (scale_factor / ref_seq_len)
+                    # Create more x values for smoother reference lines
+                    x_vals = np.logspace(np.log10(min_seq), np.log10(max_seq), 100)
 
-                ax_latency.plot(
-                    x_linear,
-                    y_quadratic,
-                    color=styles["REF_LINE_COLOR"],
-                    linestyle=":",
-                    linewidth=styles["REF_LINE_WIDTH"],
-                    alpha=styles["REF_LINE_ALPHA"],
-                    label="O(n²)",
-                )
+                    # O(n log n) reference line
+                    if (
+                        ref_x_val > 1 and np.log2(ref_x_val) > 0
+                    ):  # log2(1) is 0, causing division by zero if ref_x_val is 1
+                        scale_nlogn = ref_y_val / (ref_x_val * np.log2(ref_x_val))
+                        # Ensure x_vals for log are > 1 for log2
+                        valid_x_for_log = x_vals[x_vals > 1]
+                        if len(valid_x_for_log) > 0:
+                            y_nlogn = scale_nlogn * valid_x_for_log * np.log2(valid_x_for_log)
+                            ax_latency.plot(
+                                valid_x_for_log,
+                                y_nlogn,
+                                color=DISTINCT_REF_LINE_COLOR,
+                                linestyle="-.",
+                                linewidth=styles["REF_LINE_WIDTH"],
+                                alpha=float(styles["REF_LINE_ALPHA"]) * 0.8,
+                                label="O(n log n)",
+                                zorder=1,  # Draw behind data
+                            )
+                            logger.debug(f"Added O(n log n) reference line, scale_factor={scale_nlogn}")
+                            ax_latency.text(
+                                ref_x_val,
+                                ref_y_val,
+                                "O(n log n)",
+                                color=DISTINCT_REF_LINE_COLOR,
+                                alpha=0.8,
+                                fontsize=styles["REF_LINE_FONTSIZE"],
+                            )
+                    else:
+                        logger.warning(
+                            f"Cannot add O(n log n) reference line: invalid reference x value {ref_x_val} or it's <= 1"
+                        )
 
-                # Log-linear reference line O(n log n)
-                y_nlogn = x_linear * np.log2(x_linear) * (scale_factor / (ref_seq_len * np.log2(ref_seq_len)))
-
-                ax_latency.plot(
-                    x_linear,
-                    y_nlogn,
-                    color=styles["REF_LINE_COLOR"],
-                    linestyle="-.",
-                    linewidth=styles["REF_LINE_WIDTH"],
-                    alpha=styles["REF_LINE_ALPHA"],
-                    label="O(n log n)",
-                )
+                    # O(n) reference line
+                    if ref_x_val > 0:  # Avoid division by zero for ref_x_val
+                        scale_n = ref_y_val / ref_x_val
+                        y_n = scale_n * x_vals
+                        ax_latency.plot(
+                            x_vals,
+                            y_n,
+                            color=DISTINCT_REF_LINE_COLOR,
+                            linestyle="--",  # Dashed line for O(n)
+                            linewidth=styles["REF_LINE_WIDTH"],
+                            alpha=float(styles["REF_LINE_ALPHA"]) * 0.8,
+                            label="O(n)",
+                            zorder=1,
+                        )
+                        ax_latency.text(
+                            ref_x_val,
+                            ref_y_val,
+                            "O(n)",
+                            color=DISTINCT_REF_LINE_COLOR,
+                            alpha=0.8,
+                            fontsize=styles["REF_LINE_FONTSIZE"],
+                        )
+                        logger.debug(f"Added O(n) reference line, scale_factor={scale_n}")
+                    else:
+                        logger.warning(f"Cannot add O(n) reference line: invalid reference x value {ref_x_val}")
+                else:
+                    logger.warning(
+                        "Could not determine valid reference point for scaling reference lines in Latency vs SeqLen."
+                    )
+        except Exception as e:
+            logger.error(f"Error adding reference lines: {e}", exc_info=True)
 
     # Set title based on whether we're filtering by kernel
     title_prefix = ""
@@ -207,36 +267,158 @@ def plot(
     # Set latency plot aesthetics
     plot_utils.apply_common_plot_aesthetics(
         ax_latency,
-        f"{title_prefix}Latency vs Sequence Length",
-        "Sequence Length",
+        f"{title_prefix}Latency (milliseconds) vs Sequence Length (tokens)",
+        "Sequence Length (tokens)",
         "Mean Latency (ms)",
         styles,
-        x_scale="log",
-        y_scale="log",
+        x_scale="linear",
+        y_scale="log",  # Changed from "linear" to "log"
         include_legend=True,
     )
+
+    # Ensure all items are shown in the legend with appropriate styling
+    ax_latency.legend(loc="upper left", bbox_to_anchor=(1.05, 1), borderaxespad=0.0)
+
+    # Add reference lines for throughput if we have enough data points
+    valid_data_throughput = plot_df[
+        plot_df[COL_THROUGHPUT].notna() & plot_df["seq_len"].notna() & (plot_df[COL_THROUGHPUT] > 0)
+    ]
+    seq_lens_throughput = valid_data_throughput["seq_len"].unique()
+
+    if len(seq_lens_throughput) > 1 and not valid_data_throughput.empty:
+        try:
+            min_seq_t = min(s for s in seq_lens_throughput if s > 0)
+            max_seq_t = max(seq_lens_throughput)
+
+            if min_seq_t <= 0 or max_seq_t <= 0 or max_seq_t <= min_seq_t:
+                logger.warning(
+                    f"Cannot add throughput reference lines: invalid sequence length range [{min_seq_t}, {max_seq_t}]"
+                )
+            else:
+                # Use the point with maximum throughput as reference for scaling
+                ref_data_t_scaling = valid_data_throughput.loc[valid_data_throughput[COL_THROUGHPUT].idxmax()]
+
+                if (
+                    pd.notna(ref_data_t_scaling["seq_len"])
+                    and ref_data_t_scaling["seq_len"] > 0
+                    and pd.notna(ref_data_t_scaling[COL_THROUGHPUT])
+                    and ref_data_t_scaling[COL_THROUGHPUT] > 0
+                ):
+                    ref_s_val_t = ref_data_t_scaling["seq_len"]
+                    ref_t_val = ref_data_t_scaling[COL_THROUGHPUT]
+
+                    logger.info(
+                        f"Using throughput reference point for scaling: seq_len={ref_s_val_t}, throughput={ref_t_val}"
+                    )
+
+                    x_vals_t = np.linspace(min_seq_t, max_seq_t, 100)
+                    # Ensure x_vals_t are positive for calculations
+                    x_vals_t = x_vals_t[x_vals_t > 0]
+                    if len(x_vals_t) == 0:
+                        raise ValueError("No valid x_vals_t > 0 for throughput reference lines.")
+
+                    # O(1/n) reference line for throughput
+                    if ref_s_val_t > 0:
+                        scale_inv_n = ref_t_val * ref_s_val_t
+                        y_inv_n = scale_inv_n / x_vals_t
+                        ax_throughput.plot(
+                            x_vals_t,
+                            y_inv_n,
+                            color=DISTINCT_REF_LINE_COLOR,
+                            linestyle="--",
+                            linewidth=styles["REF_LINE_WIDTH"],
+                            alpha=float(styles["REF_LINE_ALPHA"]) * 0.8,
+                            label="O(1/n)",
+                            zorder=1,
+                        )
+                        logger.debug(f"Added O(1/n) throughput reference line, scale_factor={scale_inv_n}")
+
+                    # O(1/(n log n)) reference line for throughput
+                    valid_x_for_log_t = x_vals_t[x_vals_t > 1]
+                    if ref_s_val_t > 1 and np.log2(ref_s_val_t) > 0 and len(valid_x_for_log_t) > 0:
+                        scale_inv_nlogn = ref_t_val * ref_s_val_t * np.log2(ref_s_val_t)
+                        y_inv_nlogn = scale_inv_nlogn / (valid_x_for_log_t * np.log2(valid_x_for_log_t))
+                        ax_throughput.plot(
+                            valid_x_for_log_t,
+                            y_inv_nlogn,
+                            color=DISTINCT_REF_LINE_COLOR,
+                            linestyle="-.",
+                            linewidth=styles["REF_LINE_WIDTH"],
+                            alpha=float(styles["REF_LINE_ALPHA"]) * 0.8,
+                            label="O(1/(n log n))",
+                            zorder=1,
+                        )
+                        logger.debug(f"Added O(1/(n log n)) throughput reference line, scale_factor={scale_inv_nlogn}")
+                else:
+                    logger.warning("Could not determine valid reference point for scaling throughput reference lines.")
+        except Exception as e:
+            logger.error(f"Error adding throughput reference lines: {e}", exc_info=True)
 
     # Set throughput plot aesthetics
     plot_utils.apply_common_plot_aesthetics(
         ax_throughput,
         f"{title_prefix}Throughput vs Sequence Length",
-        "Sequence Length",
-        "Throughput (items/sec)",
+        "Sequence Length (tokens)",
+        "Throughput (Query Vectors/sec)",
         styles,
-        x_scale="log",
+        x_scale="linear",
         y_scale="log",
-        include_legend=False,  # Legend already in latency plot
+        include_legend=True,
     )
 
-    # Adjust layout
-    plt.tight_layout()
+    # For ax_throughput, adjust legend and padding
+    ax_throughput.legend(loc="upper right", fontsize=styles["LEGEND_FONTSIZE"], frameon=False)
+
+    # Add padding to axis limits for better visualization if needed
+    # For ax_latency, use the stored data_y_min_latency, data_y_max_latency if available
+    if data_y_min_latency is not None and data_y_max_latency is not None:
+        # Ensure limits are not identical, causing issues with padding
+        if data_y_max_latency == data_y_min_latency:
+            data_y_max_latency += 1  # Add a small delta if min and max are the same
+        # For log scale, bottom must be > 0
+        bottom = data_y_min_latency * 0.9
+        top = data_y_max_latency * 1.1
+        if bottom <= 0:
+            positive_ys = plot_df[COL_MEAN_LATENCY][plot_df[COL_MEAN_LATENCY] > 0]
+            bottom = positive_ys.min() * 0.9 if not positive_ys.empty else 1e-3
+
+        ax_latency.set_ylim(bottom=bottom, top=top)
+    elif ax_latency.get_lines():  # Fallback if data_y_min/max weren't captured but lines exist
+        # This case should ideally not be hit if the above logic is correct
+        y_min, y_max = ax_latency.get_ylim()
+        if y_max == y_min:
+            y_max += 1
+        bottom = y_min * 0.9
+        top = y_max * 1.1
+        if bottom <= 0:
+            # Use the smallest positive y value from the data, or a minuscule epsilon if none exist
+            positive_ys = plot_df[COL_MEAN_LATENCY][plot_df[COL_MEAN_LATENCY] > 0]
+            bottom = positive_ys.min() * 0.9 if not positive_ys.empty else 1e-3
+        ax_latency.set_ylim(bottom=bottom, top=top)
+
+    # For ax_throughput, adjust legend and padding
+    ax_throughput.legend(loc="upper right", fontsize=styles["LEGEND_FONTSIZE"], frameon=False)
+
+    # For ax_throughput, ensure y-limits are not degenerate and add a touch of padding
+    if ax_throughput.get_lines():
+        y_min, y_max = ax_throughput.get_ylim()
+        if y_max == y_min:
+            y_max += 1
+        ax_throughput.set_ylim(bottom=y_min * 0.9, top=y_max * 1.1)
 
     # Construct filename based on kernel filter
     filename = f"{kernel_filter}_latency_vs_seq_len.png" if kernel_filter else "latency_vs_seq_len.png"
 
-    # Save figure
+    # Save figure with a flourish of directory creation
     output_dir.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_dir / filename, dpi=300)
     plt.close(fig)
+
+    # Add y-axis ticks
+    ax_latency.yaxis.set_major_locator(LogLocator(base=10))
+    ax_latency.yaxis.set_major_formatter(LogFormatter(labelOnlyBase=False))
+
+    ax_latency.minorticks_on()
+    ax_latency.grid(which="minor", linestyle=":", linewidth=0.5, alpha=0.3)
 
     return filename

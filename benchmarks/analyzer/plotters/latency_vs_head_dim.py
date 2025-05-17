@@ -144,45 +144,60 @@ def plot(
     head_dims = valid_data["head_dim"].unique()
 
     if len(head_dims) > 1 and not valid_data.empty:
-        min_dim = min(head_dims)
-        max_dim = max(head_dims)
+        try:
+            min_dim = min(head_dims)
+            max_dim = max(head_dims)
 
-        # Find a suitable reference point for scaling
-        # Use the median point for more stability
-        ref_idx = valid_data["head_dim"].searchsorted(min_dim)
-        if ref_idx < len(valid_data):
-            ref_point = valid_data.iloc[ref_idx]
-            ref_latency = ref_point[COL_MEAN_LATENCY]
-            ref_head_dim = ref_point["head_dim"]
+            # Skip reference lines if min/max are too close or invalid
+            if min_dim <= 0 or max_dim <= min_dim:
+                logger.warning(f"Cannot add reference lines: invalid head dimension range [{min_dim}, {max_dim}]")
+            else:
+                # Find a suitable reference point for scaling
+                # Use the smallest head dimension point for better scaling
+                ref_data = valid_data[valid_data["head_dim"] == min_dim]
+                if not ref_data.empty:
+                    ref_point = ref_data.iloc[0]
+                    ref_latency = ref_point[COL_MEAN_LATENCY]
+                    ref_head_dim = ref_point["head_dim"]
 
-            if ref_latency > 0 and ref_head_dim > 0:
-                # Linear reference line O(d)
-                x_linear = np.array([min_dim, max_dim])
-                scale_factor = ref_latency / ref_head_dim
-                y_linear = x_linear * scale_factor
+                    if ref_latency > 0 and ref_head_dim > 0:
+                        # Linear reference line O(d)
+                        x_linear = np.array([min_dim, max_dim])
+                        scale_factor = ref_latency / ref_head_dim
+                        y_linear = x_linear * scale_factor
 
-                ax_latency.plot(
-                    x_linear,
-                    y_linear,
-                    color=styles["REF_LINE_COLOR"],
-                    linestyle=styles["REF_LINE_STYLE"],
-                    linewidth=styles["REF_LINE_WIDTH"],
-                    alpha=styles["REF_LINE_ALPHA"],
-                    label="O(d)",
-                )
+                        ax_latency.plot(
+                            x_linear,
+                            y_linear,
+                            color=styles["REF_LINE_COLOR"],
+                            linestyle=styles["REF_LINE_STYLE"],
+                            linewidth=styles["REF_LINE_WIDTH"],
+                            alpha=styles["REF_LINE_ALPHA"],
+                            label="O(d)",
+                        )
+                        logger.debug(f"Added O(d) reference line, scale_factor={scale_factor}")
 
-                # Quadratic reference line O(d²)
-                y_quadratic = x_linear**2 * (scale_factor / ref_head_dim)
+                        # Quadratic reference line O(d²)
+                        y_quadratic = x_linear**2 * (scale_factor / ref_head_dim)
 
-                ax_latency.plot(
-                    x_linear,
-                    y_quadratic,
-                    color=styles["REF_LINE_COLOR"],
-                    linestyle=":",
-                    linewidth=styles["REF_LINE_WIDTH"],
-                    alpha=styles["REF_LINE_ALPHA"],
-                    label="O(d²)",
-                )
+                        ax_latency.plot(
+                            x_linear,
+                            y_quadratic,
+                            color=styles["REF_LINE_COLOR"],
+                            linestyle=":",
+                            linewidth=styles["REF_LINE_WIDTH"],
+                            alpha=styles["REF_LINE_ALPHA"],
+                            label="O(d²)",
+                        )
+                        logger.debug("Added O(d²) reference line")
+                    else:
+                        logger.warning(
+                            f"Cannot add reference lines: invalid reference point latency={ref_latency}, head_dim={ref_head_dim}"
+                        )
+                else:
+                    logger.warning(f"Cannot add reference lines: no data point found for min_dim={min_dim}")
+        except Exception as e:
+            logger.error(f"Error adding reference lines: {e}")
 
     # Set title based on whether we're filtering by kernel
     title_prefix = ""
