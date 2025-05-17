@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import matplotlib.pyplot as plt
+from matplotlib.axes import Axes
 
 # Important column name constants
 COL_BENCHMARK_NAME_BASE = "benchmark_name_base"
@@ -47,7 +48,7 @@ def get_plot_styles() -> dict[str, str | float]:
 
 
 def apply_common_plot_aesthetics(
-    ax: plt.Axes,
+    ax: Axes,
     title: str,
     xlabel: str,
     ylabel: str,

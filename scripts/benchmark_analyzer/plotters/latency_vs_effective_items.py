@@ -88,7 +88,8 @@ def plot(df: pd.DataFrame, output_dir: Path, styles: dict[str, str | float] | No
         group = group.sort_values("effective_items")
 
         # Get style for this source
-        source_style = source_styles.get(src, {})
+        
+        source_style = source_styles.get(str(src), {})
         if not source_style:
             # Default style if source not in mapping
             source_style = {"color": "gray", "linestyle": "-", "linewidth": 2, "marker": "o", "label": src}
