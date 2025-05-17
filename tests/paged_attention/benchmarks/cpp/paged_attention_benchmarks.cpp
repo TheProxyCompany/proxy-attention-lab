@@ -19,11 +19,25 @@
 #include <cmath>
 #include <vector>
 
+#include <mlx/mlx.h>
 #include <mlx/array.h>
 #include <mlx/random.h>
 #include <mlx/ops.h>
 
+#include <spdlog/spdlog.h>
+
 #include "pal_core/ops.hpp"
+
+// Static initializer to set spdlog level for benchmarks
+struct BenchmarkSpdlogInitializer {
+    BenchmarkSpdlogInitializer() {
+        // Set default log level for benchmarks to warning to reduce noise
+        spdlog::set_level(spdlog::level::warn);
+        spdlog::info("PAL C++ Benchmarks: spdlog level set to 'warn'. Debug/trace messages from pal_core_lib will be suppressed.");
+    }
+};
+// This object will be constructed before main(), ensuring the log level is set
+static BenchmarkSpdlogInitializer global_benchmark_spdlog_initializer;
 
 namespace mx = mlx::core;
 
@@ -38,30 +52,45 @@ const int DEFAULT_NUM_QUERY_ITEMS = 64;  // For DEFAULT_NUM_Q_HEADS=1, this mean
 
 // Helper function to create the page table
 mx::array create_page_table(int num_sequences_in_batch, int num_logical_pages_per_seq) {
-    std::vector<std::vector<uint32_t>> pt_data(num_sequences_in_batch,
-                                              std::vector<uint32_t>(num_logical_pages_per_seq));
+    const int total_entries = num_sequences_in_batch * num_logical_pages_per_seq;
+    std::vector<uint32_t> pt_data(total_entries);
+
     for (int b_idx = 0; b_idx < num_sequences_in_batch; ++b_idx) {
         for (int l_idx = 0; l_idx < num_logical_pages_per_seq; ++l_idx) {
-            pt_data[b_idx][l_idx] = b_idx * num_logical_pages_per_seq + l_idx;
+            pt_data[b_idx * num_logical_pages_per_seq + l_idx] =
+                static_cast<uint32_t>(b_idx * num_logical_pages_per_seq + l_idx);
         }
     }
-    return mx::array(pt_data, mx::uint32);
+
+    // Construct the array from raw data and explicitly provide its shape.
+    return mx::array(
+        pt_data.data(),
+        {num_sequences_in_batch, num_logical_pages_per_seq},
+        mx::uint32
+    );
 }
 
 // Helper function to create the query to sequence map
 mx::array create_query_to_seq_map(int num_tokens, int num_sequences_in_batch) {
     std::vector<int32_t> q_to_seq_data(num_tokens);
+
     if (num_sequences_in_batch == 1) {
         std::fill(q_to_seq_data.begin(), q_to_seq_data.end(), 0);
     } else {
-        int tokens_per_seq_in_map = num_tokens / num_sequences_in_batch;
+        const int tokens_per_seq = num_tokens / num_sequences_in_batch;
         for (int s_idx = 0; s_idx < num_sequences_in_batch; ++s_idx) {
-            for (int t_idx = 0; t_idx < tokens_per_seq_in_map; ++t_idx) {
-                q_to_seq_data[s_idx * tokens_per_seq_in_map + t_idx] = s_idx;
+            for (int t_idx = 0; t_idx < tokens_per_seq; ++t_idx) {
+                q_to_seq_data[s_idx * tokens_per_seq + t_idx] = s_idx;
             }
         }
     }
-    return mx::array(q_to_seq_data, mx::int32);
+
+    // Construct the array from raw data and explicitly provide its shape.
+    return mx::array(
+        q_to_seq_data.data(),
+        {num_tokens},
+        mx::int32
+    );
 }
 
 static void BM_PAL_LatencyVsSeqLen(benchmark::State& state) {

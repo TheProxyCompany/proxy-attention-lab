@@ -199,6 +199,9 @@ mlx_build_metallib(
     OUTPUT_FILENAME ${PAL_METALLIB_FILENAME}
 )
 
+set(PAL_METALLIB_PATH ${CMAKE_CURRENT_BINARY_DIR}/${PAL_METALLIB_FILENAME} CACHE INTERNAL "Path to built pal.metallib")
+message(STATUS "PAL Core: pal.metallib built at ${PAL_METALLIB_PATH}")
+
 add_dependencies(${CORE_LIB_NAME} ${METALLIB_TARGET})
 
 # Define the Nanobind module

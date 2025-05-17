@@ -1,22 +1,24 @@
 #!/usr/bin/env bash
 #
-# Script to build and run all benchmarks for Proxy Attention Lab (PAL)
-# - Updates dependencies and rebuilds PAL.
-# - Runs Python pytest-benchmark tests.
-# - Runs C++ Google Benchmark tests.
+# Script to build and run all benchmarks for the project.
+# - Updates dependencies and rebuilds the project.
+# - Discovers and runs Python pytest-benchmark tests.
+# - Discovers and runs C++ Google Benchmark executables.
 
 set -euo pipefail # Exit on error, unset var, pipe failure
 trap 'echo "ERROR: Script failed at line $LINENO with exit code $?" >&2' ERR
 
 # --- Configuration ---
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." &>/dev/null && pwd)" # Assumes script is in a 'scripts' subdir or similar
-VENV_DIR="${PROJECT_ROOT}/.venv"
-BUILD_DIR="${PROJECT_ROOT}/build" # CMake build directory
+VENV_DIR=".venv"
+BUILD_DIR="build" # CMake build directory
 UV_EXECUTABLE_PATH=""             # Will be detected
-PYTEST_BENCHMARK_FILE="${PROJECT_ROOT}/tests/paged_attention/benchmarks/python/test_pal_performance_pytest.py"
-CPP_BENCHMARK_EXECUTABLE="${BUILD_DIR}/tests/paged_attention/benchmarks/cpp/pal_op_benchmarks"
-CPP_BENCHMARK_OUTPUT_JSON="${BUILD_DIR}/pal_cpp_benchmark_results.json" # For C++ results
+
+# Directories for benchmark discovery
+PYTHON_BENCHMARK_ROOT_DIR="tests" # Root for Python benchmark discovery
+CPP_BENCHMARK_BUILD_ROOT_DIR="build/tests" # Root for C++ benchmark executable discovery
+
+# Naming conventions for discovery
+PYTHON_BENCHMARK_PATTERN="test_*performance*.py" # Pattern for Python benchmark files
 
 # --- Helper Functions ---
 log() {
@@ -58,70 +60,118 @@ activate_venv() {
 
 # --- Main Script Logic ---
 main() {
-    cd "${PROJECT_ROOT}" # Ensure we are in the project root
-
     hr
-    log "Starting PAL Benchmark Suite"
+    log "Starting Benchmark Suite Runner"
     hr
 
     detect_uv
     activate_venv
 
-    # 1. Update Dependencies and Rebuild PAL
-    #    (This ensures we're benchmarking the latest code with correct dependencies)
-    log "Updating dependencies and rebuilding PAL..."
-    # Assuming MLX and Nanobind might have updates, though --no-deps is used for PAL itself later
-    "${UV_EXECUTABLE_PATH}" pip install --upgrade --no-deps "git+https://github.com/TheProxyCompany/mlx.git" "nanobind>=2.5.0" # Use >= for nanobind
+    # 1. Update Dependencies and Rebuild Project
+    log "Updating dependencies and rebuilding project..."
+    "${UV_EXECUTABLE_PATH}" pip install --upgrade --no-deps "git+https://github.com/TheProxyCompany/mlx.git" "nanobind>=2.5.0"
 
-    # Rebuild PAL C++ extension and Python package
-    # The --force-reinstall and --no-cache-dir ensure a clean build of the extension
-    # CMAKE_BUILD_PARALLEL_LEVEL can be set as an env var if desired
     if [ -n "${CMAKE_BUILD_PARALLEL_LEVEL:-}" ]; then
         log "Using CMAKE_BUILD_PARALLEL_LEVEL=${CMAKE_BUILD_PARALLEL_LEVEL}"
     else
         log "CMAKE_BUILD_PARALLEL_LEVEL not set, CMake will use its default parallelism."
     fi
     "${UV_EXECUTABLE_PATH}" pip install . --force-reinstall --no-build-isolation --no-cache-dir
-    log "PAL rebuilt successfully."
+    log "Project rebuilt successfully."
 
-    # 2. Run Python Pytest Benchmarks
+    # Ensure the main build/output directory for benchmarks exists
+    log "Ensuring benchmark output directory exists: ${BUILD_DIR}"
+    mkdir -p "${BUILD_DIR}"
+
+    # Explicitly configure and build C++ benchmarks
     hr
-    log "Running Python pytest-benchmark tests from: ${PYTEST_BENCHMARK_FILE}"
-    if [ ! -f "${PYTEST_BENCHMARK_FILE}" ]; then
-        log "ERROR: Python benchmark file not found: ${PYTEST_BENCHMARK_FILE}" >&2
-        exit 1
+    log "Configuring C++ benchmarks separately..."
+    # Use the CMAKE_BUILD_PARALLEL_LEVEL if set, otherwise let CMake decide or use a default
+    local cmake_parallel_args=""
+    if [ -n "${CMAKE_BUILD_PARALLEL_LEVEL:-}" ]; then
+        cmake_parallel_args="-j${CMAKE_BUILD_PARALLEL_LEVEL}"
+    elif command -v nproc &>/dev/null; then
+        cmake_parallel_args="-j$(nproc)"
+    elif [[ "$OSTYPE" == "darwin"* ]]; then
+        cmake_parallel_args="-j$(sysctl -n hw.ncpu)"
+    else
+        cmake_parallel_args="-j2" # Default to 2 jobs if nproc/sysctl not available
     fi
-    # Command to run pytest benchmarks and save results
-    # Adjust columns or output format as needed
-    PYTEST_BENCHMARK_JSON_OUTPUT="${BUILD_DIR}/pal_python_benchmark_results.json"
-    pytest "${PYTEST_BENCHMARK_FILE}" \
-        --benchmark-only \
-        --benchmark-columns="min,max,mean,stddev,rounds,iterations" \
-        --benchmark-json="${PYTEST_BENCHMARK_JSON_OUTPUT}" \
-        -v
-    log "Python pytest-benchmark tests completed. Results potentially in ${PYTEST_BENCHMARK_JSON_OUTPUT}"
+
+    cmake -S . -B "${BUILD_DIR}" -DCMAKE_BUILD_TYPE=Release # Configure all targets from root
+    log "C++ benchmark CMake configuration complete."
+
+    log "Building C++ benchmarks..."
+    cmake --build "${BUILD_DIR}" ${cmake_parallel_args} # Build all targets, including benchmarks
+    # Alternatively, to build only the specific benchmark target if known and desired:
+    # cmake --build "${BUILD_DIR}" --target pal_op_benchmarks ${cmake_parallel_args}
+    log "C++ benchmarks built."
     hr
 
-    # 3. Run C++ Google Benchmarks
-    log "Running C++ Google Benchmark tests: ${CPP_BENCHMARK_EXECUTABLE}"
-    if [ ! -x "${CPP_BENCHMARK_EXECUTABLE}" ]; then
-        log "ERROR: C++ benchmark executable not found or not executable: ${CPP_BENCHMARK_EXECUTABLE}" >&2
-        log "Ensure PAL was built correctly (e.g., run 'cmake --build ${BUILD_DIR} --target ${CPP_BENCHMARK_EXECUTABLE##*/}' or full build)."
-        exit 1
+    # 2. Discover and Run Python Pytest Benchmarks
+    hr
+    log "Discovering and Running Python pytest-benchmark tests..."
+
+    # Use find to locate Python benchmark files
+    # Adjust depth or path if benchmark files are nested differently
+    python_benchmark_files=()
+    while IFS= read -r -d $'\0' file; do
+        python_benchmark_files+=("$file")
+    done < <(find "${PYTHON_BENCHMARK_ROOT_DIR}" -type f -name "${PYTHON_BENCHMARK_PATTERN}" -print0)
+
+    # if [ ${#python_benchmark_files[@]} -eq 0 ]; then
+    #     log "No Python benchmark files found matching pattern '${PYTHON_BENCHMARK_PATTERN}' in '${PYTHON_BENCHMARK_ROOT_DIR}'."
+    # else
+    #     for benchmark_file in "${python_benchmark_files[@]}"; do
+    #         hr
+    #         log "Running Python benchmarks in: ${benchmark_file}"
+    #         # Generate a unique JSON output name based on the benchmark file name
+    #         local benchmark_basename
+    #         benchmark_basename=$(basename "${benchmark_file}" .py)
+    #         local python_json_output="${BUILD_DIR}/${benchmark_basename}_results.json"
+
+    #         pytest "${benchmark_file}" \
+    #             --benchmark-only \
+    #             --benchmark-columns="min,max,mean,stddev,rounds,iterations" \
+    #             --benchmark-json="${python_json_output}" \
+    #             -v
+    #         log "Python benchmarks from ${benchmark_file} completed. Results potentially in ${python_json_output}"
+    #     done
+    # fi
+    hr
+
+    # 3. Discover and Run C++ Google Benchmarks
+    log "Discovering and Running C++ Google Benchmark tests..."
+
+    # Use find to locate C++ benchmark executables in the build directory
+    cpp_benchmark_executables=()
+    while IFS= read -r -d $'\0' file; do
+        cpp_benchmark_executables+=("$file")
+    done < <(find "${CPP_BENCHMARK_BUILD_ROOT_DIR}" -type f -perm -u+x -print0)
+
+    if [ ${#cpp_benchmark_executables[@]} -eq 0 ]; then
+        log "No C++ benchmark executables found in '${CPP_BENCHMARK_BUILD_ROOT_DIR}'."
+        log "Ensure project was built correctly and executables are in the expected locations."
+    else
+        for benchmark_exe in "${cpp_benchmark_executables[@]}"; do
+            hr
+            log "Running C++ benchmarks: ${benchmark_exe}"
+            local benchmark_exename
+            benchmark_exename=$(basename "${benchmark_exe}")
+            local cpp_json_output="${BUILD_DIR}/${benchmark_exename}_results.json"
+
+            SPDLOG_LEVEL=warn "${benchmark_exe}" \
+                --benchmark_format=json \
+                --benchmark_out="${cpp_json_output}" \
+                --benchmark_repetitions=3 # Default repetitions, can be overridden
+                # Add other common Google Benchmark flags if desired
+            log "C++ benchmarks from ${benchmark_exe} completed. Results saved to ${cpp_json_output}"
+        done
     fi
-    # Run C++ benchmarks and output to JSON
-    "${CPP_BENCHMARK_EXECUTABLE}" \
-        --benchmark_format=json \
-        --benchmark_out="${CPP_BENCHMARK_OUTPUT_JSON}" \
-        --benchmark_repetitions=3 # Example: add repetitions
-        # Add other Google Benchmark flags as needed, e.g., --benchmark_filter=BM_PAL_LatencyVsSeqLen
-
-    log "C++ Google Benchmark tests completed. Results saved to ${CPP_BENCHMARK_OUTPUT_JSON}"
     hr
 
-    log "PAL Benchmark Suite Finished."
-    log "Python results are in terminal output and potentially: ${PYTEST_BENCHMARK_JSON_OUTPUT}"
-    log "C++ results are in: ${CPP_BENCHMARK_OUTPUT_JSON}"
+    log "Benchmark Suite Finished."
+    log "Review individual JSON output files in ${BUILD_DIR}/ for detailed results."
 }
 
 # --- Script Execution ---
