@@ -7,13 +7,21 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from analyzer import plot_utils
-from analyzer.config import COL_MEAN_LATENCY, COL_SOURCE, COL_THROUGHPUT
+
+from benchmarks.analyzer import plot_utils
+from benchmarks.analyzer.config import (
+    COL_KERNEL_NAME,
+    COL_MEAN_LATENCY,
+    COL_SOURCE,
+    COL_THROUGHPUT,
+)
 
 STYLES = plot_utils.get_plot_styles()
 
 
-def plot(df: pd.DataFrame, output_dir: Path, styles: dict[str, str | float] | None = None) -> str:
+def plot(
+    df: pd.DataFrame, output_dir: Path, styles: dict[str, str | float] | None = None, kernel_filter: str | None = None
+) -> str:
     """
     Generate model configuration latency and throughput bar charts.
 
@@ -24,6 +32,7 @@ def plot(df: pd.DataFrame, output_dir: Path, styles: dict[str, str | float] | No
         df: DataFrame with benchmark results.
         output_dir: Output directory for the generated plot.
         styles: Plot style dictionary.
+        kernel_filter: Optional kernel name to filter by (e.g., "paged_attention", "sdpa").
 
     Returns:
         Filename of the generated plot.
@@ -32,6 +41,11 @@ def plot(df: pd.DataFrame, output_dir: Path, styles: dict[str, str | float] | No
 
     # Filter out rows without model_config_name
     cfg_df = df.dropna(subset=["model_config_name"])
+
+    # Filter by kernel if specified
+    if kernel_filter and COL_KERNEL_NAME in cfg_df.columns:
+        cfg_df = cfg_df[cfg_df[COL_KERNEL_NAME] == kernel_filter]
+
     if cfg_df.empty:
         return ""
 
@@ -135,10 +149,17 @@ def plot(df: pd.DataFrame, output_dir: Path, styles: dict[str, str | float] | No
                         fontsize=styles.get("LEGEND_FONTSIZE", 8),
                     )
 
+    # Set title based on whether we're filtering by kernel
+    title_prefix = ""
+    if kernel_filter:
+        # Format the kernel name for display
+        kernel_display = kernel_filter.replace("_", " ").title()
+        title_prefix = f"{kernel_display}: "
+
     # Set latency plot aesthetics
     plot_utils.apply_common_plot_aesthetics(
         ax_latency,
-        "Model Configuration Latency",
+        f"{title_prefix}Model Configuration Latency",
         "",  # No x-label for latency (shared with throughput)
         "Mean Latency (ms)",
         styles,
@@ -148,7 +169,7 @@ def plot(df: pd.DataFrame, output_dir: Path, styles: dict[str, str | float] | No
     # Set throughput plot aesthetics
     plot_utils.apply_common_plot_aesthetics(
         ax_throughput,
-        "Model Configuration Throughput",
+        f"{title_prefix}Model Configuration Throughput",
         "Model Configuration",
         "Throughput (items/sec)",
         styles,
@@ -162,9 +183,11 @@ def plot(df: pd.DataFrame, output_dir: Path, styles: dict[str, str | float] | No
     # Adjust layout
     plt.tight_layout()
 
+    # Construct filename based on kernel filter
+    filename = f"{kernel_filter}_model_configs_comparison.png" if kernel_filter else "model_configs_comparison.png"
+
     # Save figure
     output_dir.mkdir(parents=True, exist_ok=True)
-    filename = "model_configs_comparison.png"
     fig.savefig(output_dir / filename, dpi=300)
     plt.close(fig)
 

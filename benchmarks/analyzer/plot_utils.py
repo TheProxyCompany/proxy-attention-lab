@@ -5,8 +5,6 @@ from __future__ import annotations
 import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
 
-# Import column name constants from config
-
 
 def get_plot_styles() -> dict[str, str | float]:
     """Return standardized plotting styles."""

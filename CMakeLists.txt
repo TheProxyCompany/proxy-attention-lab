@@ -38,7 +38,7 @@ add_subdirectory(src/pal_core)
 # Recursively find benchmark directories by locating their CMakeLists.txt files.
 file(GLOB_RECURSE _BENCHMARK_CMAKE_FILES
      CONFIGURE_DEPENDS
-     "${CMAKE_SOURCE_DIR}/tests/*/benchmarks/cpp/CMakeLists.txt"
+     "${CMAKE_SOURCE_DIR}/benchmarks/*/cpp/CMakeLists.txt"
 )
 
 set(BENCHMARK_DIRS "") # Initialize list of benchmark directories

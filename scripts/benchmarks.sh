@@ -311,6 +311,9 @@ run_cpp_benchmarks() {
 }
 
 analyze_results() {
+    local kernel="${1:-}"
+    local analyzer_args=""
+
     hr
     log "Analyzing benchmark results..."
 
@@ -321,9 +324,15 @@ analyze_results() {
         return 1
     fi
 
+    # Add kernel filter if provided
+    if [ -n "${kernel}" ]; then
+        log "Filtering analysis for kernel: ${kernel}"
+        analyzer_args="--kernel ${kernel}"
+    fi
+
     # Run analysis script
     log "Running analysis script on results in ${BENCHMARK_OUTPUT_ROOT}..."
-    python -m benchmarks.analyzer "${BENCHMARK_OUTPUT_ROOT}" "${BENCHMARK_OUTPUT_ROOT}"
+    python -m benchmarks.analyzer "${BENCHMARK_OUTPUT_ROOT}" "${BENCHMARK_OUTPUT_ROOT}" ${analyzer_args}
 
     log "Analysis complete. Results saved to ${BENCHMARK_OUTPUT_ROOT}"
     hr
@@ -360,7 +369,7 @@ main() {
         update_and_rebuild_project
         run_python_benchmarks ""
         run_cpp_benchmarks ""
-        analyze_results
+        analyze_results ""
     else
         # Process flags
         local RUN_AND_ANALYZE=false
@@ -425,7 +434,7 @@ main() {
 
         if [ "${ANALYZE_ONLY}" = true ]; then
             log "Analyze-only mode"
-            analyze_results
+            analyze_results "${RUN_KERNEL}"
             exit 0
         fi
 
@@ -451,7 +460,7 @@ main() {
             # If requested, analyze after running benchmarks
             if [ "${RUN_AND_ANALYZE}" = true ]; then
                 log "Running analysis after benchmark execution"
-                analyze_results
+                analyze_results "${RUN_KERNEL}"
             fi
         fi
     fi

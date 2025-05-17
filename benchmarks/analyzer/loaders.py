@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from . import config
+from benchmarks.analyzer import config
 
 
 def detect_format(json_file: Path) -> str:
@@ -20,6 +20,53 @@ def detect_format(json_file: Path) -> str:
     if "machine_info" in data and "benchmarks" in data:
         return "pytest"
     raise ValueError(f"Unknown benchmark format for {json_file}")
+
+
+def extract_kernel_name(filename_stem: str, bench_name: str | None = None) -> str:
+    """
+    Extract kernel name from filename or benchmark name.
+
+    Args:
+        filename_stem: The stem of the filename (without extension)
+        bench_name: Optional benchmark name to extract kernel from
+
+    Returns:
+        Extracted kernel name (e.g., "paged_attention", "sdpa")
+    """
+    # First try to extract from benchmark name if provided
+    if bench_name:
+        # For BM_PAL_ or BM_SDPA_ format
+        if "BM_PAL_" in bench_name:
+            return "paged_attention"
+        elif "BM_SDPA_" in bench_name:
+            return "sdpa"
+        # For test_pal_ or test_sdpa_ format
+        elif "test_pal_" in bench_name:
+            return "paged_attention"
+        elif "test_sdpa_" in bench_name:
+            return "sdpa"
+
+    # Then try to extract from filename patterns
+    # cpp_[kernel]_benchmarks_cpp_* or py_[kernel]_*
+    kernel_match = re.search(r"(?:cpp|py)_([a-zA-Z0-9_]+)_", filename_stem)
+    if kernel_match:
+        kernel = kernel_match.group(1)
+        # Map standard kernel names
+        if kernel == "pal":
+            return "paged_attention"
+        elif kernel == "sdpa":
+            return "sdpa"
+        # For other kernels, return as-is
+        return kernel
+
+    # Fallback to basic detection
+    if "paged_attention" in filename_stem or ("pal" in filename_stem.lower() and "sdpa" not in filename_stem.lower()):
+        return "paged_attention"
+    elif "sdpa" in filename_stem.lower():
+        return "sdpa"
+
+    # Last resort
+    return "unknown_kernel"
 
 
 def parse_google_benchmark(json_file: Path) -> list[dict]:
@@ -62,6 +109,9 @@ def parse_google_benchmark(json_file: Path) -> list[dict]:
             # Last resort fallback - should rarely happen
             source = "cpp_pal" if "pal" in name.lower() and "sdpa" not in name.lower() else "cpp_sdpa"
 
+        # Extract kernel name from benchmark name or filename
+        kernel_name = extract_kernel_name(filename_stem, name)
+
         base_match = re.match(r"(?P<base>[^/]+)", name)
         base_name = base_match.group("base") if base_match else name
         params_str = name[len(base_name) :].lstrip("/")
@@ -78,6 +128,7 @@ def parse_google_benchmark(json_file: Path) -> list[dict]:
             config.COL_BENCHMARK_NAME_BASE: base_name,
             "full_name": name,
             config.COL_SOURCE: source,
+            config.COL_KERNEL_NAME: kernel_name,  # Add the extracted kernel name
             config.COL_MEAN_LATENCY: bench.get("real_time", 0) / 1_000_000.0,
             config.COL_THROUGHPUT: bench.get("items_per_second"),
             config.COL_PARAMS_STR: params_str,
@@ -122,6 +173,9 @@ def parse_pytest_benchmark(json_file: Path) -> list[dict]:
         elif "test_sdpa_" in name:
             source = "python_sdpa"
 
+        # Extract kernel name from benchmark name or filename
+        kernel_name = extract_kernel_name(filename_stem, name)
+
         group = bench.get("group", "")
         base_name = group if group else name.split("[")[0]
 
@@ -151,6 +205,7 @@ def parse_pytest_benchmark(json_file: Path) -> list[dict]:
             config.COL_BENCHMARK_NAME_BASE: base_name,
             "full_name": name,
             config.COL_SOURCE: source,
+            config.COL_KERNEL_NAME: kernel_name,  # Add the extracted kernel name
             config.COL_MEAN_LATENCY: stats.get("mean", 0) * 1000.0,  # Convert to ms
             config.COL_PARAMS_STR: params_str,
             "rounds": stats.get("rounds"),

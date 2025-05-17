@@ -7,8 +7,8 @@ import logging
 import sys
 from pathlib import Path
 
-from analyzer import config, loaders, plot_utils, reporters, transformers
-from analyzer.plotters import (
+from benchmarks.analyzer import config, loaders, plot_utils, reporters, transformers
+from benchmarks.analyzer.plotters import (
     latency_vs_effective_items,
     latency_vs_head_dim,
     latency_vs_seq_len,
@@ -30,6 +30,7 @@ def main() -> None:
     parser.add_argument("results_dir", type=Path, help="Directory with JSON results")
     parser.add_argument("output_dir", type=Path, help="Directory for generated artifacts")
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose output")
+    parser.add_argument("--kernel", type=str, help="Filter results by kernel name (e.g., 'paged_attention', 'sdpa')")
     args = parser.parse_args()
 
     # Set logging level based on verbosity
@@ -78,33 +79,38 @@ def main() -> None:
     logger.info("Generating plots...")
     plot_filenames: dict[str, str] = {}
 
+    # Use kernel filter if provided
+    kernel_filter = args.kernel
+    if kernel_filter:
+        logger.info(f"Filtering results for kernel: {kernel_filter}")
+
     # Plot latency vs sequence length
-    seq_len_plot = latency_vs_seq_len.plot(df, args.output_dir, styles)
+    seq_len_plot = latency_vs_seq_len.plot(df, args.output_dir, styles, kernel_filter)
     if seq_len_plot:
         plot_filenames["latency_vs_seq_len"] = seq_len_plot
-        logger.info("Generated latency vs sequence length plot")
+        logger.info(f"Generated latency vs sequence length plot{' for ' + kernel_filter if kernel_filter else ''}")
 
     # Plot latency vs head dimension
-    head_dim_plot = latency_vs_head_dim.plot(df, args.output_dir, styles)
+    head_dim_plot = latency_vs_head_dim.plot(df, args.output_dir, styles, kernel_filter)
     if head_dim_plot:
         plot_filenames["latency_vs_head_dim"] = head_dim_plot
-        logger.info("Generated latency vs head dimension plot")
+        logger.info(f"Generated latency vs head dimension plot{' for ' + kernel_filter if kernel_filter else ''}")
 
     # Plot latency vs effective items
-    effective_items_plot = latency_vs_effective_items.plot(df, args.output_dir, styles)
+    effective_items_plot = latency_vs_effective_items.plot(df, args.output_dir, styles, kernel_filter)
     if effective_items_plot:
         plot_filenames["latency_vs_effective_items"] = effective_items_plot
-        logger.info("Generated latency vs effective items plot")
+        logger.info(f"Generated latency vs effective items plot{' for ' + kernel_filter if kernel_filter else ''}")
 
     # Plot model configurations latency
-    model_plot = model_configs_latency.plot(df, args.output_dir, styles)
+    model_plot = model_configs_latency.plot(df, args.output_dir, styles, kernel_filter)
     if model_plot:
         plot_filenames["model_configs_latency"] = model_plot
-        logger.info("Generated model configurations plot")
+        logger.info(f"Generated model configurations plot{' for ' + kernel_filter if kernel_filter else ''}")
 
     # Generate JSON report with summary metrics
     logger.info("Generating JSON report...")
-    reporters.generate_json_report(df, args.output_dir, plot_filenames)
+    reporters.generate_json_report(df, args.output_dir, plot_filenames, kernel_filter)
 
     logger.info("Analysis complete. Results saved to %s", args.output_dir)
 

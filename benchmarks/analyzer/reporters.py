@@ -8,7 +8,14 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-from analyzer.config import COL_BENCHMARK_NAME_BASE, COL_MEAN_LATENCY, COL_SOURCE, COL_THROUGHPUT
+
+from benchmarks.analyzer.config import (
+    COL_BENCHMARK_NAME_BASE,
+    COL_KERNEL_NAME,
+    COL_MEAN_LATENCY,
+    COL_SOURCE,
+    COL_THROUGHPUT,
+)
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -124,7 +131,9 @@ def _get_metric_records(df: pd.DataFrame, category: str) -> list[dict[str, Any]]
     return records  # type: ignore[reportMismatchedReturnType]
 
 
-def generate_json_report(df: pd.DataFrame, output_dir: Path, plot_filenames: dict[str, str]) -> None:
+def generate_json_report(
+    df: pd.DataFrame, output_dir: Path, plot_filenames: dict[str, str], kernel_filter: str | None = None
+) -> None:
     """
     Generate a comprehensive JSON report with summary metrics.
 
@@ -137,8 +146,16 @@ def generate_json_report(df: pd.DataFrame, output_dir: Path, plot_filenames: dic
         df: DataFrame with benchmark results.
         output_dir: Output directory for the report.
         plot_filenames: Dictionary mapping plot categories to filenames.
+        kernel_filter: Optional kernel name to filter by (e.g., "paged_attention", "sdpa").
     """
     report = {"summary_metrics": {}, "plot_files": plot_filenames}
+
+    # Filter by kernel if specified
+    if kernel_filter and COL_KERNEL_NAME in df.columns:
+        filtered_df = df[df[COL_KERNEL_NAME] == kernel_filter]
+        if not filtered_df.empty:
+            df = filtered_df
+            report["kernel_filter"] = kernel_filter
 
     if not df.empty:
         # Overall metrics
@@ -155,6 +172,12 @@ def generate_json_report(df: pd.DataFrame, output_dir: Path, plot_filenames: dic
             benchmarks = df[COL_BENCHMARK_NAME_BASE].unique().tolist()
             report["summary_metrics"]["benchmarks"] = benchmarks
             report["summary_metrics"]["benchmark_count"] = len(benchmarks)
+
+        # Count unique kernels
+        if COL_KERNEL_NAME in df.columns:
+            kernels = df[COL_KERNEL_NAME].unique().tolist()
+            report["summary_metrics"]["kernels"] = kernels
+            report["summary_metrics"]["kernel_count"] = len(kernels)
 
         # Add data for each plot category
         plot_categories = [

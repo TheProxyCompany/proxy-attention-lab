@@ -1,6 +1,6 @@
 """Plotter modules for benchmark analyzer."""
 
-from analyzer.plotters import (
+from benchmarks.analyzer.plotters import (
     latency_vs_effective_items,
     latency_vs_head_dim,
     latency_vs_seq_len,
