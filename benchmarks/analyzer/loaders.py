@@ -128,12 +128,29 @@ def parse_google_benchmark(json_file: Path) -> list[dict]:
                 model_config_name = model_match.group(1)
                 logger.debug(f"Extracted C++ model config: {model_config_name} from {name}")
 
+        # Convert the reported real_time to milliseconds. Google Benchmark may
+        # emit timings in various units, so interpret the provided time_unit
+        # field when available.
+        time_unit = bench.get("time_unit", "ns")
+        real_time = bench.get("real_time", 0)
+        if time_unit == "ns":
+            mean_latency_ms = real_time / 1_000_000.0
+        elif time_unit == "us":
+            mean_latency_ms = real_time / 1_000.0
+        elif time_unit == "ms":
+            mean_latency_ms = real_time
+        elif time_unit == "s":
+            mean_latency_ms = real_time * 1000.0
+        else:
+            logger.warning(f"Unexpected time unit '{time_unit}' for benchmark {name}; assuming ns")
+            mean_latency_ms = real_time / 1_000_000.0
+
         row = {
             config.COL_BENCHMARK_NAME_BASE: base_name,
             "full_name": name,
             config.COL_SOURCE: source,
             config.COL_KERNEL_NAME: kernel_name,  # Add the extracted kernel name
-            config.COL_MEAN_LATENCY: bench.get("real_time", 0) / 1_000_000.0,
+            config.COL_MEAN_LATENCY: mean_latency_ms,
             config.COL_THROUGHPUT: bench.get("items_per_second", None),
             config.COL_PARAMS_STR: params_str,
         }
