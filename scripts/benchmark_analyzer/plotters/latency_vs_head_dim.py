@@ -9,34 +9,11 @@ import numpy as np
 import pandas as pd
 
 from .. import plot_utils
-from ..config import COL_MEAN_LATENCY, COL_SOURCE, COL_THROUGHPUT
+from ..config import COL_BENCHMARK_NAME_BASE, COL_MEAN_LATENCY, COL_SOURCE, COL_THROUGHPUT
 
 STYLES = plot_utils.get_plot_styles()
 
 
-<<<<<<< HEAD
-def plot(df: pd.DataFrame, output_dir: Path, styles: dict[str, str | float] | None = None) -> dict[str, str]:
-    """Generate latency vs head dimension plots per kernel."""
-    styles = styles or STYLES
-    output_dir.mkdir(parents=True, exist_ok=True)
-    filenames: dict[str, str] = {}
-    for kernel, kdf in df.dropna(subset=["head_dim"]).groupby(COL_KERNEL_TESTED):
-        fig, ax = plt.subplots(figsize=(8, 6))
-        for lang, group in kdf.groupby(COL_LANGUAGE):
-            ax.plot(group["head_dim"], group[COL_MEAN_LATENCY], label=lang, marker="o")
-        plot_utils.apply_common_plot_aesthetics(
-            ax,
-            f"{kernel} Latency vs Head Dimension",
-            "Head Dimension",
-            "Mean Latency (ms)",
-            styles,
-        )
-        filename = f"latency_vs_head_dim_{kernel}.png"
-        fig.savefig(output_dir / filename, dpi=300)
-        plt.close(fig)
-        filenames[kernel] = filename
-    return filenames
-=======
 def plot(df: pd.DataFrame, output_dir: Path, styles: dict[str, str | float] | None = None) -> str:
     """
     Generate latency vs head dimension plots.
@@ -65,9 +42,10 @@ def plot(df: pd.DataFrame, output_dir: Path, styles: dict[str, str | float] | No
     plot_df = df[df[COL_SOURCE].notna() & df["head_dim"].notna() & df[COL_MEAN_LATENCY].notna()]
 
     # Further filter if we have benchmark_name_base information
-    if plot_utils.COL_BENCHMARK_NAME_BASE in plot_df.columns:
-        if set(benchmark_names).intersection(set(plot_df[plot_utils.COL_BENCHMARK_NAME_BASE].unique())):
-            plot_df = plot_df[plot_df[plot_utils.COL_BENCHMARK_NAME_BASE].isin(benchmark_names)]
+    if COL_BENCHMARK_NAME_BASE in plot_df.columns and set(benchmark_names) & set(
+        plot_df[COL_BENCHMARK_NAME_BASE].unique()
+    ):
+        plot_df = plot_df[plot_df[COL_BENCHMARK_NAME_BASE].isin(benchmark_names)]
 
     if plot_df.empty:
         return ""
@@ -113,7 +91,7 @@ def plot(df: pd.DataFrame, output_dir: Path, styles: dict[str, str | float] | No
         group = group.sort_values("head_dim")
 
         # Get style for this source
-        source_style = source_styles.get(src, {})
+        source_style = source_styles.get(str(src), {})
         if not source_style:
             # Default style if source not in mapping
             source_style = {"color": "gray", "linestyle": "-", "linewidth": 2, "marker": "o", "label": src}

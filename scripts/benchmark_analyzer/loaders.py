@@ -28,28 +28,39 @@ def parse_google_benchmark(json_file: Path) -> list[dict]:
         data = json.load(f)
     rows = []
 
-    # Determine source based on filename
+    # Get default source based on filename for fallback purposes
     filename_stem = json_file.stem  # e.g., "cpp_pal_BM_PAL_LatencyVsSeqLen_20250517_103000"
-    if filename_stem.startswith("cpp_pal_") or (filename_stem.startswith("cpp_all_") and "BM_PAL_" in filename_stem):
-        source = "cpp_pal"
-    elif filename_stem.startswith("cpp_sdpa_") or (
-        filename_stem.startswith("cpp_all_") and "BM_SDPA_" in filename_stem
-    ):
-        source = "cpp_sdpa"
+    default_source = None
+    if filename_stem.startswith("cpp_pal_"):
+        default_source = "cpp_pal"
+    elif filename_stem.startswith("cpp_sdpa_"):
+        default_source = "cpp_sdpa"
+    elif filename_stem.startswith("cpp_all_"):
+        # For combined files, there is no clear default
+        default_source = None
     else:
-        # Fallback to more basic detection if filename format doesn't match expected pattern
-        source = "cpp_pal" if "pal" in filename_stem.lower() and "sdpa" not in filename_stem.lower() else "cpp_sdpa"
-        
+        # Fallback to basic detection if filename format doesn't match expected pattern
+        default_source = (
+            "cpp_pal" if "pal" in filename_stem.lower() and "sdpa" not in filename_stem.lower() else "cpp_sdpa"
+        )
+
     for bench in data.get("benchmarks", []):
         if bench.get("run_type") != "aggregate" or bench.get("aggregate_name") != "mean":
             continue
         name = bench.get("name", "")
 
-        # Auto-detect source from benchmark name if necessary
+        # Determine source for each individual benchmark based on its name
+        # This ensures correct source assignment even if a single JSON contains both PAL and SDPA benchmarks
         if "BM_PAL_" in name:
             source = "cpp_pal"
         elif "BM_SDPA_" in name:
             source = "cpp_sdpa"
+        elif default_source:
+            # Use the default source if we can't determine from benchmark name
+            source = default_source
+        else:
+            # Last resort fallback - should rarely happen
+            source = "cpp_pal" if "pal" in name.lower() and "sdpa" not in name.lower() else "cpp_sdpa"
 
         base_match = re.match(r"(?P<base>[^/]+)", name)
         base_name = base_match.group("base") if base_match else name
@@ -101,7 +112,7 @@ def parse_pytest_benchmark(json_file: Path) -> list[dict]:
             source = "python_pal"
         else:
             source = "python_sdpa"
-            
+
     for bench in data.get("benchmarks", []):
         name = bench.get("name", "")
 
@@ -126,16 +137,15 @@ def parse_pytest_benchmark(json_file: Path) -> list[dict]:
         model_params_raw = None
 
         # Check if this is a model config benchmark
-        if "model_configs" in base_name:
+        if "model_configs" in base_name and "[" in name and "]" in name:
             # For pytest, the model config and params might be in the params_str
             # Format could be like: test_pal_latency_model_configs[Llama3_70B_Sim-{...}]
-            if "[" in name and "]" in name:
-                param_parts = params_str.split("-", 1)
-                if len(param_parts) > 0:
-                    model_config_name = param_parts[0]
-                    # Save model params if available
-                    if len(param_parts) > 1 and param_parts[1].startswith("{") and param_parts[1].endswith("}"):
-                        model_params_raw = param_parts[1]
+            param_parts = params_str.split("-", 1)
+            if param_parts:
+                model_config_name = param_parts[0]
+                # Save model params if available
+                if len(param_parts) > 1 and param_parts[1].startswith("{") and param_parts[1].endswith("}"):
+                    model_params_raw = param_parts[1]
 
         row = {
             config.COL_BENCHMARK_NAME_BASE: base_name,

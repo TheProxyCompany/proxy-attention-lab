@@ -5,8 +5,7 @@ from __future__ import annotations
 import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
 
-# Important column name constants
-COL_BENCHMARK_NAME_BASE = "benchmark_name_base"
+# Import column name constants from config
 
 
 def get_plot_styles() -> dict[str, str | float]:

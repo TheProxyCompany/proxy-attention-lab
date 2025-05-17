@@ -9,9 +9,11 @@ import numpy as np
 import pandas as pd
 
 from .. import plot_utils
-from ..config import COL_MEAN_LATENCY, COL_SOURCE, COL_THROUGHPUT
+from ..config import COL_BENCHMARK_NAME_BASE, COL_MEAN_LATENCY, COL_SOURCE, COL_THROUGHPUT
 
 STYLES = plot_utils.get_plot_styles()
+
+
 def plot(df: pd.DataFrame, output_dir: Path, styles: dict[str, str | float] | None = None) -> str:
     """
     Generate latency vs effective items plots.
@@ -40,9 +42,10 @@ def plot(df: pd.DataFrame, output_dir: Path, styles: dict[str, str | float] | No
     plot_df = df[df[COL_SOURCE].notna() & df["effective_items"].notna() & df[COL_MEAN_LATENCY].notna()]
 
     # Further filter if we have benchmark_name_base information
-    if plot_utils.COL_BENCHMARK_NAME_BASE in plot_df.columns:
-        if set(benchmark_names).intersection(set(plot_df[plot_utils.COL_BENCHMARK_NAME_BASE].unique())):
-            plot_df = plot_df[plot_df[plot_utils.COL_BENCHMARK_NAME_BASE].isin(benchmark_names)]
+    if COL_BENCHMARK_NAME_BASE in plot_df.columns and set(benchmark_names) & set(
+        plot_df[COL_BENCHMARK_NAME_BASE].unique()
+    ):
+        plot_df = plot_df[plot_df[COL_BENCHMARK_NAME_BASE].isin(benchmark_names)]
 
     if plot_df.empty:
         return ""
@@ -88,7 +91,7 @@ def plot(df: pd.DataFrame, output_dir: Path, styles: dict[str, str | float] | No
         group = group.sort_values("effective_items")
 
         # Get style for this source
-        
+
         source_style = source_styles.get(str(src), {})
         if not source_style:
             # Default style if source not in mapping
