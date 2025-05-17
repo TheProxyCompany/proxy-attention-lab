@@ -1,4 +1,4 @@
-"""Plot latency as a function of sequence length."""
+"""Plot latency as a function of effective items."""
 
 from __future__ import annotations
 
@@ -7,19 +7,19 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-
-from .. import plot_utils
-from ..config import COL_BENCHMARK_NAME_BASE, COL_MEAN_LATENCY, COL_SOURCE, COL_THROUGHPUT
+from analyzer import plot_utils
+from analyzer.config import COL_BENCHMARK_NAME_BASE, COL_MEAN_LATENCY, COL_SOURCE, COL_THROUGHPUT
 
 STYLES = plot_utils.get_plot_styles()
 
+
 def plot(df: pd.DataFrame, output_dir: Path, styles: dict[str, str | float] | None = None) -> str:
     """
-    Generate latency vs sequence length plots.
+    Generate latency vs effective items plots.
 
     Creates two plots:
-    1. Latency vs sequence length
-    2. Throughput vs sequence length (if throughput data available)
+    1. Latency vs effective items
+    2. Throughput vs effective items (if throughput data available)
 
     Args:
         df: DataFrame with benchmark results.
@@ -33,17 +33,18 @@ def plot(df: pd.DataFrame, output_dir: Path, styles: dict[str, str | float] | No
 
     # Filter data for this plot type
     benchmark_names = [
-        "BM_PAL_LatencyVsSeqLen",
-        "test_pal_latency_vs_seq_len",
-        "BM_SDPA_LatencyVsSeqLen",
-        "test_sdpa_latency_vs_seq_len",
+        "BM_PAL_LatencyVsNumItems",
+        "test_pal_latency_vs_query_items",
+        "BM_SDPA_LatencyVsNumItems",
+        "test_sdpa_latency_vs_batch_size",
     ]
-    plot_df = df[df[COL_SOURCE].notna() & df["seq_len"].notna() & df[COL_MEAN_LATENCY].notna()]
+    plot_df = df[df[COL_SOURCE].notna() & df["effective_items"].notna() & df[COL_MEAN_LATENCY].notna()]
 
     # Further filter if we have benchmark_name_base information
-    if COL_BENCHMARK_NAME_BASE in plot_df.columns:
-        if set(benchmark_names).intersection(set(plot_df[COL_BENCHMARK_NAME_BASE].unique())):
-            plot_df = plot_df[plot_df[COL_BENCHMARK_NAME_BASE].isin(benchmark_names)]
+    if COL_BENCHMARK_NAME_BASE in plot_df.columns and set(benchmark_names) & set(
+        plot_df[COL_BENCHMARK_NAME_BASE].unique()
+    ):
+        plot_df = plot_df[plot_df[COL_BENCHMARK_NAME_BASE].isin(benchmark_names)]
 
     if plot_df.empty:
         return ""
@@ -85,31 +86,32 @@ def plot(df: pd.DataFrame, output_dir: Path, styles: dict[str, str | float] | No
 
     # Plot latency for each source
     for src, group in plot_df.groupby(COL_SOURCE):
-        # Sort by sequence length
-        group = group.sort_values("seq_len")
+        # Sort by effective items
+        group = group.sort_values("effective_items")
 
         # Get style for this source
-        source_style = source_styles.get(src, {})
+
+        source_style = source_styles.get(str(src), {})
         if not source_style:
             # Default style if source not in mapping
             source_style = {"color": "gray", "linestyle": "-", "linewidth": 2, "marker": "o", "label": src}
 
         # Plot latency
-        ax_latency.plot(group["seq_len"], group[COL_MEAN_LATENCY], **source_style)
+        ax_latency.plot(group["effective_items"], group[COL_MEAN_LATENCY], **source_style)
 
         # Plot throughput if available
         if COL_THROUGHPUT in group.columns and not group[COL_THROUGHPUT].isna().all():
-            ax_throughput.plot(group["seq_len"], group[COL_THROUGHPUT], **source_style)
+            ax_throughput.plot(group["effective_items"], group[COL_THROUGHPUT], **source_style)
 
     # Add reference lines
-    seq_lens = plot_df["seq_len"].unique()
-    if len(seq_lens) > 1:
-        min_seq = min(seq_lens)
-        max_seq = max(seq_lens)
+    items = plot_df["effective_items"].unique()
+    if len(items) > 1:
+        min_items = min(items)
+        max_items = max(items)
 
         # Linear reference line O(n)
-        x_linear = np.array([min_seq, max_seq])
-        scale_factor = min(plot_df[COL_MEAN_LATENCY]) / min_seq
+        x_linear = np.array([min_items, max_items])
+        scale_factor = min(plot_df[COL_MEAN_LATENCY]) / min_items
         y_linear = x_linear * scale_factor
 
         ax_latency.plot(
@@ -122,24 +124,27 @@ def plot(df: pd.DataFrame, output_dir: Path, styles: dict[str, str | float] | No
             label="O(n)",
         )
 
-        # Quadratic reference line O(n²)
-        y_quadratic = x_linear**2 * (scale_factor / min_seq)
+        # Constant throughput reference (y = x)
+        if not plot_df[COL_THROUGHPUT].isna().all():
+            plot_df[COL_THROUGHPUT].min()
+            x_throughput = np.array([min_items, max_items])
+            y_throughput = x_throughput
 
-        ax_latency.plot(
-            x_linear,
-            y_quadratic,
-            color=styles["REF_LINE_COLOR"],
-            linestyle=":",
-            linewidth=styles["REF_LINE_WIDTH"],
-            alpha=styles["REF_LINE_ALPHA"],
-            label="O(n²)",
-        )
+            ax_throughput.plot(
+                x_throughput,
+                y_throughput,
+                color=styles["REF_LINE_COLOR"],
+                linestyle=styles["REF_LINE_STYLE"],
+                linewidth=styles["REF_LINE_WIDTH"],
+                alpha=styles["REF_LINE_ALPHA"],
+                label="Linear Scaling",
+            )
 
     # Set latency plot aesthetics
     plot_utils.apply_common_plot_aesthetics(
         ax_latency,
-        "Latency vs Sequence Length",
-        "Sequence Length",
+        "Latency vs Effective Items",
+        "Effective Items",
         "Mean Latency (ms)",
         styles,
         x_scale="log",
@@ -150,8 +155,8 @@ def plot(df: pd.DataFrame, output_dir: Path, styles: dict[str, str | float] | No
     # Set throughput plot aesthetics
     plot_utils.apply_common_plot_aesthetics(
         ax_throughput,
-        "Throughput vs Sequence Length",
-        "Sequence Length",
+        "Throughput vs Effective Items",
+        "Effective Items",
         "Throughput (items/sec)",
         styles,
         x_scale="log",
@@ -164,7 +169,7 @@ def plot(df: pd.DataFrame, output_dir: Path, styles: dict[str, str | float] | No
 
     # Save figure
     output_dir.mkdir(parents=True, exist_ok=True)
-    filename = "latency_vs_seq_len.png"
+    filename = "latency_vs_effective_items.png"
     fig.savefig(output_dir / filename, dpi=300)
     plt.close(fig)
 

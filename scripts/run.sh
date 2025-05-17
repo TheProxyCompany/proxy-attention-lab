@@ -46,7 +46,6 @@ fi
 
 log "Installing/Updating PAL dependencies (including MLX, Nanobind from pyproject.toml)..."
 export CMAKE_BUILD_PARALLEL_LEVEL=8 # Set parallel build level to 8
-export PAL_DEBUG=true
 export PAL_ENABLE_DEBUG_LOGGING=ON # Enable debug logging
 "$UV_EXECUTABLE_PATH" pip install --no-deps "git+https://github.com/TheProxyCompany/mlx.git" "nanobind==2.5.0"
 
@@ -54,6 +53,6 @@ export PAL_ENABLE_DEBUG_LOGGING=ON # Enable debug logging
 
 # Run Pytest
 log "Running tests..."
-"$PYTEST_EXE" tests/ "$@" --ignore-glob="tests/*/benchmarks"
+"$PYTEST_EXE" tests/ "$@"
 
 log "PAL Build & Test run finished successfully."

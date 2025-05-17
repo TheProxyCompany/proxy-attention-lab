@@ -7,10 +7,8 @@ import logging
 from typing import Any
 
 import pandas as pd
+from analyzer import config
 
-from . import config
-
-# Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -235,11 +233,14 @@ def _extract_model_config_params(row: dict[str, Any]) -> dict[str, Any]:
         if "model_params_raw" in row:
             try:
                 # Try to parse the raw parameter string as JSON
-                params_raw = row["model_params_raw"]
+                params_raw = row.get("model_params_raw")
+                params_dict = {}
                 if isinstance(params_raw, str):
-                    # Clean up the string if needed (remove braces, quotes, etc.)
-                    if params_raw.startswith("{") and params_raw.endswith("}"):
+                    # Attempt to parse as JSON if it looks like a dict
+                    try:
                         params_dict = json.loads(params_raw)
+                    except json.JSONDecodeError as e:
+                        logger.warning(f"Failed to parse model_params_raw as JSON: {e}")
 
                         # Extract relevant parameters
                         result["num_query_items"] = params_dict.get("num_query_items", config.DEFAULT_NUM_QUERY_ITEMS)
@@ -258,19 +259,14 @@ def _extract_model_config_params(row: dict[str, Any]) -> dict[str, Any]:
         # For Python SDPA, check if we have raw model params
         if "model_params_raw" in row:
             try:
-                # Try to parse the raw parameter string as JSON
                 params_raw = row["model_params_raw"]
-                if isinstance(params_raw, str):
-                    # Clean up the string if needed
-                    if params_raw.startswith("{") and params_raw.endswith("}"):
-                        params_dict = json.loads(params_raw)
-
-                        # Extract relevant parameters
-                        result["batch_size"] = params_dict.get("batch_size", config.DEFAULT_BATCH_SIZE)
-                        result["num_q_heads"] = params_dict.get("num_q_heads", config.DEFAULT_NUM_Q_HEADS)
-                        result["num_kv_heads"] = params_dict.get("num_kv_heads", config.DEFAULT_NUM_KV_HEADS)
-                        result["head_dim"] = params_dict.get("head_dim", config.DEFAULT_HEAD_DIM)
-                        result["seq_len"] = params_dict.get("seq_len", config.DEFAULT_SEQ_LEN)
+                if isinstance(params_raw, str) and params_raw.startswith("{") and params_raw.endswith("}"):
+                    params_dict = json.loads(params_raw)
+                    result["batch_size"] = params_dict.get("batch_size", config.DEFAULT_BATCH_SIZE)
+                    result["num_q_heads"] = params_dict.get("num_q_heads", config.DEFAULT_NUM_Q_HEADS)
+                    result["num_kv_heads"] = params_dict.get("num_kv_heads", config.DEFAULT_NUM_KV_HEADS)
+                    result["head_dim"] = params_dict.get("head_dim", config.DEFAULT_HEAD_DIM)
+                    result["seq_len"] = params_dict.get("seq_len", config.DEFAULT_SEQ_LEN)
             except (json.JSONDecodeError, TypeError) as e:
                 logger.warning(f"Failed to parse model_params_raw: {e}")
 
@@ -432,7 +428,7 @@ def extract_and_normalize_parameters(df: pd.DataFrame) -> pd.DataFrame:
 
         # Additional processing for model config benchmarks
         if "model_configs" in base_name or "ModelConfig" in base_name:
-            model_config_params = _extract_model_config_params(row)
+            model_config_params = _extract_model_config_params(row.to_dict())
             extracted_params.update(model_config_params)
 
         # Update the DataFrame with extracted parameters

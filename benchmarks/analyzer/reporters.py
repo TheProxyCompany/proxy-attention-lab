@@ -8,8 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-
-from .config import COL_BENCHMARK_NAME_BASE, COL_MEAN_LATENCY, COL_SOURCE, COL_THROUGHPUT
+from analyzer.config import COL_BENCHMARK_NAME_BASE, COL_MEAN_LATENCY, COL_SOURCE, COL_THROUGHPUT
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -122,7 +121,7 @@ def _get_metric_records(df: pd.DataFrame, category: str) -> list[dict[str, Any]]
     # Fill NaN values with Python None (better for JSON serialization)
     records = column_subset.replace({pd.NA: None}).to_dict(orient="records")
 
-    return records
+    return records  # type: ignore[reportMismatchedReturnType]
 
 
 def generate_json_report(df: pd.DataFrame, output_dir: Path, plot_filenames: dict[str, str]) -> None:

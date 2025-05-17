@@ -323,7 +323,7 @@ analyze_results() {
 
     # Run analysis script
     log "Running analysis script on results in ${BENCHMARK_OUTPUT_ROOT}..."
-    python -m benchmark_analyzer --results-dir "${BENCHMARK_OUTPUT_ROOT}" --output-dir "${BENCHMARK_OUTPUT_ROOT}" --verbose
+    python -m benchmarks.analyzer "${BENCHMARK_OUTPUT_ROOT}" "${BENCHMARK_OUTPUT_ROOT}"
 
     log "Analysis complete. Results saved to ${BENCHMARK_OUTPUT_ROOT}"
     hr

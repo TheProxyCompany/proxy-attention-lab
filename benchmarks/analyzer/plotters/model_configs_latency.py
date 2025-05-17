@@ -7,9 +7,8 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-
-from .. import plot_utils
-from ..config import COL_MEAN_LATENCY, COL_SOURCE, COL_THROUGHPUT
+from analyzer import plot_utils
+from analyzer.config import COL_MEAN_LATENCY, COL_SOURCE, COL_THROUGHPUT
 
 STYLES = plot_utils.get_plot_styles()
 

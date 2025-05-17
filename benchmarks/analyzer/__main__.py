@@ -7,8 +7,8 @@ import logging
 import sys
 from pathlib import Path
 
-from benchmark_analyzer import config, loaders, plot_utils, reporters, transformers
-from benchmark_analyzer.plotters import (
+from analyzer import config, loaders, plot_utils, reporters, transformers
+from analyzer.plotters import (
     latency_vs_effective_items,
     latency_vs_head_dim,
     latency_vs_seq_len,
