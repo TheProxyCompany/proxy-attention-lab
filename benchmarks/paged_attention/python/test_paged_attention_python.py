@@ -61,8 +61,10 @@ from proxy_attention_lab import paged_attention
 
 logger = logging.getLogger(__name__)
 
-# Baseline number of query vectors processed in each benchmark
-BASELINE_QUERY_VECTORS = 64 * 128  # 64 sequences of 128 tokens each
+# Baseline number of query vectors processed in each benchmark.
+# The C++ benchmarks use the same value so latency results can be
+# compared across implementations.
+BASELINE_QUERY_VECTORS = 64 * 128  # 64 sequences of 128 tokens each (8192 total)
 
 # Define baseline configuration for benchmarks
 BASELINE_CONFIG = {

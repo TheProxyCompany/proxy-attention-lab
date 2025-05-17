@@ -381,13 +381,15 @@ static void BM_PAL_LatencyVsNumItems(benchmark::State& state) {
 }
 
 // Register the benchmarks
+// Use a constant number of query vectors (8192) across the sweep so that
+// results are comparable with the Python benchmarks.
 BENCHMARK(BM_PAL_LatencyVsSeqLen)
-    ->Args({64*1, 64})
-    ->Args({64*1, 128})
-    ->Args({64*1, 256})
-    ->Args({64*1, 512})
-    ->Args({64*1, 1024})
-    ->Args({64*1, 2048});
+    ->Args({8192, 64})
+    ->Args({8192, 128})
+    ->Args({8192, 256})
+    ->Args({8192, 512})
+    ->Args({8192, 1024})
+    ->Args({8192, 2048});
 
 BENCHMARK(BM_PAL_LatencyVsHeadDim)
     ->Args({64*1, 64})
@@ -503,13 +505,15 @@ static void BM_SDPA_LatencyVsNumItems(benchmark::State& state) {
 }
 
 // Register the SDPA benchmarks
+// Adjust batch size so that batch_size * seq_len equals 8192
+// (num_q_heads is fixed at 1). This mirrors the PAL benchmark.
 BENCHMARK(BM_SDPA_LatencyVsSeqLen)
-    ->Args({SDPA_DEFAULT_BATCH_SIZE, 64})
-    ->Args({SDPA_DEFAULT_BATCH_SIZE, 128})
-    ->Args({SDPA_DEFAULT_BATCH_SIZE, 256})
-    ->Args({SDPA_DEFAULT_BATCH_SIZE, 512})
-    ->Args({SDPA_DEFAULT_BATCH_SIZE, 1024})
-    ->Args({SDPA_DEFAULT_BATCH_SIZE, 2048});
+    ->Args({128, 64})   // 128 * 64 = 8192
+    ->Args({64, 128})   // 64 * 128 = 8192
+    ->Args({32, 256})   // 32 * 256 = 8192
+    ->Args({16, 512})   // 16 * 512 = 8192
+    ->Args({8, 1024})   // 8 * 1024 = 8192
+    ->Args({4, 2048});  // 4 * 2048 = 8192
 
 BENCHMARK(BM_SDPA_LatencyVsHeadDim)
     ->Args({SDPA_DEFAULT_BATCH_SIZE, 64})
