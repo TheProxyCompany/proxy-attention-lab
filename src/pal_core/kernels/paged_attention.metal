@@ -237,22 +237,12 @@ using namespace metal;
             } else {
                 // Handle null K-vector pointer: fill corresponding K_tile entry with zeros
                 threadgroup float* k_tile_entry_ptr = K_tile + (local_thread_idx * padded_head_dim_hoisted);
-                for (uint d_chunk = 0; d_chunk < params.head_dim / 4; ++d_chunk) {
-                    k_tile_entry_ptr[d_chunk * 4 + 0] = 0.0f;
-                    k_tile_entry_ptr[d_chunk * 4 + 1] = 0.0f;
-                    k_tile_entry_ptr[d_chunk * 4 + 2] = 0.0f;
-                    k_tile_entry_ptr[d_chunk * 4 + 3] = 0.0f;
-                }
+                zero_tile_row(k_tile_entry_ptr, params);
             }
         } else {
             // Thread is outside the current actual history tile length, zero out its K_tile row
             threadgroup float* k_tile_entry_ptr = K_tile + (local_thread_idx * padded_head_dim_hoisted);
-            for (uint d_chunk = 0; d_chunk < params.head_dim / 4; ++d_chunk) {
-                k_tile_entry_ptr[d_chunk * 4 + 0] = 0.0f;
-                k_tile_entry_ptr[d_chunk * 4 + 1] = 0.0f;
-                k_tile_entry_ptr[d_chunk * 4 + 2] = 0.0f;
-                k_tile_entry_ptr[d_chunk * 4 + 3] = 0.0f;
-            }
+            zero_tile_row(k_tile_entry_ptr, params);
         }
         threadgroup_barrier(mem_flags::mem_threadgroup); // Ensure K_tile is fully populated before use
 
@@ -289,22 +279,12 @@ using namespace metal;
                 }
             } else {
                 // Handle null V-vector pointer: fill corresponding V_tile entry with zeros
-                for (uint d_chunk = 0; d_chunk < params.head_dim / 4; ++d_chunk) {
-                    v_tile_entry_ptr[d_chunk * 4 + 0] = 0.0f;
-                    v_tile_entry_ptr[d_chunk * 4 + 1] = 0.0f;
-                    v_tile_entry_ptr[d_chunk * 4 + 2] = 0.0f;
-                    v_tile_entry_ptr[d_chunk * 4 + 3] = 0.0f;
-                }
+                zero_tile_row(v_tile_entry_ptr, params);
             }
         } else {
             // Thread is outside the current actual history tile length, zero out its V_tile row
             threadgroup float* v_tile_entry_ptr = V_tile + (local_thread_idx * padded_head_dim_hoisted);
-            for (uint d_chunk = 0; d_chunk < params.head_dim / 4; ++d_chunk) {
-                v_tile_entry_ptr[d_chunk * 4 + 0] = 0.0f;
-                v_tile_entry_ptr[d_chunk * 4 + 1] = 0.0f;
-                v_tile_entry_ptr[d_chunk * 4 + 2] = 0.0f;
-                v_tile_entry_ptr[d_chunk * 4 + 3] = 0.0f;
-            }
+            zero_tile_row(v_tile_entry_ptr, params);
         }
         threadgroup_barrier(mem_flags::mem_threadgroup); // Ensure V_tile is fully populated before use
 
@@ -445,9 +425,12 @@ using namespace metal;
     float s_global_final = (*tg_global_stats).y;
     float inv_s_global = (s_global_final > kEpsilonForZeroGuard) ? (1.0f / s_global_final) : 0.0f;
 
-    // Normalize the full acc_tile_local
-    for (uint i = 0; i < params.head_dim; ++i) {
-        acc_tile_local[i] *= inv_s_global;
+    // Normalize the full acc_tile_local using float4 chunks
+    for (uint i = 0; i < params.head_dim; i += 4) {
+        thread float4* chunk_ptr = reinterpret_cast<thread float4*>(acc_tile_local + i);
+        float4 chunk = *chunk_ptr;
+        chunk *= inv_s_global;
+        *chunk_ptr = chunk;
     }
 
     // Reduce the now-normalized acc_tile_local across the threadgroup and write to output_buffer

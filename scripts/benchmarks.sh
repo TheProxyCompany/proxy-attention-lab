@@ -342,7 +342,7 @@ main() {
     local RUN_REQUESTED=false
     local ANALYZE_ONLY=false
     local REBUILD_ONLY=false
-    local RESET_BENCHMARKS=false
+    local RESET_BENCHMARKS=true
     local RUN_LANGUAGE="all"
     local RUN_KERNEL=""
 
@@ -362,7 +362,7 @@ main() {
     if [ $# -eq 0 ]; then
         # Default behavior: run everything
         setup_environment
-        setup_benchmark_output_dir "true" # Reset results by default
+        setup_benchmark_output_dir "true"
         update_and_rebuild_project
         run_python_benchmarks ""
         run_cpp_benchmarks ""
