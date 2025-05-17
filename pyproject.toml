@@ -77,7 +77,3 @@ target-version = ["py312"]
 [tool.isort]
 profile = "black"
 line-length = 120
-
-[tool.pytest.ini_options]
-# Ignore benchmarks directories
-addopts = '--ignore-glob="tests/*/benchmarks"'
