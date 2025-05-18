@@ -470,6 +470,9 @@ main() {
 
     log "Benchmark Suite Finished in ${total_duration}s."
     hr
+
+    # run unit tests just to be sure
+    pytest tests/
 }
 
 # --- Script Execution ---
