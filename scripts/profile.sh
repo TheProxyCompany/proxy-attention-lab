@@ -7,7 +7,7 @@ trap 'echo "ERROR: Script failed at line $LINENO" >&2' ERR
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="${PROJECT_ROOT}/build"
 GENERATOR="Xcode"
-CMAKE_ARGS=("-DCMAKE_BUILD_TYPE=RelWithDebInfo")
+CMAKE_ARGS=("-DCMAKE_BUILD_TYPE=Release")
 
 log() {
     printf "[%s] %s\n" "$(date +'%Y-%m-%d %H:%M:%S')" "$*"
@@ -32,7 +32,7 @@ EOF
 }
 
 # Parse arguments
-CLEAN_BUILD=false
+CLEAN_BUILD=true
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --clean)
@@ -72,7 +72,6 @@ fi
 
 log "Configuring project with CMake (Generator: ${GENERATOR})"
 cmake -S . -B "${BUILD_DIR}" -G "${GENERATOR}" "${CMAKE_ARGS[@]}"
-# cmake --build build -j $(sysctl -n hw.ncpu || nproc)
 
 XCODEPROJ_PATH="${BUILD_DIR}/proxy_attention_lab.xcodeproj"
 

@@ -133,13 +133,23 @@ static void BM_PAL_LatencyVsSeqLen(benchmark::State& state) {
     int num_total_physical_pages = batch_size * num_logical_pages_per_seq;
 
     // Create query tensor with shape [num_tokens, num_q_heads, head_dim]
-    mx::array queries = mx::random::normal({num_tokens, num_q_heads, head_dim}, dtype);
+    mx::array queries = mx::random::normal(
+        {num_tokens, num_q_heads, head_dim},
+        dtype,
+        std::nullopt
+    );
 
     // K/V cache pools: [num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim]
     mx::array k_cache_pool = mx::random::normal(
-        {num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim}, dtype);
+        {num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim},
+        dtype,
+        std::nullopt
+    );
     mx::array v_cache_pool = mx::random::normal(
-        {num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim}, dtype);
+        {num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim},
+        dtype,
+        std::nullopt
+    );
 
     // Create page table: [num_sequences_in_batch, num_logical_pages_per_seq]
     mx::array page_table = create_page_table(batch_size, num_logical_pages_per_seq);
@@ -152,6 +162,14 @@ static void BM_PAL_LatencyVsSeqLen(benchmark::State& state) {
 
     // Create query token offsets: [num_tokens]
     mx::array query_token_offset = create_query_token_offset(batch_size, seq_len);
+
+    queries.eval();
+    k_cache_pool.eval();
+    v_cache_pool.eval();
+    page_table.eval();
+    sequence_lengths.eval();
+    query_to_seq_map.eval();
+    query_token_offset.eval();
 
     // Main benchmark loop
     for (auto _ : state) {
@@ -167,10 +185,6 @@ static void BM_PAL_LatencyVsSeqLen(benchmark::State& state) {
         );
         out.eval();  // Ensure GPU computation completes
     }
-
-    // Report metrics - bytes processed
-    size_t bytes_processed = static_cast<size_t>(num_tokens * num_q_heads) * head_dim * sizeof(float);
-    state.SetBytesProcessed(static_cast<long long>(bytes_processed) * state.iterations());
 }
 
 static void BM_MLX_SDPA_LatencyVsSeqLen(benchmark::State& state) {
@@ -205,6 +219,11 @@ static void BM_MLX_SDPA_LatencyVsSeqLen(benchmark::State& state) {
     // Create causal mask
     mx::array causal_mask = create_causal_mask(seq_len, dtype);
 
+    queries.eval();
+    keys.eval();
+    values.eval();
+    causal_mask.eval();
+
     // Main benchmark loop
     for (auto _ : state) {
         mx::array out = mx::fast::scaled_dot_product_attention(
@@ -212,34 +231,30 @@ static void BM_MLX_SDPA_LatencyVsSeqLen(benchmark::State& state) {
             keys,
             values,
             scale,
-            "array",  // Using explicit mask array
+            "array",
             {causal_mask},
             mx::Device::gpu
         );
         out.eval();  // Ensure GPU computation completes
     }
-
-    // Report metrics
-    size_t bytes_processed = static_cast<size_t>(batch_size * num_q_heads * seq_len) * head_dim * sizeof(float);
-    state.SetBytesProcessed(static_cast<long long>(bytes_processed) * state.iterations());
 }
 
 // Register the benchmarks with all sequence lengths from Python benchmark
 BENCHMARK(BM_PAL_LatencyVsSeqLen)
-    ->Arg(64)
+    // ->Arg(64)
     // ->Arg(128)
     // ->Arg(256)
     // ->Arg(512)
-    ->Arg(1024);
+    ->Arg(1024)->Iterations(1)->Repetitions(1);
     // ->Arg(2048)
     // ->Arg(4096);
 
 BENCHMARK(BM_MLX_SDPA_LatencyVsSeqLen)
-    ->Arg(64)
+    // ->Arg(64)
     // ->Arg(128)
     // ->Arg(256)
     // ->Arg(512)
-    ->Arg(1024);
+    ->Arg(1024)->Iterations(1)->Repetitions(1);
     // ->Arg(2048)
     // ->Arg(4096);
 
