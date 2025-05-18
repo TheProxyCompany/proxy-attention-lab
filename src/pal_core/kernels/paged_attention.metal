@@ -402,46 +402,54 @@ using namespace metal;
     float s_global_final = (*tg_global_stats).y;
     float inv_s_global = (s_global_final > kEpsilonForZeroGuard) ? (1.0f / s_global_final) : 0.0f;
 
-    // Normalize the full acc_tile_local using float4 chunks
-    for (uint i = 0; i < params.head_dim; i += 4) {
-        thread float4* chunk_ptr = reinterpret_cast<thread float4*>(acc_tile_local + i);
-        float4 chunk = *chunk_ptr;
+    // Reuse V_tile memory for the final reduction scratch space
+    threadgroup float4* tg_final_reduction = reinterpret_cast<threadgroup float4*>(V_tile);
+
+    uint num_chunks = (params.head_dim + 3) / 4;
+
+    // Each thread processes a distinct slice of acc_tile_local
+    for (uint chunk_idx = local_thread_idx; chunk_idx < num_chunks; chunk_idx += tg_dim.x) {
+        uint base = chunk_idx * 4;
+
+        float4 chunk = float4(0.0f);
+        if (base + 0 < params.head_dim) chunk.x = acc_tile_local[base + 0];
+        if (base + 1 < params.head_dim) chunk.y = acc_tile_local[base + 1];
+        if (base + 2 < params.head_dim) chunk.z = acc_tile_local[base + 2];
+        if (base + 3 < params.head_dim) chunk.w = acc_tile_local[base + 3];
+
         chunk *= inv_s_global;
-        *chunk_ptr = chunk;
-    }
 
-    // Reduce the now-normalized acc_tile_local across the threadgroup and write to output_buffer
-    for (uint i = 0; i < params.head_dim; i += 4) {
-        float4 chunk_to_write = float4(0.0f);
-        if (i < params.head_dim)     chunk_to_write.x = acc_tile_local[i+0];
-        if (i+1 < params.head_dim) chunk_to_write.y = acc_tile_local[i+1];
-        if (i+2 < params.head_dim) chunk_to_write.z = acc_tile_local[i+2];
-        if (i+3 < params.head_dim) chunk_to_write.w = acc_tile_local[i+3];
+        if (base + 0 < params.head_dim) acc_tile_local[base + 0] = chunk.x;
+        if (base + 1 < params.head_dim) acc_tile_local[base + 1] = chunk.y;
+        if (base + 2 < params.head_dim) acc_tile_local[base + 2] = chunk.z;
+        if (base + 3 < params.head_dim) acc_tile_local[base + 3] = chunk.w;
 
-        float4 reduced_simd_group_final_chunk;
-        reduced_simd_group_final_chunk.x = simd_sum(chunk_to_write.x);
-        reduced_simd_group_final_chunk.y = simd_sum(chunk_to_write.y);
-        reduced_simd_group_final_chunk.z = simd_sum(chunk_to_write.z);
-        reduced_simd_group_final_chunk.w = simd_sum(chunk_to_write.w);
+        float4 partial_sum;
+        partial_sum.x = simd_sum(chunk.x);
+        partial_sum.y = simd_sum(chunk.y);
+        partial_sum.z = simd_sum(chunk.z);
+        partial_sum.w = simd_sum(chunk.w);
 
         if (simd_lane_id == 0) {
-            tg_simd_v_chunk_sums[simd_group_id] = reduced_simd_group_final_chunk;
+            tg_final_reduction[chunk_idx * num_simd_groups + simd_group_id] = partial_sum;
         }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
 
-        if (local_thread_idx == 0) {
-            float4 final_output_chunk = float4(0.0f);
+    threadgroup_barrier(mem_flags::mem_threadgroup); // Wait for all partial sums
+
+    if (local_thread_idx == 0) {
+        for (uint chunk_idx = 0; chunk_idx < num_chunks; ++chunk_idx) {
+            float4 final_chunk = float4(0.0f);
             for (uint sg_idx = 0; sg_idx < num_simd_groups; ++sg_idx) {
-                final_output_chunk += tg_simd_v_chunk_sums[sg_idx];
+                final_chunk += tg_final_reduction[chunk_idx * num_simd_groups + sg_idx];
             }
 
-            uint output_base_idx = global_item_idx * params.head_dim + i;
-            if (i < params.head_dim)     output_buffer[output_base_idx + 0] = (half)final_output_chunk.x;
-            if (i+1 < params.head_dim) output_buffer[output_base_idx + 1] = (half)final_output_chunk.y;
-            if (i+2 < params.head_dim) output_buffer[output_base_idx + 2] = (half)final_output_chunk.z;
-            if (i+3 < params.head_dim) output_buffer[output_base_idx + 3] = (half)final_output_chunk.w;
+            uint output_base_idx = global_item_idx * params.head_dim + chunk_idx * 4;
+            if (chunk_idx * 4 + 0 < params.head_dim) output_buffer[output_base_idx + 0] = (half)final_chunk.x;
+            if (chunk_idx * 4 + 1 < params.head_dim) output_buffer[output_base_idx + 1] = (half)final_chunk.y;
+            if (chunk_idx * 4 + 2 < params.head_dim) output_buffer[output_base_idx + 2] = (half)final_chunk.z;
+            if (chunk_idx * 4 + 3 < params.head_dim) output_buffer[output_base_idx + 3] = (half)final_chunk.w;
         }
-        threadgroup_barrier(mem_flags::mem_threadgroup); // Sync before next chunk
     }
 
 } // End of kernel
