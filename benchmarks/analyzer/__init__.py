@@ -1,6 +1,5 @@
 """Benchmark analyzer package."""
 
-from benchmarks.analyzer import config, loaders, plot_utils, transformers
-from benchmarks.analyzer.reporters import generate_json_report
+from benchmarks.analyzer import plot_utils
 
-__all__ = ["config", "generate_json_report", "loaders", "plot_utils", "transformers"]
+__all__ = ["plot_utils"]

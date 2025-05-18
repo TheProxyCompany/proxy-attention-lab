@@ -525,7 +525,5 @@ BENCHMARK(BM_SDPA_LatencyVsNumItems)
     ->RangeMultiplier(2)
     ->Range(32, 512);
 
-// Model Configuration Benchmarks have been removed
-
 // Main function
 BENCHMARK_MAIN();

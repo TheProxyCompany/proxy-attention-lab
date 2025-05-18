@@ -237,6 +237,8 @@ run_python_benchmarks() {
                 --benchmark-columns="min,max,mean,rounds,iterations" \
                 --benchmark-json="${python_json_output}" \
                 --benchmark-min-time=0.001 \
+                --benchmark-warmup=on \
+                --benchmark-warmup-iterations=10 \
                 -v
 
             log "Python benchmarks from ${benchmark_file} completed. Results saved to ${python_json_output}"
