@@ -28,6 +28,7 @@
 #include <spdlog/spdlog.h>
 
 #include "pal_core/ops.hpp"
+#include "pal_core/metal_loader.hpp"
 
 namespace mx = mlx::core;
 
@@ -35,6 +36,7 @@ namespace mx = mlx::core;
 struct BenchmarkSpdlogInitializer {
     BenchmarkSpdlogInitializer() {
         // Set default log level for benchmarks to warning to reduce noise
+        pal::core::detail::MetalLibRegistrar::ensure_pal_metallib_registered(mx::Device::gpu);
         spdlog::set_level(spdlog::level::warn);
         spdlog::info("PAL C++ Benchmarks: spdlog level set to 'warn'. Debug/trace messages from pal_core_lib will be suppressed.");
     }
@@ -180,7 +182,7 @@ static void BM_PAL_LatencyVsSeqLen(benchmark::State& state) {
             query_token_offset,
             mx::Device::gpu
         );
-        out.eval();  // Ensure GPU computation completes
+        out.eval();
     }
 }
 

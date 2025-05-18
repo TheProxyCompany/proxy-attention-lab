@@ -480,8 +480,7 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
   );
 
   // Adjust threadgroup size based on computed tile_size_T_runtime
-  threads_per_item_group =
-      std::min(static_cast<size_t>(params_struct.tile_size_T_runtime), max_threads);
+  threads_per_item_group = std::min(static_cast<size_t>(64), max_threads);
 
   // Verify all pointers are valid before passing to Metal
   if (!inputs[0].data<void>() || !inputs[1].data<void>() || !inputs[2].data<void>() ||

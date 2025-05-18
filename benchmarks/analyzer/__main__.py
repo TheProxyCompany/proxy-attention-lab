@@ -29,7 +29,7 @@ def process_cpp_file(file_data: dict) -> pd.DataFrame:
         lambda x: "cpp_pal_paged_attention" if "pal" in x.lower() else "cpp_mlx_sdpa"
     )
     if "param" not in results_df.columns:
-        results_df["param"] = results_df["name"].apply(lambda x: x.split("/")[-1])
+        results_df["param"] = results_df["name"].apply(lambda x: x.split("/")[1])
 
     results_df["mean_latency"] = results_df["real_time"] / results_df["iterations"]
     # convert to milliseconds
