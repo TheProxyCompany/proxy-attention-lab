@@ -25,7 +25,7 @@ using float32_t = float;
 #else
 // C++ code - use standard headers
 #include <stdint.h>
-#include <type_traits>  // For std::is_standard_layout_v
+#include <type_traits>
 #endif
 
 

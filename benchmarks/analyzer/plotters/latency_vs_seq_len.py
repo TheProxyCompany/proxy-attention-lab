@@ -16,7 +16,6 @@ from benchmarks.analyzer import plot_utils
 logger = logging.getLogger(__name__)
 
 STYLES = plot_utils.get_plot_styles()
-DISTINCT_REF_LINE_COLOR = "#024645"
 
 
 def plot(df: pd.DataFrame, output_dir: Path, styles: dict[str, str | float] | None = None) -> str:
@@ -38,41 +37,39 @@ def plot(df: pd.DataFrame, output_dir: Path, styles: dict[str, str | float] | No
     styles = styles or STYLES
     fig, ax_latency = plt.subplots(1, 1, figsize=(8, 6))
     source_styles = {
-        "python_pal": {
-            "color": styles["PAL_PY_COLOR"],
-            "linestyle": "-",  # Solid line for clarity
+        "pal": {
+            "color": styles["PAL_COLOR"],
+            "linestyle": styles["PAL_STYLE"],
             "linewidth": styles["PAL_LINEWIDTH"],
-            "marker": styles["PAL_PY_MARKER"],
-            "label": styles["PAL_PY_LABEL"],
+            "marker": styles["PAL_MARKER"],
+            "label": styles["PAL_LABEL"],
         },
-        "python_sdpa": {
-            "color": styles["SDPA_PY_COLOR"],
-            "linestyle": "-",  # Solid line for clarity
-            "linewidth": styles["SDPA_LINEWIDTH"],
-            "marker": styles["SDPA_PY_MARKER"],
-            "label": styles["SDPA_PY_LABEL"],
+        "mlx": {
+            "color": styles["MLX_COLOR"],
+            "linestyle": styles["MLX_STYLE"],
+            "linewidth": styles["MLX_LINEWIDTH"],
+            "marker": styles["MLX_MARKER"],
+            "label": styles["MLX_LABEL"],
+        },
+        "default": {
+            "color": "gray",
+            "linestyle": "-",
+            "linewidth": 2,
+            "marker": "o",
+            "label": "default",
         },
     }
-    breakpoint()
-    if "param" not in df.columns:
-        if "name" not in df.columns:
-            raise ValueError("name column is required")
-        df["param"] = df["name"].apply(lambda x: x.split("/")[-1])
-
-    df["sequence_length"] = df["param"].astype(float)
-    df["mean_latency"] = df["stats"].apply(lambda x: x["mean"] * 1000)  # convert to milliseconds
 
     # Plot latency for each source
     for src, group_data in df.groupby("group"):
         # Sort by sequence length to ensure correct plotting of lines and filled areas
         sorted_group = group_data.sort_values(by="sequence_length")
-
-        # Get style for this source
-        source_style = source_styles.get(str(src), {})
-        if not source_style:
-            # Default style if source not in mapping
-            logger.warning(f"No style defined for source: {src}. Using default style.")
-            source_style = {"color": "gray", "linestyle": "-", "linewidth": 2, "marker": "o", "label": str(src)}
+        if "pal" in str(src).lower():
+            source_style = source_styles["pal"]
+        elif "mlx" in str(src).lower():
+            source_style = source_styles["mlx"]
+        else:
+            source_style = source_styles["default"]
 
         # Plot the mean latency line
         ax_latency.plot(
@@ -90,21 +87,60 @@ def plot(df: pd.DataFrame, output_dir: Path, styles: dict[str, str | float] | No
 
     if not x_range.empty:
         x_max = x_range.max()
-        x_vals = np.linspace(0, x_max)
+        x_vals = np.linspace(0, x_max, 200)
         # Find maximum latency value for scaling
         max_latency = df["mean_latency"].max()
-        y_scale = max_latency / x_max if x_max > 0 else 1
 
-        # O(n) reference line
+        # Compute O(n^2) and O(n log n) reference lines, but scale so their max matches the data's max latency
+        o_n2 = x_vals**2
+        o_nlogn = x_vals * np.log(np.clip(x_vals, 1, None))  # avoid log(0)
+
+        # Scale so that the max of each reference curve matches max_latency (but never exceeds it)
+        o_n2_scaled = max_latency * (o_n2 / o_n2.max()) if np.any(o_n2 > 0) else o_n2
+        o_nlogn_scaled = max_latency * (o_nlogn / o_nlogn.max()) if np.any(o_nlogn > 0) else o_nlogn
+
+        # O(n^2) reference line
         ax_latency.plot(
             x_vals,
-            y_scale * x_vals,
-            color=DISTINCT_REF_LINE_COLOR,
-            linestyle="--",
+            o_n2_scaled,
+            color=styles["REF_LINE_COLOR"],
+            linestyle=styles["REF_LINE_STYLE"],
             linewidth=styles["REF_LINE_WIDTH"],
             alpha=float(styles["REF_LINE_ALPHA"]),
-            label="O(n)",
+            label=r"$O(n^2)$",
             zorder=1,
+        )
+        n2_label_idx = int(0.7 * len(x_vals))
+        ax_latency.text(
+            x_vals[n2_label_idx] * 1.05,
+            o_n2_scaled[n2_label_idx],
+            r"$O(n^2)$",
+            color=styles["REF_LINE_COLOR"],
+            fontsize=styles["REF_LINE_FONTSIZE"],
+            zorder=1,
+            ha="left",
+        )
+
+        # O(n log n) reference line
+        ax_latency.plot(
+            x_vals,
+            o_nlogn_scaled,
+            color=styles["REF_LINE_COLOR"],
+            linestyle=styles["REF_LINE_STYLE"],
+            linewidth=styles["REF_LINE_WIDTH"],
+            alpha=float(styles["REF_LINE_ALPHA"]),
+            label=r"$O(n \log n)$",
+            zorder=1,
+        )
+        nlogn_label_idx = int(0.45 * len(x_vals))
+        ax_latency.text(
+            x_vals[nlogn_label_idx] * 1.05,
+            o_nlogn_scaled[nlogn_label_idx],
+            r"$O(n \log n)$",
+            color=styles["REF_LINE_COLOR"],
+            fontsize=styles["REF_LINE_FONTSIZE"],
+            zorder=1,
+            ha="left",
         )
 
     # Set latency plot aesthetics

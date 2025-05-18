@@ -19,8 +19,8 @@
 #include "pal_core/metal_loader.hpp"
 
 #include <dlfcn.h>
-#include <iostream>
 #include <string>
+#include <spdlog/spdlog.h>
 
 /**
  * @brief Find the path to the PAL shared library on POSIX systems
@@ -31,26 +31,21 @@
  * @return std::string Path to the shared library or empty string if not found
  */
 std::string find_own_shared_library_path_for_pal() {
-  Dl_info dl_info;
-
-  // Get information about this function's address in memory
-  if (dladdr(reinterpret_cast<void*>(find_own_shared_library_path_for_pal),
-             &dl_info)) {
-    if (dl_info.dli_fname) {
-      return std::string(dl_info.dli_fname);
-    } else {
-      std::cerr << "ERROR [PAL dladdr] dli_fname was null, cannot determine "
-                   "shared library path."
-                << std::endl;
+    Dl_info info{};
+    // dladdr gives us info about the shared object containing this function
+    if (dladdr(reinterpret_cast<void*>(&find_own_shared_library_path_for_pal), &info) == 0) {
+        // dladdr failed: get error string if available
+        const char* err = dlerror();
+        spdlog::error("[PAL] dladdr() failed");
+        if (err) spdlog::error("{}", err);
+        return "";
     }
-  } else {
-    const char* dlsym_error = dlerror();
-    std::cerr << "ERROR [PAL dladdr] dladdr() call failed";
-    if (dlsym_error) {
-      std::cerr << ". Error: " << dlsym_error;
-    }
-    std::cerr << std::endl;
-  }
 
-  return "";
+    if (!info.dli_fname) {
+        spdlog::error("[PAL] dladdr() succeeded but dli_fname is null (no shared library path found)");
+        return "";
+    }
+
+    // dli_fname is the path to the shared object containing this function
+    return std::string(info.dli_fname);
 }

@@ -55,6 +55,20 @@ struct CoreDims {
     size_t query_token_count{0};
 };
 
+struct ThreadgroupMemoryLayout {
+    size_t q_shmem_bytes{0};
+    size_t partial_reduce_scratch_bytes{0};
+    size_t simd_reduced_maxes_bytes{0};
+    size_t simd_reduced_adjusted_sum_exps_bytes{0};
+    size_t global_stats_bytes{0};
+    size_t s_global_compensation_bytes{0};
+    size_t simd_v_chunk_sums_bytes{0};
+    size_t k_tile_bytes{0}; // For caching K-vectors in threadgroup memory
+    size_t v_tile_bytes{0}; // For caching V-vectors in threadgroup memory
+    size_t final_guard_bytes{0};
+    size_t total_bytes{0};
+};
+
 
 static ThreadgroupMemoryLayout calculate_threadgroup_memory_breakdown_and_total(
     const PagedAttentionParams& params,
@@ -139,8 +153,7 @@ static ThreadgroupMemoryLayout calculate_threadgroup_memory_breakdown_and_total(
     return layout;
 }
 
-// Definition of the populate_remaining_attention_params helper method
-static ThreadgroupMemoryLayout prepare_inputs(
+static ThreadgroupMemoryLayout prepare_inputs_layout_memory(
     PagedAttentionParams& params,
     const CoreDims& extracted_core_dims,
     const mx::array& k_pool_arr,
@@ -169,20 +182,22 @@ static ThreadgroupMemoryLayout prepare_inputs(
         params.inv_sqrt_head_dim = 1.0f;  // Default fallback
     }
 
-    // Get the memory layout with a zero tile size
+    // Calculate the memory layout with a zero tile size
     // So we know how much memory we have to tile with
+    constexpr size_t kFinalTgMemoryPaddingGuardBytes = 32;
+    constexpr size_t kAlignmentBytes = 64;
+    constexpr size_t kAlignmentMask = kAlignmentBytes - 1;
+
+    // Calculate the memory layout with a zero tile size
     PagedAttentionParams params_for_fixed_sizing = params;
     params_for_fixed_sizing.tile_size_T_runtime = 0; // zero tile size
+
     size_t precise_fixed_tg_mem_bytes =
     calculate_threadgroup_memory_breakdown_and_total(
         params_for_fixed_sizing,
         threads_per_item_group_for_dispatch
     ).total_bytes - kFinalTgMemoryPaddingGuardBytes;
-
     // Add padding for alignment and final guard bytes
-    constexpr size_t kFinalTgMemoryPaddingGuardBytes = 32;
-    constexpr size_t kAlignmentBytes = 64;
-    constexpr size_t kAlignmentMask = kAlignmentBytes - 1;
     precise_fixed_tg_mem_bytes = (precise_fixed_tg_mem_bytes + kAlignmentMask) & ~kAlignmentMask;
 
     // 1. Gather constants once
@@ -461,7 +476,7 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
   const size_t threads_per_item_group = std::min(default_threads_per_item_group, max_threads);
 
   // Call helper to populate the remaining attention parameters
-  ThreadgroupMemoryLayout memory_layout = prepare_inputs(
+  ThreadgroupMemoryLayout memory_layout = prepare_inputs_layout_memory(
       params_struct,
       core_dims,
       inputs[1], // k_pool

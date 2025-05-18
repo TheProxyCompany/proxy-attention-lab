@@ -38,15 +38,15 @@ BASELINE_CONFIG = {
 @pytest.mark.parametrize("seq_len_val", [64, 128, 256, 512, 1024, 2048, 4096])
 def test_pal_latency_vs_seq_len(benchmark, seq_len_val):
     """
-        Benchmark paged_attention operation performance across different sequence lengths.
+    Benchmark paged_attention operation performance across different sequence lengths.
 
-        This test uses a fixed batch size (COMPARISON_BATCH_SIZE) to measure how latency
-        scales with sequence length for a consistent number of parallel sequences.
-    Both PAL and SDPA benchmarks will use the same fixed batch size for direct comparison.
+    This test uses a fixed batch size (COMPARISON_BATCH_SIZE) to measure how latency
+    scales with sequence length for a consistent number of parallel sequences.
+    Both PAL and MLX benchmarks will use the same fixed batch size for direct comparison.
 
-        Args:
-            benchmark: pytest-benchmark fixture for performance measurement
-            seq_len_val: sequence length value to test
+    Args:
+        benchmark: pytest-benchmark fixture for performance measurement
+        seq_len_val: sequence length value to test
     """
     # Create test parameters from baseline with specified sequence length
     params = BASELINE_CONFIG.copy()
@@ -114,13 +114,13 @@ def test_pal_latency_vs_seq_len(benchmark, seq_len_val):
 
 
 @pytest.mark.parametrize("seq_len_val", [64, 128, 256, 512, 1024, 2048, 4096])
-def test_sdpa_latency_vs_seq_len(benchmark, seq_len_val):
+def test_mlx_latency_vs_seq_len(benchmark, seq_len_val):
     """
     Benchmark MLX scaled_dot_product_attention operation performance across different sequence lengths.
 
     This test uses a fixed batch size (COMPARISON_BATCH_SIZE) to measure how latency
     scales with sequence length for a consistent number of parallel sequences.
-    Both PAL and SDPA benchmarks use the same fixed batch size for direct comparison.
+    Both PAL and MLX benchmarks use the same fixed batch size for direct comparison.
 
     Args:
         benchmark: pytest-benchmark fixture for performance measurement

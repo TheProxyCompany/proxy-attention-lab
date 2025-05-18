@@ -14,8 +14,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS ON)
 
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set(DEBUG_MODE ON)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -O0 \
-        -fsanitize=undefined \
         -fno-omit-frame-pointer \
         -Wall -Wextra -Wpedantic \
         -Wformat=2 -Wformat-security \
@@ -30,6 +30,7 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
         -D_FORTIFY_SOURCE=2"
     )
 else()
+    set(DEBUG_MODE OFF)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} \
         -O3 \
         -mtune=native \
@@ -150,11 +151,7 @@ set(METALLIB_TITLE "pal")
 set(PAL_METALLIB_FILENAME "pal.metallib")
 
 # --- Core C++ Static Library ---
-file(GLOB_RECURSE CORE_LIB_SOURCES CONFIGURE_DEPENDS
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/ops.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/paged_attention_primitive.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/metal_loader_posix.cpp"
-)
+file(GLOB_RECURSE CORE_LIB_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
 
 add_library(${CORE_LIB_NAME} STATIC ${CORE_LIB_SOURCES})
 
@@ -199,6 +196,7 @@ mlx_build_metallib(
         ${MLX_INCLUDE_DIRS}
     OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     OUTPUT_FILENAME ${PAL_METALLIB_FILENAME}
+    DEBUG ON
 )
 
 set(PAL_METALLIB_PATH ${CMAKE_CURRENT_BINARY_DIR}/${PAL_METALLIB_FILENAME} CACHE INTERNAL "Path to built pal.metallib")

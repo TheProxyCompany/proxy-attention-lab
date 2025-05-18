@@ -19,10 +19,10 @@
 
 #include <atomic>
 #include <filesystem>
-#include <iostream>
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <spdlog/spdlog.h>
 
 #include <mlx/mlx.h>
 #include <mlx/device.h>
@@ -79,19 +79,15 @@ class MetalLibRegistrar {
       return;
     }
 
-    std::cerr << "[PAL MetalLoader] Attempting one-time registration..."
-              << std::endl;
+    spdlog::debug("[PAL MetalLoader] Attempting one-time registration...");
 
     // Find the path to our own shared library
     std::string own_lib_path_str = find_own_shared_library_path_for_pal();
     if (own_lib_path_str.empty()) {
-      std::cerr << "ERROR [PAL MetalLoader]: Could not determine path of the "
-                   "pal_core shared library. PAL Metal kernels will be unavailable."
-                << std::endl;
+      spdlog::error("Could not determine path of the pal_core shared library. PAL Metal kernels will be unavailable.");
       return;
     }
-    std::cerr << "[PAL MetalLoader] pal_core shared library path: \""
-              << own_lib_path_str << "\"" << std::endl;
+    spdlog::debug("[PAL MetalLoader] pal_core shared library path: \"{}\"", own_lib_path_str);
 
     // Set up paths and names
     std::filesystem::path shared_lib_path(own_lib_path_str);
@@ -102,32 +98,23 @@ class MetalLibRegistrar {
       // Get MLX Metal device
       auto& d = mx::metal::device(mx::to_stream(stream_or_device).device);
 
-      std::cerr << "[PAL MetalLoader] Calling metal_device.register_library with:"
-                << std::endl;
-      std::cerr << "  MLX Alias (arg1 lib_name): \"" << kDesiredMlxAlias << "\""
-                << std::endl;
+      spdlog::debug("[PAL MetalLoader] Calling metal_device.register_library with:");
+      spdlog::debug("  MLX Alias (arg1 lib_name): \"{}\"", kDesiredMlxAlias);
 
       // Register the library
       d.register_library(kDesiredMlxAlias, metallib_dir.string());
 
-      std::cerr << "[PAL MetalLoader] Call to register_library completed "
-                   "without throwing an exception."
-                << std::endl;
-      std::cerr << "  Registered with MLX Alias: \"" << kDesiredMlxAlias << "\""
-                << std::endl;
-      std::cerr << "  Using File Path: \"" << metallib_dir << "\"" << std::endl;
+      spdlog::debug("[PAL MetalLoader] Call to register_library completed without throwing an exception.");
+      spdlog::debug("  Registered with MLX Alias: \"{}\"", kDesiredMlxAlias);
+      spdlog::debug("  Using File Path: \"{}\"", metallib_dir.string());
 
       // Mark as registered
       s_registered.store(true, std::memory_order_release);
 
     } catch (const std::exception& e) {
-      std::cerr << "ERROR [PAL MetalLoader] Exception during "
-                   "metal_device.register_library call: "
-                << e.what() << std::endl;
-      std::cerr << "  Attempted MLX Alias: \"" << kDesiredMlxAlias << "\""
-                << std::endl;
-      std::cerr << "  Attempted File Path: \"" << metallib_dir << "\""
-                << std::endl;
+      spdlog::error("Exception during metal_device.register_library call: {}", e.what());
+      spdlog::error("  Attempted MLX Alias: \"{}\"", kDesiredMlxAlias);
+      spdlog::error("  Attempted File Path: \"{}\"", metallib_dir.string());
     }
   }
 };

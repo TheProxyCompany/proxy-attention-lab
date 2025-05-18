@@ -18,7 +18,6 @@
 
 #include "pal_core/ops.hpp"
 
-#include <iostream>
 #include <string>
 
 #include "mlx/backend/common/utils.h"
@@ -80,6 +79,7 @@ mx::array paged_attention(const mx::array& queries,
        query_to_seq_map, query_token_offset});
 
   if (output_shapes.empty()) {
+    spdlog::error("[PAL Ops] PagedAttentionPrimitive returned empty output_shapes");
     throw std::runtime_error(
         "[PAL Ops] PagedAttentionPrimitive returned empty output_shapes");
   }

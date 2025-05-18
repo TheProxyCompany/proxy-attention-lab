@@ -24,52 +24,12 @@
 #include <mlx/backend/metal/device.h>
 #include <mlx/backend/metal/metal.h>
 #include <mlx/backend/metal/utils.h>
-
-#include <optional>
-#include <string>
 #include <vector>
-#include <algorithm>
-#include <cmath>
-#include <limits>
-
-// Include the PagedAttentionParams struct definition
 #include "shaders/paged_attention_types.h"
 
 namespace mx = mlx::core;
 
 namespace pal::cpp {
-
-struct ThreadgroupMemoryLayout {
-    size_t q_shmem_bytes{0};
-    size_t partial_reduce_scratch_bytes{0};
-    size_t simd_reduced_maxes_bytes{0};
-    size_t simd_reduced_adjusted_sum_exps_bytes{0};
-    size_t global_stats_bytes{0};
-    size_t s_global_compensation_bytes{0};
-    size_t simd_v_chunk_sums_bytes{0};
-    size_t k_tile_bytes{0}; // For caching K-vectors in threadgroup memory
-    size_t v_tile_bytes{0}; // For caching V-vectors in threadgroup memory
-    size_t final_guard_bytes{0};
-    size_t total_bytes{0};
-};
-
-// Expected size for PagedAttentionParams: 10 uint32_t (40 bytes) + 2 float (8 bytes) = 48 bytes.
-// alignas(16) means total size is 48, as it's padded to multiple of 16.
-// Note: We use 64-byte alignment for threadgroup memory, but the struct itself remains 16-byte aligned.
-constexpr size_t kExpectedPagedAttentionParamsSize = 48;
-static_assert(
-    sizeof(PagedAttentionParams) == kExpectedPagedAttentionParamsSize,
-    "sizeof(PagedAttentionParams) mismatch between C++ and expected size (48 bytes). "
-    "Check paged_attention_types.h, members, and padding.");
-
-// Constants for memory padding and alignment
-constexpr size_t kFinalTgMemoryPaddingGuardBytes = 32;
-constexpr size_t kAlignmentBytes = 64;
-constexpr size_t kAlignmentMask = kAlignmentBytes - 1;
-
-// Constants for head_dim validation and processing
-constexpr uint32_t kMaxHeadDimMetalInKernel = 256;
-
 
 /**
  * @brief Custom primitive implementation for paged attention operations.
@@ -204,7 +164,8 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
       const PagedAttentionParams& kernel_params,
       size_t total_tg_memory_bytes,
       size_t items_to_process_count,
-      size_t threads_per_group_count);
+      size_t threads_per_group_count
+    );
 };
 
 }  // namespace pal::cpp

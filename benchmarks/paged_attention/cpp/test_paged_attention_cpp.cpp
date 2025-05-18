@@ -43,6 +43,7 @@ struct BenchmarkSpdlogInitializer {
 static BenchmarkSpdlogInitializer global_benchmark_spdlog_initializer;
 
 // Define baseline configuration for benchmarks - matching the Python version exactly
+// Gemma 3 Model Config, 2048 tokens
 struct BaselineConfig {
     int batch_size = 1;
     int seq_len = 2048;  // tokens
@@ -172,7 +173,7 @@ static void BM_PAL_LatencyVsSeqLen(benchmark::State& state) {
     state.SetBytesProcessed(static_cast<long long>(bytes_processed) * state.iterations());
 }
 
-static void BM_SDPA_LatencyVsSeqLen(benchmark::State& state) {
+static void BM_MLX_SDPA_LatencyVsSeqLen(benchmark::State& state) {
     // Create parameters with the fixed batch size and specified sequence length
     BaselineConfig params;
     params.seq_len = state.range(0); // Use the sequence length from benchmark args
@@ -225,20 +226,20 @@ static void BM_SDPA_LatencyVsSeqLen(benchmark::State& state) {
 
 // Register the benchmarks with all sequence lengths from Python benchmark
 BENCHMARK(BM_PAL_LatencyVsSeqLen)
-    ->Arg(64);
+    ->Arg(64)
     // ->Arg(128)
     // ->Arg(256)
     // ->Arg(512)
-    // ->Arg(1024)
+    ->Arg(1024);
     // ->Arg(2048)
     // ->Arg(4096);
 
-BENCHMARK(BM_SDPA_LatencyVsSeqLen)
-    ->Arg(64);
+BENCHMARK(BM_MLX_SDPA_LatencyVsSeqLen)
+    ->Arg(64)
     // ->Arg(128)
     // ->Arg(256)
     // ->Arg(512)
-    // ->Arg(1024)
+    ->Arg(1024);
     // ->Arg(2048)
     // ->Arg(4096);
 
