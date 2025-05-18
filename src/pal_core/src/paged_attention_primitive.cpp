@@ -473,7 +473,7 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
   // Configure thread dimensions
   const size_t default_threads_per_item_group = 64;
   auto max_threads = kernel_state_->maxTotalThreadsPerThreadgroup();
-  const size_t threads_per_item_group = std::min(default_threads_per_item_group, max_threads);
+  size_t threads_per_item_group = std::min(default_threads_per_item_group, max_threads);
 
   // Call helper to populate the remaining attention parameters
   ThreadgroupMemoryLayout memory_layout = prepare_inputs_layout_memory(
@@ -484,6 +484,10 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
       device_ptr,
       threads_per_item_group
   );
+
+  // Adjust threadgroup size based on computed tile_size_T_runtime
+  threads_per_item_group =
+      std::min(static_cast<size_t>(params_struct.tile_size_T_runtime), max_threads);
 
   // Verify all pointers are valid before passing to Metal
   if (!inputs[0].data<void>() || !inputs[1].data<void>() || !inputs[2].data<void>() ||
