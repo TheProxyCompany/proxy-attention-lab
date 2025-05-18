@@ -47,19 +47,14 @@ using namespace metal;
     uint        simd_lane_id                        [[thread_index_in_simdgroup]],
     uint        simd_group_id                       [[simdgroup_index_in_threadgroup]]
 ) {
-    // --- 1/10: Calculate Inverse Sqrt Head Dim ---
-
-    // --- 2/10: Basic Input Validation ---
     // Early exit for degenerate case where head_dim is zero
     if (params.head_dim == 0) {
         return;
     }
 
     // Hoisted: Calculate padded head dimension to avoid bank conflicts
-    // This is used for K_tile and V_tile row strides.
     const uint padded_head_dim_hoisted = params.head_dim + params.pad_floats_per_row;
 
-    // --- 4/10: Thread Identifiers & SIMD Group Info ---
     uint global_item_idx = tg_pos_in_grid.x;    // Identifies the query-head item
     uint local_thread_idx = local_idx_in_tg;    // Thread ID within this group
     const uint num_simd_groups = max(1u, (tg_dim.x + kSimdLanesPerGroup - 1) / kSimdLanesPerGroup); // Calculate number of actual SIMD groups

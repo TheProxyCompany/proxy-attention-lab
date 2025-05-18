@@ -36,9 +36,7 @@ def plot(df: pd.DataFrame, output_dir: Path, styles: dict[str, str | float] | No
         Filename of the generated latency plot.
     """
     styles = styles or STYLES
-    # Create figure with one subplot: latency
     fig, ax_latency = plt.subplots(1, 1, figsize=(8, 6))
-    # Style mapping for different sources
     source_styles = {
         "python_pal": {
             "color": styles["PAL_PY_COLOR"],
@@ -55,6 +53,12 @@ def plot(df: pd.DataFrame, output_dir: Path, styles: dict[str, str | float] | No
             "label": styles["SDPA_PY_LABEL"],
         },
     }
+    breakpoint()
+    if "param" not in df.columns:
+        if "name" not in df.columns:
+            raise ValueError("name column is required")
+        df["param"] = df["name"].apply(lambda x: x.split("/")[-1])
+
     df["sequence_length"] = df["param"].astype(float)
     df["mean_latency"] = df["stats"].apply(lambda x: x["mean"] * 1000)  # convert to milliseconds
 

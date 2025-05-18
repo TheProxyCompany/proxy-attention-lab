@@ -87,18 +87,6 @@ mx::array paged_attention(const mx::array& queries,
   auto out_shape = output_shapes[0];
   auto out_dtype = queries.dtype();
 
-  // Create a string representation of the shape array for logging
-  spdlog::debug("[PAL Ops] Output shape determined from primitive: {}",
-                [&out_shape]() {
-                  std::string shape_str = "[";
-                  for (size_t i = 0; i < out_shape.size(); ++i) {
-                    shape_str += std::to_string(out_shape[i]);
-                    if (i < out_shape.size() - 1) shape_str += ", ";
-                  }
-                  shape_str += "]";
-                  return shape_str;
-                }());
-
   // Construct the output MLX array, adding the operation in the graph
   return mx::array(
       out_shape, out_dtype, primitive,

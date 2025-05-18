@@ -294,7 +294,7 @@ run_cpp_benchmarks() {
             fi
             local cpp_json_output="${BENCHMARK_OUTPUT_ROOT}/${test_type}_${benchmark_exename}_${timestamp}.json"
 
-            SPDLOG_LEVEL=warn "${benchmark_exe}" \
+            SPDLOG_LEVEL=debug "${benchmark_exe}" \
                 --benchmark_format=json \
                 --benchmark_out="${cpp_json_output}" \
                 --benchmark_repetitions=1 \

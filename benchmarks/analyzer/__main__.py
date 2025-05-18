@@ -49,7 +49,7 @@ def main() -> None:
         benchmarks_data = json.load(f)["benchmarks"]
 
     df = pd.DataFrame(benchmarks_data)
-    df["group"] = df["name"].apply(lambda x: "python_pal" if "pal" in x else "python_sdpa")
+    df["group"] = df["name"].apply(lambda x: "python_pal" if "pal" in x.lower() else "python_sdpa")
 
     # Get styles for plotting
     styles = plot_utils.get_plot_styles()

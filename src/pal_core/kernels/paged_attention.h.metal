@@ -253,7 +253,6 @@ static inline float dot_product_qk(
     constant const PagedAttentionParams& kernel_params
 ) {
     float score = 0.0f;
-    // C++ validates head_dim % 4 == 0, so no scalar fallback needed in this helper's main loop.
     // The helper assumes it's always called for a full head_dim that's a multiple of 4.
     for(uint d = 0; d < kernel_params.head_dim; d += 4) {
         float4 qv = *((threadgroup const float4*)(q_vec_shmem_param + d));

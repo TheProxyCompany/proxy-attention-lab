@@ -31,59 +31,6 @@
 
 namespace mx = mlx::core;
 
-// Helper struct for SDPA benchmark inputs (using a tuple instead of a struct to avoid constructor issues)
-using SDPABenchmarkInputs = std::tuple<mx::array, mx::array, mx::array, float, mx::array>;
-
-// Helper function to set up SDPA benchmark inputs
-SDPABenchmarkInputs setup_sdpa_benchmark_inputs_cpp(
-    int batch_size,
-    int num_q_heads,
-    int num_kv_heads,
-    int head_dim,
-    int seq_len,
-    mx::Dtype dtype
-) {
-    // Compute scale factor (1.0 / sqrt(head_dim))
-    float scale = 1.0f / std::sqrt(static_cast<float>(head_dim));
-
-    // Create input tensors with appropriate shapes
-    mx::array queries = mx::random::normal(
-        {batch_size, num_q_heads, seq_len, head_dim},
-        dtype
-    );
-
-    mx::array keys = mx::random::normal(
-        {batch_size, num_kv_heads, seq_len, head_dim},
-        dtype
-    );
-
-    mx::array values = mx::random::normal(
-        {batch_size, num_kv_heads, seq_len, head_dim},
-        dtype
-    );
-
-    // Create causal mask (using MLX's triu and full functions)
-    // Create a full ones matrix and make it upper triangular for causal masking
-    auto ones = mx::full({seq_len, seq_len}, 1.0f, dtype);
-    auto mask_val = std::numeric_limits<float>::lowest();
-    auto upper_triangular = mx::triu(ones, 1);
-    mx::array causal_mask = upper_triangular * mask_val;
-
-    // Ensure the causal_mask is of the same dtype as queries/keys/values.
-    // The multiplication above (e.g., float16 array * float scalar) promotes the result to float32.
-    // We need to cast it back to the original dtype (e.g., float16) for the SDPA kernel.
-    causal_mask = mx::astype(causal_mask, dtype);
-
-    // Ensure tensors are computed before returning
-    queries.eval();
-    keys.eval();
-    values.eval();
-    causal_mask.eval();
-
-    // Return tuple with all inputs
-    return {queries, keys, values, scale, causal_mask};
-}
-
 // Static initializer to set spdlog level for benchmarks
 struct BenchmarkSpdlogInitializer {
     BenchmarkSpdlogInitializer() {
@@ -95,23 +42,25 @@ struct BenchmarkSpdlogInitializer {
 // This object will be constructed before main(), ensuring the log level is set
 static BenchmarkSpdlogInitializer global_benchmark_spdlog_initializer;
 
-namespace mx = mlx::core;
+// Define baseline configuration for benchmarks - matching the Python version exactly
+struct BaselineConfig {
+    int batch_size = 1;
+    int seq_len = 2048;  // tokens
+    int num_q_heads = 32;
+    int num_kv_heads = 16;
+    int head_dim = 128;
+    int tokens_per_page = 64;
+    mx::Dtype dtype = mx::float16;
+};
 
-// Default configuration for benchmarks
-const int DEFAULT_HEAD_DIM = 128;
-const int DEFAULT_NUM_Q_HEADS = 1;
-const int DEFAULT_NUM_KV_HEADS = 1;
-const int DEFAULT_SEQ_LEN = 128;
-const int DEFAULT_TOKENS_PER_PAGE = 64;
-const int DEFAULT_NUM_SEQUENCES_IN_BATCH = 1;
-const int DEFAULT_NUM_QUERY_ITEMS = 64;  // For DEFAULT_NUM_Q_HEADS=1, this means 64 tokens
-
-// Default configuration for SDPA benchmarks
-const int SDPA_DEFAULT_BATCH_SIZE = 64;
-const int SDPA_DEFAULT_NUM_Q_HEADS = 1;
-const int SDPA_DEFAULT_NUM_KV_HEADS = 1;
-const int SDPA_DEFAULT_HEAD_DIM = 128;
-const int SDPA_DEFAULT_SEQ_LEN = 128;
+// Helper function to create causal mask (for SDPA)
+mx::array create_causal_mask(int seq_len, mx::Dtype dtype) {
+    auto ones = mx::full({seq_len, seq_len}, 1.0f, dtype);
+    auto mask_val = std::numeric_limits<float>::lowest();
+    auto upper_triangular = mx::triu(ones, 1);
+    mx::array causal_mask = upper_triangular * mask_val;
+    return mx::astype(causal_mask, dtype);
+}
 
 // Helper function to create the page table
 mx::array create_page_table(int num_sequences_in_batch, int num_logical_pages_per_seq) {
@@ -133,83 +82,75 @@ mx::array create_page_table(int num_sequences_in_batch, int num_logical_pages_pe
     );
 }
 
-// Helper function to create the query to sequence map
-mx::array create_query_to_seq_map(int num_tokens, int num_sequences_in_batch) {
-    std::vector<int32_t> q_to_seq_data(num_tokens);
+// Helper function to create sequence-to-query mapping
+mx::array create_query_to_seq_map(int batch_size, int seq_len) {
+    // Create a query-to-sequence map that matches the python version:
+    // query_to_seq_map = mx.repeat(mx.arange(batch_size, dtype=mx.int32), repeats=seq_len)
+    std::vector<int32_t> q_to_seq_data(batch_size * seq_len);
 
-    if (num_sequences_in_batch == 1) {
-        std::fill(q_to_seq_data.begin(), q_to_seq_data.end(), 0);
-    } else {
-        const int tokens_per_seq = num_tokens / num_sequences_in_batch;
-        for (int s_idx = 0; s_idx < num_sequences_in_batch; ++s_idx) {
-            for (int t_idx = 0; t_idx < tokens_per_seq; ++t_idx) {
-                q_to_seq_data[s_idx * tokens_per_seq + t_idx] = s_idx;
-            }
+    for (int b_idx = 0; b_idx < batch_size; ++b_idx) {
+        for (int s_idx = 0; s_idx < seq_len; ++s_idx) {
+            q_to_seq_data[b_idx * seq_len + s_idx] = b_idx;
         }
     }
 
-    // Construct the array from raw data and explicitly provide its shape.
-    return mx::array(
-        q_to_seq_data.data(),
-        {num_tokens},
-        mx::int32
-    );
+    return mx::array(q_to_seq_data.data(), {batch_size * seq_len}, mx::int32);
+}
+
+// Helper function to create query token offsets
+mx::array create_query_token_offset(int batch_size, int seq_len) {
+    // Create query token offsets that match the python version:
+    // query_token_offset = mx.tile(mx.arange(1, seq_len + 1, dtype=mx.int32), batch_size)
+    std::vector<int32_t> offset_data(batch_size * seq_len);
+
+    for (int b_idx = 0; b_idx < batch_size; ++b_idx) {
+        for (int s_idx = 0; s_idx < seq_len; ++s_idx) {
+            offset_data[b_idx * seq_len + s_idx] = s_idx + 1; // 1-indexed
+        }
+    }
+
+    return mx::array(offset_data.data(), {batch_size * seq_len}, mx::int32);
 }
 
 static void BM_PAL_LatencyVsSeqLen(benchmark::State& state) {
-    // Extract parameters from state
-    const int num_query_items = state.range(0);
-    const int seq_len = state.range(1);
+    // Create test parameters from baseline with specified sequence length
+    BaselineConfig params;
+    params.seq_len = state.range(0); // Use the sequence length from benchmark args
 
-    // Fixed parameters for this benchmark
-    const int num_q_heads = DEFAULT_NUM_Q_HEADS;
-    const int num_kv_heads = DEFAULT_NUM_KV_HEADS;
-    const int head_dim = DEFAULT_HEAD_DIM;
-    const int tokens_per_page = DEFAULT_TOKENS_PER_PAGE;
-    const int num_sequences_in_batch = DEFAULT_NUM_SEQUENCES_IN_BATCH;
+    // Extract params to local variables for clarity
+    int batch_size = params.batch_size;
+    int seq_len = params.seq_len;
+    int num_q_heads = params.num_q_heads;
+    int num_kv_heads = params.num_kv_heads;
+    int head_dim = params.head_dim;
+    int tokens_per_page = params.tokens_per_page;
+    mx::Dtype dtype = params.dtype;
 
-    // Derived parameters
-    const int num_tokens = num_query_items / num_q_heads;
-    // Ensure valid configuration
-    if (num_query_items % num_q_heads != 0) {
-        state.SkipWithError("num_query_items must be divisible by num_q_heads");
-        return;
-    }
+    // Setup input tensors
+    int num_tokens = batch_size * seq_len;
+    int num_logical_pages_per_seq = (seq_len + tokens_per_page - 1) / tokens_per_page;
+    int num_total_physical_pages = batch_size * num_logical_pages_per_seq;
 
-    const int num_logical_pages_per_seq = (seq_len + tokens_per_page - 1) / tokens_per_page;
-    const int num_total_physical_pages = num_sequences_in_batch * num_logical_pages_per_seq;
-
-    // Create input tensors
-    // Queries: [num_tokens, num_q_heads, head_dim]
-    mx::array queries = mx::random::normal({num_tokens, num_q_heads, head_dim}, mx::float16);
+    // Create query tensor with shape [num_tokens, num_q_heads, head_dim]
+    mx::array queries = mx::random::normal({num_tokens, num_q_heads, head_dim}, dtype);
 
     // K/V cache pools: [num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim]
     mx::array k_cache_pool = mx::random::normal(
-        {num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim}, mx::float16);
-
+        {num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim}, dtype);
     mx::array v_cache_pool = mx::random::normal(
-        {num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim}, mx::float16);
+        {num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim}, dtype);
 
-    // Page table: [num_sequences_in_batch, num_logical_pages_per_seq]
-    mx::array page_table = create_page_table(num_sequences_in_batch, num_logical_pages_per_seq);
+    // Create page table: [num_sequences_in_batch, num_logical_pages_per_seq]
+    mx::array page_table = create_page_table(batch_size, num_logical_pages_per_seq);
 
-    // Sequence lengths: [num_sequences_in_batch]
-    mx::array sequence_lengths = mx::full({num_sequences_in_batch}, seq_len, mx::int32);
+    // Set sequence length for each batch item: [num_sequences_in_batch]
+    mx::array sequence_lengths = mx::full({batch_size}, seq_len, mx::int32);
 
-    // Query to sequence map: [num_tokens]
-    mx::array query_to_seq_map = create_query_to_seq_map(num_tokens, num_sequences_in_batch);
+    // Create query-to-sequence mapping: [num_tokens]
+    mx::array query_to_seq_map = create_query_to_seq_map(batch_size, seq_len);
 
-    // Query token offset: [num_tokens]
-    mx::array query_token_offset = mx::full({num_tokens}, seq_len, mx::int32);
-
-    // Ensure tensors are ready before benchmarking
-    queries.eval();
-    k_cache_pool.eval();
-    v_cache_pool.eval();
-    page_table.eval();
-    sequence_lengths.eval();
-    query_to_seq_map.eval();
-    query_token_offset.eval();
+    // Create query token offsets: [num_tokens]
+    mx::array query_token_offset = create_query_token_offset(batch_size, seq_len);
 
     // Main benchmark loop
     for (auto _ : state) {
@@ -226,40 +167,42 @@ static void BM_PAL_LatencyVsSeqLen(benchmark::State& state) {
         out.eval();  // Ensure GPU computation completes
     }
 
-    // Set the number of bytes processed
-    size_t bytes_processed = static_cast<size_t>(num_query_items) * head_dim * sizeof(float);
+    // Report metrics - bytes processed
+    size_t bytes_processed = static_cast<size_t>(num_tokens * num_q_heads) * head_dim * sizeof(float);
     state.SetBytesProcessed(static_cast<long long>(bytes_processed) * state.iterations());
 }
 
-
-
-// Register the benchmarks
-// Use a constant number of query vectors (8192) across the sweep so that
-// results are comparable with the Python benchmarks.
-BENCHMARK(BM_PAL_LatencyVsSeqLen)
-    ->Args({8192, 64})
-    ->Args({8192, 128})
-    ->Args({8192, 256})
-    ->Args({8192, 512})
-    ->Args({8192, 1024})
-    ->Args({8192, 2048});
-
-// SDPA Benchmark Functions
-
 static void BM_SDPA_LatencyVsSeqLen(benchmark::State& state) {
-    // Extract parameters from state
-    const int batch_size = static_cast<int>(state.range(0));
-    const int seq_len = static_cast<int>(state.range(1));
+    // Create parameters with the fixed batch size and specified sequence length
+    BaselineConfig params;
+    params.seq_len = state.range(0); // Use the sequence length from benchmark args
 
-    // Fixed parameters for this benchmark
-    const int num_q_heads = SDPA_DEFAULT_NUM_Q_HEADS;
-    const int num_kv_heads = SDPA_DEFAULT_NUM_KV_HEADS;
-    const int head_dim = SDPA_DEFAULT_HEAD_DIM;
+    // Extract params to local variables for clarity
+    int batch_size = params.batch_size;
+    int seq_len = params.seq_len;
+    int num_q_heads = params.num_q_heads;
+    int num_kv_heads = params.num_kv_heads;
+    int head_dim = params.head_dim;
+    mx::Dtype dtype = params.dtype;
 
-    // Setup input tensors using the helper function
-    auto [queries, keys, values, scale, causal_mask] = setup_sdpa_benchmark_inputs_cpp(
-        batch_size, num_q_heads, num_kv_heads, head_dim, seq_len, mx::float16
+    // Setup input tensors (matching Python benchmark)
+    float scale = 1.0f / std::sqrt(static_cast<float>(head_dim));
+
+    // Create input tensors with shapes matching the Python benchmark
+    mx::array queries = mx::random::normal(
+        {batch_size, num_q_heads, seq_len, head_dim}, dtype
     );
+
+    mx::array keys = mx::random::normal(
+        {batch_size, num_kv_heads, seq_len, head_dim}, dtype
+    );
+
+    mx::array values = mx::random::normal(
+        {batch_size, num_kv_heads, seq_len, head_dim}, dtype
+    );
+
+    // Create causal mask
+    mx::array causal_mask = create_causal_mask(seq_len, dtype);
 
     // Main benchmark loop
     for (auto _ : state) {
@@ -275,19 +218,28 @@ static void BM_SDPA_LatencyVsSeqLen(benchmark::State& state) {
         out.eval();  // Ensure GPU computation completes
     }
 
-    // Set the number of items processed (batch_size * num_q_heads * seq_len per iteration)
-    state.SetItemsProcessed(static_cast<long long>(batch_size * num_q_heads * seq_len) * state.iterations());
+    // Report metrics
+    size_t bytes_processed = static_cast<size_t>(batch_size * num_q_heads * seq_len) * head_dim * sizeof(float);
+    state.SetBytesProcessed(static_cast<long long>(bytes_processed) * state.iterations());
 }
 
-// Register the SDPA benchmarks
-// Adjust batch size so that batch_size * seq_len equals 8192
-// (num_q_heads is fixed at 1). This mirrors the PAL benchmark.
+// Register the benchmarks with all sequence lengths from Python benchmark
+BENCHMARK(BM_PAL_LatencyVsSeqLen)
+    ->Arg(64);
+    // ->Arg(128)
+    // ->Arg(256)
+    // ->Arg(512)
+    // ->Arg(1024)
+    // ->Arg(2048)
+    // ->Arg(4096);
+
 BENCHMARK(BM_SDPA_LatencyVsSeqLen)
-    ->Args({128, 64})   // 128 * 64 = 8192
-    ->Args({64, 128})   // 64 * 128 = 8192
-    ->Args({32, 256})   // 32 * 256 = 8192
-    ->Args({16, 512})   // 16 * 512 = 8192
-    ->Args({8, 1024})   // 8 * 1024 = 8192
-    ->Args({4, 2048});  // 4 * 2048 = 8192
-// Main function
+    ->Arg(64);
+    // ->Arg(128)
+    // ->Arg(256)
+    // ->Arg(512)
+    // ->Arg(1024)
+    // ->Arg(2048)
+    // ->Arg(4096);
+
 BENCHMARK_MAIN();
