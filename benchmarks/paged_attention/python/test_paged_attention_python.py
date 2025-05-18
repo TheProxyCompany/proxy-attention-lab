@@ -35,7 +35,7 @@ BASELINE_CONFIG = {
 }
 
 
-@pytest.mark.parametrize("seq_len_val", [64, 128, 256, 512, 1024, 2048])
+@pytest.mark.parametrize("seq_len_val", [64, 128, 256, 512, 1024, 2048, 4096])
 def test_pal_latency_vs_seq_len(benchmark, seq_len_val):
     """
     Benchmark paged_attention operation performance across different sequence lengths.
@@ -107,7 +107,7 @@ def test_pal_latency_vs_seq_len(benchmark, seq_len_val):
     assert mx.isfinite(result).all()
 
 
-@pytest.mark.parametrize("seq_len_val", [64, 128, 256, 512, 1024, 2048])
+@pytest.mark.parametrize("seq_len_val", [64, 128, 256, 512, 1024, 2048, 4096])
 def test_sdpa_latency_vs_seq_len(benchmark, seq_len_val):
     """
     Benchmark MLX scaled_dot_product_attention operation performance across different sequence lengths.
