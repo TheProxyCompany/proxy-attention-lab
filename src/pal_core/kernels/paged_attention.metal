@@ -59,14 +59,6 @@ using namespace metal;
     // This is used for K_tile and V_tile row strides.
     const uint padded_head_dim_hoisted = params.head_dim + params.pad_floats_per_row;
 
-    // Guard path for large head_dim that's not supported by the fused path
-    if (params.head_dim > kMaxHeadDimMetal) {
-        if (local_idx_in_tg == 0) { // Only one thread needs to zero
-            zero_output_vector_for_item(tg_pos_in_grid.x, output_buffer, params);
-        }
-        return; // Exit if head_dim is too large for the fused path we are building
-    }
-
     // --- 4/10: Thread Identifiers & SIMD Group Info ---
     uint global_item_idx = tg_pos_in_grid.x;    // Identifies the query-head item
     uint local_thread_idx = local_idx_in_tg;    // Thread ID within this group

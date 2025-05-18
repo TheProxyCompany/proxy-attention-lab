@@ -347,20 +347,6 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
   }
 
   /**
-   * @brief Populates runtime-dependent attention parameters.
-   *
-   * @param params In/Out parameter struct to populate
-   * @param inputs Vector of input arrays to access k_pool, page_table, etc.
-   * @param current_threads_per_group Calculated in eval_gpu
-   * @param mtl_device Metal device pointer for maxThreadgroupMemoryLength
-   */
-  static inline void populate_runtime_attention_params(
-      PagedAttentionParams& params,
-      const std::vector<mx::array>& inputs,
-      size_t current_threads_per_group,
-      MTL::Device* mtl_device);
-
-  /**
    * @brief Configures and dispatches the Metal compute kernel.
    *
    * @param compute_encoder Metal compute command encoder

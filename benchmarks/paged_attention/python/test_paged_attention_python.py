@@ -90,7 +90,13 @@ def test_pal_latency_vs_seq_len(benchmark, seq_len_val):
     # Define benchmark function that evaluates the result
     def operation_to_benchmark():
         out = paged_attention(
-            queries, k_cache_pool, v_cache_pool, page_table, sequence_lengths, query_to_seq_map, query_token_offset
+            queries,
+            k_cache_pool,
+            v_cache_pool,
+            page_table,
+            sequence_lengths,
+            query_to_seq_map,
+            query_token_offset,
         )
         mx.eval(out)
         return out
