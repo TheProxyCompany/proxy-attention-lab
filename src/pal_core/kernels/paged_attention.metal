@@ -227,8 +227,7 @@ using namespace metal;
                 }
             }
         }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-
+        // Barrier after K load removed (no use until after V load)
 
         // --- Load V-vectors into V_tile ---
         if (local_thread_idx < current_hist_tile_actual_len) {
@@ -277,7 +276,7 @@ using namespace metal;
         float current_thread_score_for_max_reduction = thread_score_val;
 
         tg_partial_reduce_scratch[local_thread_idx] = current_thread_score_for_max_reduction;
-        threadgroup_barrier(mem_flags::mem_threadgroup); // Ensure all G_partial_max_scores are written
+        // No barrier needed: each thread only reads its own index for simd_max
 
         float simd_max_m_tile_val = simd_max(tg_partial_reduce_scratch[local_thread_idx]);
         if (simd_lane_id == 0) { tg_simd_reduce_scratch[simd_group_id] = simd_max_m_tile_val; }
