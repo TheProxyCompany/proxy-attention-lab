@@ -81,9 +81,6 @@ static ThreadgroupMemoryLayout calculate_threadgroup_memory_breakdown_and_total(
     constexpr size_t kSimdLanesPerGroup = 32;
     const uint32_t num_simd_groups = (threads_per_group + kSimdLanesPerGroup - 1) / kSimdLanesPerGroup;
 
-    spdlog::debug("[PAL TGMemCalc] Calculating with head_dim={}, tile_T={}, threads_per_group={}, num_simd_groups={}",
-                  params.head_dim, params.tile_size_T_runtime, threads_per_group, num_simd_groups);
-
     // 1. q_shmem: head_dim floats
     layout.q_shmem_bytes = params.head_dim * sizeof(float);
     tg_mem_current_offset_bytes += layout.q_shmem_bytes;
@@ -120,9 +117,6 @@ static ThreadgroupMemoryLayout calculate_threadgroup_memory_breakdown_and_total(
     tg_mem_current_offset_bytes = (tg_mem_current_offset_bytes + kAlignmentMask) & ~kAlignmentMask;
     layout.simd_v_chunk_sums_bytes = num_simd_groups * sizeof(float) * 4;
     tg_mem_current_offset_bytes += layout.simd_v_chunk_sums_bytes;
-
-    // Fixed scratch memory for Q and reductions (not including k_tile, v_tile or final guard)
-    size_t fixed_scratch_bytes = (tg_mem_current_offset_bytes + kAlignmentMask) & ~kAlignmentMask;
 
     // 8. K Tile memory - for caching K vectors with padding for bank conflict avoidance
     tg_mem_current_offset_bytes = (tg_mem_current_offset_bytes + kAlignmentMask) & ~kAlignmentMask;

@@ -135,20 +135,17 @@ static void BM_PAL_LatencyVsSeqLen(benchmark::State& state) {
     // Create query tensor with shape [num_tokens, num_q_heads, head_dim]
     mx::array queries = mx::random::normal(
         {num_tokens, num_q_heads, head_dim},
-        dtype,
-        std::nullopt
+        dtype
     );
 
     // K/V cache pools: [num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim]
     mx::array k_cache_pool = mx::random::normal(
         {num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim},
-        dtype,
-        std::nullopt
+        dtype
     );
     mx::array v_cache_pool = mx::random::normal(
         {num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim},
-        dtype,
-        std::nullopt
+        dtype
     );
 
     // Create page table: [num_sequences_in_batch, num_logical_pages_per_seq]
