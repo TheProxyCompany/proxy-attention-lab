@@ -61,32 +61,19 @@ from proxy_attention_lab import paged_attention
 
 logger = logging.getLogger(__name__)
 
-# Baseline number of query vectors processed in each benchmark.
-# The C++ benchmarks use the same value so latency results can be
-# compared across implementations.
-BASELINE_QUERY_VECTORS = 64 * 128  # 64 sequences of 128 tokens each (8192 total)
+# Fixed batch size for latency vs sequence length comparisons
+# Using a small number to better understand per-sequence scaling behavior
+COMPARISON_BATCH_SIZE = 4
 
 # Define baseline configuration for benchmarks
 BASELINE_CONFIG = {
-    "num_query_items": BASELINE_QUERY_VECTORS,  # Total query vectors (tokens * heads)
+    "num_query_items": 0,  # This will be set dynamically in the tests
     "num_q_heads": 1,
     "num_kv_heads": 1,
     "head_dim": 128,
     "seq_len": 128,  # History length
     "tokens_per_page": 64,
-    "num_sequences_in_batch": 1,
-    "dtype": mx.float16,
-}
-
-# Define baseline configuration for SDPA benchmarks
-# This matches BASELINE_QUERY_VECTORS when seq_len * batch_size * num_q_heads
-# equals BASELINE_QUERY_VECTORS.
-BASELINE_CONFIG_FOR_SDPA = {
-    "batch_size": 64,  # 64 sequences
-    "num_q_heads": 1,
-    "num_kv_heads": 1,
-    "head_dim": 128,
-    "seq_len": 128,  # Sequence length for SDPA
+    "num_sequences_in_batch": COMPARISON_BATCH_SIZE,
     "dtype": mx.float16,
 }
 
@@ -146,6 +133,12 @@ def setup_sdpa_benchmark_inputs(params: dict[str, Any]) -> tuple[mx.array, mx.ar
 def setup_pal_benchmark_inputs(params: dict[str, Any]) -> tuple[mx.array, ...]:
     """
     Create all necessary input tensors for the paged_attention kernel benchmark.
+
+    This function supports both standard benchmarks and batched prefill scenarios.
+    For batched prefill benchmarks (used in test_pal_latency_vs_seq_len):
+    - num_query_items = num_sequences_in_batch * seq_len * num_q_heads
+    - Query token offsets represent the position of each token in its sequence (1-indexed)
+    - Each sequence is assigned a contiguous block of tokens
 
     Args:
         params: Dictionary containing benchmark parameters:
@@ -214,20 +207,40 @@ def setup_pal_benchmark_inputs(params: dict[str, Any]) -> tuple[mx.array, ...]:
     if params["num_sequences_in_batch"] == 1:
         query_to_seq_map = mx.zeros(num_tokens, dtype=mx.int32)
     else:
-        # Ensure num_tokens is divisible by num_sequences_in_batch for even distribution
+        # For the batched prefill scenario, where each sequence has the same length
         if num_tokens % params["num_sequences_in_batch"] != 0:
             raise ValueError(
                 f"For multi-sequence batches, num_tokens ({num_tokens}) must be divisible by "
                 f"num_sequences_in_batch ({params['num_sequences_in_batch']})"
             )
+
         tokens_per_seq_in_map = num_tokens // params["num_sequences_in_batch"]
-        query_to_seq_map = mx.repeat(
-            mx.arange(params["num_sequences_in_batch"], dtype=mx.int32), repeats=tokens_per_seq_in_map
-        )
+
+        # For prefill scenario, each sequence gets its own block of tokens
+        # If seq_len is specified and equals tokens_per_seq_in_map, we're in a prefill scenario
+        if tokens_per_seq_in_map == params["seq_len"]:
+            # Example: if num_sequences_in_batch=4, seq_len=2048,
+            # query_to_seq_map should be [0...0 (2048 times), 1...1 (2048 times), ..., 3...3 (2048 times)]
+            map_list = []
+            for i in range(params["num_sequences_in_batch"]):
+                map_list.extend([i] * params["seq_len"])
+            query_to_seq_map = mx.array(map_list, dtype=mx.int32)
+        else:
+            # Default behavior for non-prefill scenarios
+            query_to_seq_map = mx.repeat(
+                mx.arange(params["num_sequences_in_batch"], dtype=mx.int32), repeats=tokens_per_seq_in_map
+            )
 
     # Query token offset: [num_tokens]
-    # Set all offsets to seq_len so each token attends to a full history
-    query_token_offset = mx.array([params["seq_len"]] * num_tokens, dtype=mx.int32)
+    # For prefill scenario with batch_size > 1, use position offsets for each sequence
+    if params["num_sequences_in_batch"] > 1 and num_tokens // params["num_sequences_in_batch"] == params["seq_len"]:
+        # Example: if num_sequences_in_batch=4, seq_len=2048
+        # query_token_offset should be [1,2,...,2048, 1,2,...,2048, ..., 1,2,...,2048]
+        single_sequence_offsets = mx.arange(1, params["seq_len"] + 1, dtype=mx.int32)
+        query_token_offset = mx.concatenate([single_sequence_offsets] * params["num_sequences_in_batch"])
+    else:
+        # Default behavior for non-prefill scenarios - all tokens attend to full history
+        query_token_offset = mx.array([params["seq_len"]] * num_tokens, dtype=mx.int32)
 
     # Evaluate all tensors before returning to ensure they're computed
     mx.eval(queries)
@@ -274,6 +287,10 @@ def test_pal_latency_vs_seq_len(benchmark, seq_len_val):
     """
     Benchmark paged_attention operation performance across different sequence lengths.
 
+    This test uses a fixed batch size (COMPARISON_BATCH_SIZE) to measure how latency
+    scales with sequence length for a consistent number of parallel sequences.
+    Both PAL and SDPA benchmarks will use the same fixed batch size for direct comparison.
+
     Args:
         benchmark: pytest-benchmark fixture for performance measurement
         seq_len_val: sequence length value to test
@@ -282,8 +299,20 @@ def test_pal_latency_vs_seq_len(benchmark, seq_len_val):
     params = BASELINE_CONFIG.copy()
     params["seq_len"] = seq_len_val
 
+    # Use fixed batch size with varying sequence length
+    # Each sequence has seq_len_val tokens, so the total tokens is batch_size * seq_len_val
+    params["num_sequences_in_batch"] = COMPARISON_BATCH_SIZE
+    params["num_query_items"] = COMPARISON_BATCH_SIZE * seq_len_val * params["num_q_heads"]
+
     # Setup input tensors (evaluated during setup)
     input_tensors = setup_pal_benchmark_inputs(params)
+
+    # Store the complete parameters for the analyzer
+    if hasattr(benchmark, "extra_info"):
+        benchmark.extra_info["run_params"] = params  # Store exact params used for this run
+    else:
+        # Fallback if extra_info is not available in some pytest-benchmark versions
+        logger.warning("benchmark.extra_info not available. Parameter logging for analyzer might be limited.")
 
     # Define benchmark function that evaluates the result
     def operation_to_benchmark():
@@ -310,19 +339,23 @@ def test_sdpa_latency_vs_seq_len(benchmark, seq_len_val):
     """
     Benchmark MLX scaled_dot_product_attention operation performance across different sequence lengths.
 
+    This test uses a fixed batch size (COMPARISON_BATCH_SIZE) to measure how latency
+    scales with sequence length for a consistent number of parallel sequences.
+    Both PAL and SDPA benchmarks use the same fixed batch size for direct comparison.
+
     Args:
         benchmark: pytest-benchmark fixture for performance measurement
         seq_len_val: sequence length value to test
     """
-    # Create test parameters from baseline with specified sequence length
-    # Adjust batch_size so that the total number of query vectors remains
-    # constant across the sweep.
-    params = BASELINE_CONFIG_FOR_SDPA.copy()
-    params["seq_len"] = seq_len_val
-    total_vectors = BASELINE_QUERY_VECTORS
-    params["batch_size"] = total_vectors // (seq_len_val * params["num_q_heads"])
-    if params["batch_size"] < 1:
-        pytest.skip("Configuration would process fewer than one sequence")
+    # Create parameters with the fixed batch size and specified sequence length
+    params = {
+        "batch_size": COMPARISON_BATCH_SIZE,
+        "num_q_heads": BASELINE_CONFIG["num_q_heads"],
+        "num_kv_heads": BASELINE_CONFIG["num_kv_heads"],
+        "head_dim": BASELINE_CONFIG["head_dim"],
+        "seq_len": seq_len_val,
+        "dtype": BASELINE_CONFIG["dtype"],
+    }
 
     # Setup input tensors (evaluated during setup)
     q, k, v, scale, mask = setup_sdpa_benchmark_inputs(params)
@@ -340,154 +373,3 @@ def test_sdpa_latency_vs_seq_len(benchmark, seq_len_val):
     expected_shape = (params["batch_size"], params["num_q_heads"], params["seq_len"], params["head_dim"])
     assert result.shape == expected_shape
     assert mx.isfinite(result).all()
-
-
-@pytest.mark.parametrize("head_dim_val", [64, 128, 160, 192, 256])
-def test_pal_latency_vs_head_dim(benchmark, head_dim_val):
-    """
-    Benchmark paged_attention operation performance across different head dimensions.
-
-    Args:
-        benchmark: pytest-benchmark fixture for performance measurement
-        head_dim_val: head dimension value to test
-    """
-    # Create test parameters from baseline with specified head dimension
-    params = BASELINE_CONFIG.copy()
-    params["head_dim"] = head_dim_val
-
-    # Setup input tensors (evaluated during setup)
-    input_tensors = setup_pal_benchmark_inputs(params)
-
-    # Define benchmark function that evaluates the result
-    def operation_to_benchmark():
-        out = paged_attention(*input_tensors)
-        mx.eval(out)
-        return out
-
-    # Run benchmark
-    result = benchmark(operation_to_benchmark)
-
-    # Assert the output has expected shape and valid values
-    queries = input_tensors[0]
-    num_tokens = queries.shape[0]
-    num_q_heads = queries.shape[1]
-    expected_items = num_tokens * num_q_heads
-    expected_shape = (expected_items, params["head_dim"])
-
-    assert result.shape == expected_shape
-    assert mx.isfinite(result).all()
-
-
-@pytest.mark.parametrize("head_dim_val", [64, 128, 160, 192, 256])
-def test_sdpa_latency_vs_head_dim(benchmark, head_dim_val):
-    """
-    Benchmark MLX scaled_dot_product_attention operation performance across different head dimensions.
-
-    Args:
-        benchmark: pytest-benchmark fixture for performance measurement
-        head_dim_val: head dimension value to test
-    """
-    # Create test parameters from baseline with specified head dimension
-    params = BASELINE_CONFIG_FOR_SDPA.copy()
-    params["head_dim"] = head_dim_val
-
-    # Setup input tensors (evaluated during setup)
-    q, k, v, scale, mask = setup_sdpa_benchmark_inputs(params)
-
-    # Define benchmark function that evaluates the result
-    def operation_to_benchmark():
-        output = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale, mask=mask)
-        mx.eval(output)
-        return output
-
-    # Run benchmark
-    result = benchmark(operation_to_benchmark)
-
-    # Assert the output has expected shape and valid values
-    expected_shape = (params["batch_size"], params["num_q_heads"], params["seq_len"], params["head_dim"])
-    assert result.shape == expected_shape
-    assert mx.isfinite(result).all()
-
-
-@pytest.mark.parametrize("batch_size_val", [32, 64, 128, 256, 512])
-def test_pal_latency_vs_query_items(benchmark, batch_size_val):
-    """
-    Benchmark paged_attention operation performance across different batch sizes.
-
-    Args:
-        benchmark: pytest-benchmark fixture for performance measurement
-        batch_size_val: number of independent requests to test
-    """
-    # Create test parameters from baseline with specified batch size
-    params = BASELINE_CONFIG.copy()
-    params["seq_len"] = 2048
-    params["num_q_heads"] = 1
-    params["num_query_items"] = batch_size_val * params["num_q_heads"]
-
-    try:
-        # Setup input tensors (evaluated during setup)
-        input_tensors = setup_pal_benchmark_inputs(params)
-
-        # Define benchmark function that evaluates the result
-        def operation_to_benchmark():
-            out = paged_attention(*input_tensors)
-            mx.eval(out)
-            return out
-
-        # Run benchmark
-        result = benchmark(operation_to_benchmark)
-
-        # Assert the output has expected shape and valid values
-        queries = input_tensors[0]
-        num_tokens = queries.shape[0]
-        num_q_heads = queries.shape[1]
-        expected_items = num_tokens * num_q_heads
-        expected_shape = (expected_items, params["head_dim"])
-
-        assert result.shape == expected_shape
-        assert mx.isfinite(result).all()
-
-    except ValueError as e:
-        pytest.skip(f"Skipping incompatible configuration: {e}")
-
-
-@pytest.mark.parametrize("batch_size_val", [32, 64, 128, 256, 512])
-def test_sdpa_latency_vs_batch_size(benchmark, batch_size_val):
-    """
-    Benchmark MLX scaled_dot_product_attention operation performance across different batch sizes.
-
-    This is the SDPA equivalent of test_pal_latency_vs_query_items. In SDPA, we vary the
-    batch_size which is the most direct way to increase the number of active requests.
-
-    Args:
-        benchmark: pytest-benchmark fixture for performance measurement
-        batch_size_val: batch size to test
-    """
-    # Create test parameters from baseline with specified batch size.
-    # Use seq_len=2048 to mirror a realistic decode context length.
-    params = BASELINE_CONFIG_FOR_SDPA.copy()
-    params["batch_size"] = batch_size_val
-    params["seq_len"] = 2048
-
-    # Setup input tensors (evaluated during setup)
-    q, k, v, scale, mask = setup_sdpa_benchmark_inputs(params)
-
-    # Define benchmark function that evaluates the result
-    def operation_to_benchmark():
-        output = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale, mask=mask)
-        mx.eval(output)
-        return output
-
-    # Run benchmark
-    result = benchmark(operation_to_benchmark)
-
-    # Assert the output has expected shape and valid values
-    expected_shape = (params["batch_size"], params["num_q_heads"], params["seq_len"], params["head_dim"])
-    assert result.shape == expected_shape
-    assert mx.isfinite(result).all()
-
-
-# Model configurations have been removed
-
-
-# Model configuration benchmark tests have been removed

@@ -196,6 +196,9 @@ def parse_pytest_benchmark(json_file: Path) -> list[dict]:
 
     for bench in data.get("benchmarks", []):
         name = bench.get("name", "")
+        if "cold_start" in name:
+            continue
+
         raw_benchmark_names.append(name)
 
         # Determine kernel_name and source directly from benchmark name for Python
@@ -247,19 +250,6 @@ def parse_pytest_benchmark(json_file: Path) -> list[dict]:
         # Extract model config information
         model_config_name = None
         model_params_raw = None
-
-        # Check if this is a model config benchmark
-        if "model_configs" in base_name and "[" in name and "]" in name:
-            # For pytest, the model config and params might be in the params_str
-            # Format could be like: test_pal_latency_model_configs[Llama3_70B_Sim-{...}]
-            param_parts = params_str.split("-", 1)
-            if param_parts:
-                model_config_name = param_parts[0]
-                # Save model params if available
-                if len(param_parts) > 1 and param_parts[1].startswith("{") and param_parts[1].endswith("}"):
-                    model_params_raw = param_parts[1]
-                logger.debug(f"Extracted Python model config: {model_config_name} with params: {model_params_raw}")
-
         row = {
             config.COL_BENCHMARK_NAME_BASE: base_name,
             "full_name": name,
@@ -275,9 +265,6 @@ def parse_pytest_benchmark(json_file: Path) -> list[dict]:
             row["model_config_name"] = model_config_name
         if model_params_raw:
             row["model_params_raw"] = model_params_raw
-
-        # Calculate throughput for Python benchmarks if not already present
-        # This will be refined in the transformers module after we extract all parameters
 
         rows.append(row)
 
