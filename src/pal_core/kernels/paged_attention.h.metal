@@ -104,8 +104,7 @@ static inline uint map_q_to_kv_head(
  * @param target_kv_head_idx Already mapped KV head index
  * @param k_cache_pool_in_param Key cache base pointer
  * @param v_cache_pool_in_param Value-cache base pointer
- * @param page_table_in_param Page-table base pointer
- * @param item_seq_idx_in_batch_param Sequence index in batch
+ * @param page_table_slice Prefetched page-table slice for current sequence
  * @param kernel_params Kernel parameters struct
  * @return Pointer to the K/V vector, or nullptr if invalid
  */
@@ -115,13 +114,12 @@ static inline device const half* fetch_kv_pointer(
     uint target_kv_head_idx, // Already mapped
     device const half* k_cache_pool_in_param,
     device const half* v_cache_pool_in_param,
-    device const uint* page_table_in_param,
-    uint item_seq_idx_in_batch_param,
+    threadgroup const uint* page_table_slice,
     constant const PagedAttentionParams& kernel_params
 ) {
     if ((is_k_vector && k_cache_pool_in_param == nullptr) ||
         (!is_k_vector && v_cache_pool_in_param == nullptr) ||
-        page_table_in_param == nullptr) {
+        page_table_slice == nullptr) {
         return nullptr;
     }
 
@@ -131,12 +129,7 @@ static inline device const half* fetch_kv_pointer(
     uint logical_block_idx = 0;
     uint token_slot_in_page = 0;
     if (tpp_is_pow2) {
-        uint shift = 0;
-        uint tmp = tokens_per_page;
-        while (tmp > 1u) {
-            tmp >>= 1u;
-            shift++;
-        }
+        uint shift = kernel_params.tokens_per_page_shift;
         logical_block_idx = actual_hist_token_pos >> shift;
         token_slot_in_page = actual_hist_token_pos & (tokens_per_page - 1u);
     } else {
@@ -146,8 +139,7 @@ static inline device const half* fetch_kv_pointer(
     if (logical_block_idx >= kernel_params.max_logical_blocks_per_seq) {
         return nullptr;  // Invalid block index
     }
-    uint page_table_flat_idx = item_seq_idx_in_batch_param * kernel_params.max_logical_blocks_per_seq + logical_block_idx;
-    uint physical_page_id = page_table_in_param[page_table_flat_idx];
+    uint physical_page_id = page_table_slice[logical_block_idx];
 
     if (physical_page_id >= kernel_params.num_physical_pages_in_pool) {
         return nullptr;  // Invalid page
@@ -157,13 +149,13 @@ static inline device const half* fetch_kv_pointer(
     uint head_dim = kernel_params.head_dim;
     uint num_kv_heads = kernel_params.num_kv_heads;
 
-    // Compute steps separately using ulong to avoid overflow
-    ulong page_offset = (ulong)physical_page_id * (ulong)tokens_per_page * (ulong)num_kv_heads * (ulong)head_dim;
-    ulong token_offset = (ulong)token_slot_in_page * (ulong)num_kv_heads * (ulong)head_dim;
-    ulong head_offset = (ulong)target_kv_head_idx * (ulong)head_dim;
+    // Use 32-bit math where possible
+    uint per_token_stride = num_kv_heads * head_dim;
+    uint per_page_stride = tokens_per_page * per_token_stride;
 
-    // Combine offsets
-    ulong total_offset = page_offset + token_offset + head_offset;
+    ulong total_offset = (ulong)physical_page_id * (ulong)per_page_stride +
+                         (ulong)token_slot_in_page * (ulong)per_token_stride +
+                         (ulong)target_kv_head_idx * (ulong)head_dim;
 
     // Return the appropriate pointer
     return is_k_vector ? (k_cache_pool_in_param + total_offset) : (v_cache_pool_in_param + total_offset);

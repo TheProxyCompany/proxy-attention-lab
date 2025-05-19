@@ -65,6 +65,7 @@ struct ThreadgroupMemoryLayout {
     size_t simd_v_chunk_sums_bytes{0};
     size_t k_tile_bytes{0}; // For caching K-vectors in threadgroup memory
     size_t v_tile_bytes{0}; // For caching V-vectors in threadgroup memory
+    size_t page_table_slice_bytes{0};
     size_t final_guard_bytes{0};
     size_t total_bytes{0};
 };
@@ -135,6 +136,11 @@ static ThreadgroupMemoryLayout calculate_threadgroup_memory_breakdown_and_total(
     layout.v_tile_bytes = params.tile_size_T_runtime * padded_head_dim_for_tile * sizeof(float);
     tg_mem_current_offset_bytes += layout.v_tile_bytes;
 
+    // 10. Per-sequence page-table slice
+    tg_mem_current_offset_bytes = (tg_mem_current_offset_bytes + kAlignmentMask) & ~kAlignmentMask;
+    layout.page_table_slice_bytes = params.max_logical_blocks_per_seq * sizeof(uint32_t);
+    tg_mem_current_offset_bytes += layout.page_table_slice_bytes;
+
     // Final padding guard
     constexpr size_t kFinalTgMemoryPaddingGuardBytes = 32;
     layout.final_guard_bytes = kFinalTgMemoryPaddingGuardBytes;
@@ -159,6 +165,16 @@ static ThreadgroupMemoryLayout prepare_inputs_layout_memory(
     params.num_kv_heads             = extracted_core_dims.num_kv_heads;
     params.head_dim                 = extracted_core_dims.head_dim;
     params.tokens_per_page          = extracted_core_dims.tokens_per_page;
+    // Precompute log2(tokens_per_page) when it's a power of two
+    params.tokens_per_page_shift = 0;
+    if (params.tokens_per_page > 0 &&
+        (params.tokens_per_page & (params.tokens_per_page - 1)) == 0) {
+        uint32_t tmp = params.tokens_per_page;
+        while (tmp > 1) {
+            tmp >>= 1;
+            params.tokens_per_page_shift++;
+        }
+    }
 
     // Kernel constants
     params.pad_floats_per_row       = kDefaultPaddingFloatsPerRow;

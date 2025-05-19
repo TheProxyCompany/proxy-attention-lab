@@ -115,8 +115,17 @@ using namespace metal;
     // V_tile for caching V-vectors in threadgroup memory
     threadgroup float* V_tile = (threadgroup float*)current_offset;
 
-    // Update current_offset for final guard bytes - using padded_head_dim_hoisted for V_tile's size
+    // Update current_offset for page-table slice after V_tile
     current_offset += params.tile_size_T_runtime * padded_head_dim_hoisted * sizeof(float);
+    current_offset = (current_offset + kAlignmentMask) & ~kAlignmentMask;
+
+    // Threadgroup buffer for current sequence's page-table slice
+    threadgroup uint* tg_page_table_slice = (threadgroup uint*)current_offset;
+    current_offset += params.max_logical_blocks_per_seq * sizeof(uint);
+    current_offset = (current_offset + kAlignmentMask) & ~kAlignmentMask;
+
+    // Final padding guard (mirrors host-side calculation)
+    current_offset += 32;
     current_offset = (current_offset + kAlignmentMask) & ~kAlignmentMask;
 
     // --- 6/10: Q-Vector Pointer Calculation & Staging ---
@@ -157,6 +166,13 @@ using namespace metal;
         }
         return;
     }
+
+    // Prefetch page-table slice for this sequence into threadgroup memory
+    for (uint blk = local_thread_idx; blk < params.max_logical_blocks_per_seq; blk += tg_dim.x) {
+        uint flat_idx = item_seq_idx_in_batch * params.max_logical_blocks_per_seq + blk;
+        tg_page_table_slice[blk] = page_table_in[flat_idx];
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
 
     int item_signed_query_token_offset = query_token_offset_in[token_idx_for_sideband_lookup];
     if (item_signed_query_token_offset < 0) {
@@ -202,8 +218,7 @@ using namespace metal;
                 target_kv_head_idx_for_k_load,
                 k_cache_pool_in,
                 v_cache_pool_in,
-                page_table_in,
-                item_seq_idx_in_batch,
+                tg_page_table_slice,
                 params
             );
 
@@ -239,8 +254,7 @@ using namespace metal;
                 target_kv_head_idx_for_v_load,
                 k_cache_pool_in,
                 v_cache_pool_in,
-                page_table_in,
-                item_seq_idx_in_batch,
+                tg_page_table_slice,
                 params
             );
             // Each thread loads its V-vector into the V_tile
