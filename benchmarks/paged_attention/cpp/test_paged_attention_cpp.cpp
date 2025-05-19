@@ -36,7 +36,7 @@ namespace mx = mlx::core;
 struct BenchmarkSpdlogInitializer {
     BenchmarkSpdlogInitializer() {
         // Set default log level for benchmarks to warning to reduce noise
-        spdlog::set_level(spdlog::level::warn);
+        spdlog::set_level(spdlog::level::debug);
         spdlog::info("PAL C++ Benchmarks: spdlog level set to 'warn'. Debug/trace messages from pal_core_lib will be suppressed.");
     }
 };
@@ -50,7 +50,7 @@ struct BaselineConfig {
     int seq_len = 2048;  // tokens
     int num_q_heads = 32;
     int num_kv_heads = 16;
-    int head_dim = 128;
+    int head_dim = 128; // bottleneck dim
     int tokens_per_page = 64;
     mx::Dtype dtype = mx::float16;
 };
@@ -443,19 +443,19 @@ BENCHMARK(BM_MLX_SDPA_LatencyVsSeqLen)
     // ->Arg(4096);
 
 BENCHMARK(BM_PAL_DecodeLatencyVsHistoryLen)
-    ->Arg(1024)->Iterations(1)->Repetitions(1)
-    ->Arg(2048)->Iterations(1)->Repetitions(1)
-    ->Arg(4096)->Iterations(1)->Repetitions(1)
-    ->Arg(8192)->Iterations(1)->Repetitions(1)
-    ->Arg(16384)->Iterations(1)->Repetitions(1)
+    // ->Arg(1024)->Iterations(1)->Repetitions(1)
+    // ->Arg(2048)->Iterations(1)->Repetitions(1)
+    // ->Arg(4096)->Iterations(1)->Repetitions(1)
+    // ->Arg(8192)->Iterations(1)->Repetitions(1)
+    // ->Arg(16384)->Iterations(1)->Repetitions(1)
     ->Arg(32768)->Iterations(1)->Repetitions(1);
 
 BENCHMARK(BM_MLX_SDPA_DecodeLatencyVsHistoryLen)
-    ->Arg(1024)->Iterations(1)->Repetitions(1)
-    ->Arg(2048)->Iterations(1)->Repetitions(1)
-    ->Arg(4096)->Iterations(1)->Repetitions(1)
-    ->Arg(8192)->Iterations(1)->Repetitions(1)
-    ->Arg(16384)->Iterations(1)->Repetitions(1)
+    // ->Arg(1024)->Iterations(1)->Repetitions(1)
+    // ->Arg(2048)->Iterations(1)->Repetitions(1)
+    // ->Arg(4096)->Iterations(1)->Repetitions(1)
+    // ->Arg(8192)->Iterations(1)->Repetitions(1)
+    // ->Arg(16384)->Iterations(1)->Repetitions(1)
     ->Arg(32768)->Iterations(1)->Repetitions(1);
 
 BENCHMARK_MAIN();

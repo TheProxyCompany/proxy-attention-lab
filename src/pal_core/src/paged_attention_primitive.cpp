@@ -44,7 +44,7 @@ namespace pal::cpp {
 
 // fp16 - log(2^-24) = -16.6355
 constexpr static float kLogFp16DenormMinVal = -16.6355f;
-constexpr static uint32_t kDefaultPaddingFloatsPerRow = 8;
+constexpr static uint32_t kDefaultPaddingFloatsPerRow = 4;
 
 struct CoreDims {
     uint32_t head_dim{0};
@@ -73,13 +73,13 @@ struct ThreadgroupMemoryLayout {
 
 static ThreadgroupMemoryLayout calculate_threadgroup_memory_breakdown_and_total(
     const PagedAttentionParams& params,
-    size_t threads_per_group
+    size_t threads_per_group // This is the target_threads_per_group for sizing fixed components
 ) {
     ThreadgroupMemoryLayout layout;
     uintptr_t tg_mem_current_offset_bytes = 0;
 
-    // Calculate the number of SIMD groups
-    constexpr size_t kSimdLanesPerGroup = 32;
+    // Calculate the number of SIMD groups based on the actual threads_per_group being dispatched
+    constexpr size_t kSimdLanesPerGroup = 32; // Should ideally match queried threadExecutionWidth
     const uint32_t num_simd_groups = (threads_per_group + kSimdLanesPerGroup - 1) / kSimdLanesPerGroup;
 
     // 1. q_shmem: head_dim floats
@@ -153,13 +153,13 @@ static ThreadgroupMemoryLayout calculate_threadgroup_memory_breakdown_and_total(
     return layout;
 }
 
-static ThreadgroupMemoryLayout prepare_inputs_layout_memory(
+static ThreadgroupMemoryLayout calculate_final_params_and_memory_layout(
     PagedAttentionParams& params,
     const CoreDims& extracted_core_dims,
     const mx::array& k_pool_arr,
     const mx::array& page_table_arr,
     MTL::Device* mtl_device_ptr,
-    size_t threads_per_item_group_for_dispatch
+    size_t target_threads_per_group // Renamed from threads_per_item_group_for_dispatch
 ) {
     params.num_q_heads              = extracted_core_dims.num_q_heads;
     params.num_kv_heads             = extracted_core_dims.num_kv_heads;
@@ -205,7 +205,7 @@ static ThreadgroupMemoryLayout prepare_inputs_layout_memory(
     size_t precise_fixed_tg_mem_bytes =
     calculate_threadgroup_memory_breakdown_and_total(
         params_for_fixed_sizing,
-        threads_per_item_group_for_dispatch
+        target_threads_per_group // Use target_threads_per_group here
     ).total_bytes - kFinalTgMemoryPaddingGuardBytes;
 
     // 1. Gather constants once
@@ -273,7 +273,8 @@ static ThreadgroupMemoryLayout prepare_inputs_layout_memory(
             "scratch space for a single KV token.");
     }
 
-    return calculate_threadgroup_memory_breakdown_and_total(params, threads_per_item_group_for_dispatch);
+    // Recalculate final total memory with the chosen tile_size_T_runtime
+    return calculate_threadgroup_memory_breakdown_and_total(params, target_threads_per_group);
 }
 
 static CoreDims validate_inputs_and_populate_initial_params(const std::vector<mx::array>& inputs) {
@@ -448,35 +449,85 @@ const std::string library_name_for_mlx = "pal";
   // Populate initial parts directly for head_dim check
   params_struct.head_dim = core_dims.head_dim;
 
-  // Check if head_dim alone would cause threadgroup memory overflow
-  // Get threadgroup memory early to check if head_dim is too large by itself
-  auto* device_ptr = d.mtl_device();
-  size_t max_tg_memory_bytes = device_ptr->maxThreadgroupMemoryLength();
-  size_t q_shmem_bytes = params_struct.head_dim * sizeof(float);
-  if (q_shmem_bytes > max_tg_memory_bytes) {
-    throw std::runtime_error(
-        "[PagedAttentionPrimitive] q_shmem size alone (" +
-        std::to_string(q_shmem_bytes) + " bytes) exceeds device's maximum threadgroup memory (" +
-        std::to_string(max_tg_memory_bytes) + " bytes). Reduce head_dim to a smaller value.");
+  // --- Determine target_threads_per_group (NEW LOGIC) ---
+  auto* device_ptr = d.mtl_device(); // Get device_ptr earlier
+  size_t execution_width = kernel_state_->threadExecutionWidth();
+  size_t max_threads_pso = kernel_state_->maxTotalThreadsPerThreadgroup();
+
+  size_t desired_simd_groups = 2; // Aim for 2 SIMD groups (e.g., 64 threads if width is 32)
+                                  // Fallback to 1 if 2 is too many.
+  size_t threads_per_item_group = execution_width * desired_simd_groups;
+
+  if (threads_per_item_group > max_threads_pso) {
+      // Try with 1 SIMD group if 2 is too many
+      desired_simd_groups = 1;
+      threads_per_item_group = execution_width * desired_simd_groups;
+      if (threads_per_item_group > max_threads_pso) {
+         // If even 1 SIMD group is too many, take the largest multiple of execution_width possible
+         threads_per_item_group = (max_threads_pso / execution_width) * execution_width;
+      }
+  }
+  // Final fallback: if max_threads_pso is less than execution_width or not a multiple,
+  // use max_threads_pso directly, or the largest possible multiple of execution_width.
+  // Or, if all calculations resulted in 0 (e.g., max_threads_pso is very small).
+  if (threads_per_item_group == 0) {
+      if (max_threads_pso >= execution_width) {
+          threads_per_item_group = (max_threads_pso / execution_width) * execution_width;
+          if (threads_per_item_group == 0) threads_per_item_group = execution_width; // Should have at least one if possible
+      } else {
+          threads_per_item_group = max_threads_pso; // If max < width, use max (sub-optimal but runs)
+      }
+  }
+  // Ensure it's not zero if max_threads_pso allows at least one thread
+  if (threads_per_item_group == 0 && max_threads_pso > 0) {
+      threads_per_item_group = std::min(max_threads_pso, execution_width > 0 ? execution_width : max_threads_pso);
+       if (threads_per_item_group == 0 && max_threads_pso > 0) threads_per_item_group = max_threads_pso; // last resort
+  }
+  if (threads_per_item_group == 0) { // Should not happen if max_threads_pso > 0
+      spdlog::warn("[PAL Primitive] Calculated threads_per_item_group is 0. Defaulting to 32 or max_threads_pso.");
+      threads_per_item_group = std::min(max_threads_pso, static_cast<size_t>(32));
+      if (threads_per_item_group == 0 && max_threads_pso > 0) threads_per_item_group = max_threads_pso;
+      if (threads_per_item_group == 0) threads_per_item_group = 1; // Absolute fallback to prevent division by zero if kSimdLanesPerGroup is used
   }
 
-  // Configure thread dimensions
-  const size_t default_threads_per_item_group = 64;
-  auto max_threads = kernel_state_->maxTotalThreadsPerThreadgroup();
-  size_t threads_per_item_group = std::min(default_threads_per_item_group, max_threads);
 
-  // Call helper to populate the remaining attention parameters
-  ThreadgroupMemoryLayout memory_layout = prepare_inputs_layout_memory(
+  spdlog::debug("[PAL Primitive Dispatch] Determined threads_per_item_group: {} (execution_width: {}, max_threads_pso: {})",
+                 threads_per_item_group, execution_width, max_threads_pso);
+
+
+  // Check if essential fixed parts of threadgroup memory (like Q-cache) would overflow
+  // This check is a rough estimate before detailed calculation.
+  size_t max_tg_memory_bytes = device_ptr->maxThreadgroupMemoryLength();
+
+  PagedAttentionParams temp_params_for_q_check; // Use a more descriptive name
+  temp_params_for_q_check.head_dim = core_dims.head_dim;
+  // Initialize other params that affect fixed memory to typical values or 0 if not directly involved in q_shmem
+  temp_params_for_q_check.tile_size_T_runtime = 0; // K/V tiles are not considered here
+  temp_params_for_q_check.pad_floats_per_row = 0;  // Not relevant for q_shmem
+  temp_params_for_q_check.max_logical_blocks_per_seq = 0; // Page table slice not primary concern for this specific check
+
+  ThreadgroupMemoryLayout q_shmem_focused_layout = calculate_threadgroup_memory_breakdown_and_total(temp_params_for_q_check, threads_per_item_group);
+  spdlog::debug("[PAL Primitive Dispatch] Preliminary check: q_shmem_bytes estimate: {}", q_shmem_focused_layout.q_shmem_bytes);
+
+
+  if (q_shmem_focused_layout.q_shmem_bytes > max_tg_memory_bytes) { // Check q_shmem_bytes specifically
+    throw std::runtime_error(
+        "[PagedAttentionPrimitive] q_shmem size alone (" +
+        std::to_string(q_shmem_focused_layout.q_shmem_bytes) + " bytes) for head_dim " + std::to_string(core_dims.head_dim) +
+        " exceeds device's maximum threadgroup memory (" +
+        std::to_string(max_tg_memory_bytes) + " bytes). Reduce head_dim.");
+  }
+
+
+  // Call helper to populate the remaining attention parameters and calculate final memory layout
+  ThreadgroupMemoryLayout memory_layout = calculate_final_params_and_memory_layout(
       params_struct,
       core_dims,
       inputs[1], // k_pool
       inputs[3], // page_table
       device_ptr,
-      threads_per_item_group
+      threads_per_item_group // Pass the new determined thread count
   );
-
-  // Adjust threadgroup size based on computed tile_size_T_runtime
-  threads_per_item_group = std::min(static_cast<size_t>(params_struct.tile_size_T_runtime), max_threads);
 
   // Verify all pointers are valid before passing to Metal
   if (!inputs[0].data<void>() || !inputs[1].data<void>() || !inputs[2].data<void>() ||
