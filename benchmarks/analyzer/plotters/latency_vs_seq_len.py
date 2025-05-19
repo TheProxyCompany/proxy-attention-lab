@@ -75,7 +75,7 @@ def plot(df: pd.DataFrame, output_dir: Path, styles: dict[str, str | float] | No
     # Plot latency for each source (prefill)
     for src, group_data in prefill_df.groupby("group"):
         # Sort by sequence length to ensure correct plotting of lines and filled areas
-        sorted_group = group_data.sort_values(by="sequence_length")
+        sorted_group = group_data.sort_values(by="sequence_length")  # type: ignore[arg-type]
         if "pal" in str(src).lower():
             source_style = source_styles["pal"]
         elif "mlx" in str(src).lower():
@@ -194,7 +194,7 @@ def plot(df: pd.DataFrame, output_dir: Path, styles: dict[str, str | float] | No
             source_style["label"] = source_style["label"] + " (Decode)"
 
         # Sort by sequence length to ensure correct plotting of lines and filled areas
-        sorted_group = group_data.sort_values(by="sequence_length")
+        sorted_group = group_data.sort_values(by="sequence_length")  # type: ignore[arg-type]
 
         # Plot the mean latency line for decode
         (line,) = ax_decode.plot(
@@ -290,7 +290,10 @@ def plot(df: pd.DataFrame, output_dir: Path, styles: dict[str, str | float] | No
     output_dict = {}
     for group, group_df in df.groupby("group"):
         # Use float for sequence_length keys to avoid accidental stringification
-        seq_lat_map = {float(row["sequence_length"]): float(row["mean_latency"]) for _, row in group_df.iterrows()}
+        seq_lat_map = {
+            float(seq_len): float(m_lat)
+            for seq_len, m_lat in zip(group_df["sequence_length"], group_df["mean_latency"], strict=False)
+        }
         output_dict[group] = seq_lat_map
 
     with open(output_dir / "results.json", "w") as f:
