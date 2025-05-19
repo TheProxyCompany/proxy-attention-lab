@@ -48,6 +48,7 @@ struct alignas(16) PagedAttentionParams {
   float    log_exp_min_clamp;             // Minimum value for exponent in exp function
   float    inv_sqrt_head_dim;             // 1/sqrt(head_dim) precomputed on host
   uint32_t pad_floats_per_row;            // Padding floats per row for K/V tiles
+  uint32_t tokens_per_page_shift;         // Precomputed log2(tokens_per_page) when power-of-two
 };
 
 // --- Assertions ---
