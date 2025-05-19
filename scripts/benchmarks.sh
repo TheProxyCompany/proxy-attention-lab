@@ -16,6 +16,7 @@ REQUIRED_PYTHON="3.11"
 # --- Configuration ---
 VENV_DIR=".venv"
 BUILD_DIR="build" # CMake build directory
+BENCHMARK_HISTORY_DIR="${BUILD_DIR}/benchmark_history" # Persistent store for previous results
 UV_EXECUTABLE_PATH=""  # Will be detected
 
 # Directories for benchmark discovery
@@ -147,6 +148,7 @@ update_and_rebuild_project() {
     # Ensure the main build directory exists
     log "Ensuring build directory exists: ${BUILD_DIR}"
     mkdir -p "${BUILD_DIR}"
+    BUILD_DIR="$(realpath "${BUILD_DIR}")"
 
     # Explicitly configure and build C++ benchmarks
     hr
@@ -178,12 +180,52 @@ setup_benchmark_output_dir() {
 
     log "Setting up benchmark output directory: ${BENCHMARK_OUTPUT_ROOT}"
 
+    if [ -d "${BENCHMARK_OUTPUT_ROOT}" ]; then
+        backup_previous_results
+    fi
+
     if [ "${reset}" = "true" ]; then
         log "Hard reset requested. Clearing all benchmark results."
         rm -rf "${BENCHMARK_OUTPUT_ROOT}"
     fi
 
     mkdir -p "${BENCHMARK_OUTPUT_ROOT}"
+    mkdir -p "${BENCHMARK_HISTORY_DIR}"
+    BENCHMARK_OUTPUT_ROOT="$(realpath "${BENCHMARK_OUTPUT_ROOT}")"
+    BENCHMARK_HISTORY_DIR="$(realpath "${BENCHMARK_HISTORY_DIR}")"
+}
+
+backup_previous_results() {
+    local prev_file="${BENCHMARK_OUTPUT_ROOT}/results.json"
+    mkdir -p "${BENCHMARK_HISTORY_DIR}"
+    if [ -f "${prev_file}" ]; then
+        local ts
+        ts=$(date +"%Y%m%d_%H%M%S")
+        local backup_file="${BENCHMARK_HISTORY_DIR}/results_${ts}.json"
+        cp "${prev_file}" "${backup_file}"
+        log "Backed up previous results to ${backup_file}"
+    fi
+}
+
+save_and_diff_results() {
+    local results_file="${BENCHMARK_OUTPUT_ROOT}/results.json"
+    mkdir -p "${BENCHMARK_HISTORY_DIR}"
+    if [ -f "${results_file}" ]; then
+        local ts
+        ts=$(date +"%Y%m%d_%H%M%S")
+        local saved_file="${BENCHMARK_HISTORY_DIR}/results_${ts}.json"
+        local last_saved
+        last_saved=$(find "${BENCHMARK_HISTORY_DIR}" -type f -name 'results_*.json' | sort | tail -n 1)
+        cp "${results_file}" "${saved_file}"
+        log "Saved benchmark results to ${saved_file}"
+        if [ -n "${last_saved}" ] && [ "${last_saved}" != "${saved_file}" ]; then
+            local diff_file="${BENCHMARK_HISTORY_DIR}/diff_${ts}.txt"
+            diff -u "${last_saved}" "${results_file}" > "${diff_file}" || true
+            log "Diff with previous results stored in ${diff_file}"
+        fi
+    else
+        log "No results.json found to save or compare." >&2
+    fi
 }
 
 run_python_benchmarks() {
@@ -336,6 +378,7 @@ analyze_results() {
     python -m benchmarks.analyzer "${BENCHMARK_OUTPUT_ROOT}" "${BENCHMARK_OUTPUT_ROOT}" ${analyzer_args}
 
     log "Analysis complete. Results saved to ${BENCHMARK_OUTPUT_ROOT}"
+    save_and_diff_results
     hr
 }
 

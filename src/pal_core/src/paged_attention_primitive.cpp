@@ -449,50 +449,22 @@ const std::string library_name_for_mlx = "pal";
   // Populate initial parts directly for head_dim check
   params_struct.head_dim = core_dims.head_dim;
 
-  // --- Determine target_threads_per_group (NEW LOGIC) ---
+  // --- Determine initial threads_per_group for memory layout calculation ---
   auto* device_ptr = d.mtl_device(); // Get device_ptr earlier
   size_t execution_width = kernel_state_->threadExecutionWidth();
-  size_t max_threads_pso = kernel_state_->maxTotalThreadsPerThreadgroup();
+  size_t max_threads_device = kernel_state_->maxTotalThreadsPerThreadgroup();
 
-  size_t desired_simd_groups = 2; // Aim for 2 SIMD groups (e.g., 64 threads if width is 32)
-                                  // Fallback to 1 if 2 is too many.
-  size_t threads_per_item_group = execution_width * desired_simd_groups;
+  // For memory layout calculation, we'll use a representative value that's large enough
+  // to accommodate typical SIMD operations (especially reductions)
+  const size_t default_tpg_for_layout_calc = 64; // Use a representative value for layout
+  size_t tpg_for_layout_calc = std::min(default_tpg_for_layout_calc, max_threads_device);
 
-  if (threads_per_item_group > max_threads_pso) {
-      // Try with 1 SIMD group if 2 is too many
-      desired_simd_groups = 1;
-      threads_per_item_group = execution_width * desired_simd_groups;
-      if (threads_per_item_group > max_threads_pso) {
-         // If even 1 SIMD group is too many, take the largest multiple of execution_width possible
-         threads_per_item_group = (max_threads_pso / execution_width) * execution_width;
-      }
-  }
-  // Final fallback: if max_threads_pso is less than execution_width or not a multiple,
-  // use max_threads_pso directly, or the largest possible multiple of execution_width.
-  // Or, if all calculations resulted in 0 (e.g., max_threads_pso is very small).
-  if (threads_per_item_group == 0) {
-      if (max_threads_pso >= execution_width) {
-          threads_per_item_group = (max_threads_pso / execution_width) * execution_width;
-          if (threads_per_item_group == 0) threads_per_item_group = execution_width; // Should have at least one if possible
-      } else {
-          threads_per_item_group = max_threads_pso; // If max < width, use max (sub-optimal but runs)
-      }
-  }
-  // Ensure it's not zero if max_threads_pso allows at least one thread
-  if (threads_per_item_group == 0 && max_threads_pso > 0) {
-      threads_per_item_group = std::min(max_threads_pso, execution_width > 0 ? execution_width : max_threads_pso);
-       if (threads_per_item_group == 0 && max_threads_pso > 0) threads_per_item_group = max_threads_pso; // last resort
-  }
-  if (threads_per_item_group == 0) { // Should not happen if max_threads_pso > 0
-      spdlog::warn("[PAL Primitive] Calculated threads_per_item_group is 0. Defaulting to 32 or max_threads_pso.");
-      threads_per_item_group = std::min(max_threads_pso, static_cast<size_t>(32));
-      if (threads_per_item_group == 0 && max_threads_pso > 0) threads_per_item_group = max_threads_pso;
-      if (threads_per_item_group == 0) threads_per_item_group = 1; // Absolute fallback to prevent division by zero if kSimdLanesPerGroup is used
+  if (tpg_for_layout_calc == 0) { // Safety check
+      throw std::runtime_error("[PAL Primitive] tpg_for_layout_calc is 0.");
   }
 
-
-  spdlog::debug("[PAL Primitive Dispatch] Determined threads_per_item_group: {} (execution_width: {}, max_threads_pso: {})",
-                 threads_per_item_group, execution_width, max_threads_pso);
+  spdlog::debug("[PAL Primitive Dispatch] Initial tpg_for_layout_calc: {} (execution_width: {}, max_threads_device: {})",
+                 tpg_for_layout_calc, execution_width, max_threads_device);
 
 
   // Check if essential fixed parts of threadgroup memory (like Q-cache) would overflow
@@ -506,7 +478,7 @@ const std::string library_name_for_mlx = "pal";
   temp_params_for_q_check.pad_floats_per_row = 0;  // Not relevant for q_shmem
   temp_params_for_q_check.max_logical_blocks_per_seq = 0; // Page table slice not primary concern for this specific check
 
-  ThreadgroupMemoryLayout q_shmem_focused_layout = calculate_threadgroup_memory_breakdown_and_total(temp_params_for_q_check, threads_per_item_group);
+  ThreadgroupMemoryLayout q_shmem_focused_layout = calculate_threadgroup_memory_breakdown_and_total(temp_params_for_q_check, tpg_for_layout_calc);
   spdlog::debug("[PAL Primitive Dispatch] Preliminary check: q_shmem_bytes estimate: {}", q_shmem_focused_layout.q_shmem_bytes);
 
 
@@ -526,7 +498,38 @@ const std::string library_name_for_mlx = "pal";
       inputs[1], // k_pool
       inputs[3], // page_table
       device_ptr,
-      threads_per_item_group // Pass the new determined thread count
+      tpg_for_layout_calc // Use tpg_for_layout_calc for memory layout calculation
+  );
+
+  // --- Calculate final threads_to_launch for actual dispatch based on tile_size_T_runtime ---
+  // Now that params_struct.tile_size_T_runtime is finalized, calculate the optimal thread count
+  size_t threads_needed_for_tile = static_cast<size_t>(params_struct.tile_size_T_runtime);
+
+  // Align threads_needed_for_tile up to execution_width
+  size_t aligned_threads_for_tile =
+      ((threads_needed_for_tile + execution_width - 1) / execution_width) * execution_width;
+
+  // Ensure at least one execution_width is launched
+  size_t final_threads_to_launch = std::max(execution_width, aligned_threads_for_tile);
+
+  // Cap by device's maxTotalThreadsPerThreadgroup
+  final_threads_to_launch = std::min(final_threads_to_launch, max_threads_device);
+
+  // Also cap by the tpg_for_layout_calc if reductions depend on it
+  // We can launch FEWER threads than used for layout calc, but not MORE
+  final_threads_to_launch = std::min(final_threads_to_launch, tpg_for_layout_calc);
+
+  // And ensure it's still at least execution_width after this cap
+  final_threads_to_launch = std::max(execution_width, final_threads_to_launch);
+
+  spdlog::debug(
+      "[PAL Primitive Dispatch] tile_size_T_runtime: {}, execution_width: {}, "
+      "tpg_for_layout_calc: {}, max_threads_device: {}, calculated final_threads_to_launch: {}",
+      params_struct.tile_size_T_runtime,
+      execution_width,
+      tpg_for_layout_calc,
+      max_threads_device,
+      final_threads_to_launch
   );
 
   // Verify all pointers are valid before passing to Metal
@@ -548,7 +551,7 @@ const std::string library_name_for_mlx = "pal";
       params_struct,
       memory_layout.total_bytes,
       core_dims.num_items_to_process,
-      threads_per_item_group
+      final_threads_to_launch // Pass the dynamically sized thread count
   );
 }
 
