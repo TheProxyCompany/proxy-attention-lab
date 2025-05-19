@@ -172,8 +172,8 @@ def plot(df: pd.DataFrame, output_dir: Path, styles: dict[str, str | float] | No
         "Sequence Length (tokens)",
         "Mean Latency (ms)",
         styles,
-        x_scale="linear",
-        y_scale="linear",
+        x_scale="log",
+        y_scale="log",
         include_legend=True,
     )
 
@@ -260,8 +260,8 @@ def plot(df: pd.DataFrame, output_dir: Path, styles: dict[str, str | float] | No
         "History Length (tokens)",
         "Mean Latency (ms)",
         styles,
-        x_scale="linear",
-        y_scale="linear",
+        x_scale="log",
+        y_scale="log",
         include_legend=True,
     )
 
