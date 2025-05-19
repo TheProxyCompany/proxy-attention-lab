@@ -208,20 +208,23 @@ using namespace metal;
             );
 
             if (k_vector_global_ptr != nullptr) {
-                // Each thread loads its K-vector into the K_tile
-                // K_tile is now [tile_size_T_runtime][padded_head_dim] to avoid bank conflicts
+                // Each SIMT group cooperatively loads the K-vector into K_tile
                 threadgroup float* k_tile_entry_ptr = K_tile + (local_thread_idx * padded_head_dim_hoisted);
 
-                // Load the entire K-vector using float4 chunks
-                // Note: We only fill the actual head_dim elements, leaving padding untouched
-                device const half4* __attribute__((aligned(8))) k_vec_global_ptr_h4 = reinterpret_cast<device const half4*>(k_vector_global_ptr);
-                for (uint d_chunk = 0; d_chunk < params.head_dim / 4; ++d_chunk) {
-                    half4 k_val_h4 = k_vec_global_ptr_h4[d_chunk];
-                    float4 k_val_f4 = float4(k_val_h4);
-                    k_tile_entry_ptr[d_chunk * 4 + 0] = k_val_f4.x;
-                    k_tile_entry_ptr[d_chunk * 4 + 1] = k_val_f4.y;
-                    k_tile_entry_ptr[d_chunk * 4 + 2] = k_val_f4.z;
-                    k_tile_entry_ptr[d_chunk * 4 + 3] = k_val_f4.w;
+                device const half4* __attribute__((aligned(8))) k_vec_global_ptr_h4 =
+                    reinterpret_cast<device const half4*>(k_vector_global_ptr);
+
+                // Cooperative async copy of contiguous float4 chunks
+                threadgroup half4* k_tile_entry_half4 = reinterpret_cast<threadgroup half4*>(k_tile_entry_ptr);
+                const uint num_chunks = params.head_dim / 4;
+                async_event_t k_copy_evt = simdgroup_async_copy(k_tile_entry_half4, k_vec_global_ptr_h4, num_chunks);
+                simdgroup_wait(k_copy_evt);
+
+                // Convert staged fp16 values to fp32 in place from the end to avoid overlap
+                threadgroup float4* k_tile_entry_f4 = reinterpret_cast<threadgroup float4*>(k_tile_entry_ptr);
+                for (int d_chunk = int(num_chunks) - 1; d_chunk >= 0; --d_chunk) {
+                    half4 tmp_h4 = k_tile_entry_half4[d_chunk];
+                    k_tile_entry_f4[d_chunk] = float4(tmp_h4);
                 }
             }
         }
@@ -247,16 +250,18 @@ using namespace metal;
             threadgroup float* v_tile_entry_ptr = V_tile + (local_thread_idx * padded_head_dim_hoisted);
 
             if (v_vector_global_ptr != nullptr) {
-                // Load the entire V-vector using float4 chunks
-                // Note: We only fill the actual head_dim elements, leaving padding untouched
-                device const half4* __attribute__((aligned(8))) v_vec_global_ptr_h4 = reinterpret_cast<device const half4*>(v_vector_global_ptr);
-                for (uint d_chunk = 0; d_chunk < params.head_dim / 4; ++d_chunk) {
-                    half4 v_val_h4 = v_vec_global_ptr_h4[d_chunk];
-                    float4 v_val_f4 = float4(v_val_h4);
-                    v_tile_entry_ptr[d_chunk * 4 + 0] = v_val_f4.x;
-                    v_tile_entry_ptr[d_chunk * 4 + 1] = v_val_f4.y;
-                    v_tile_entry_ptr[d_chunk * 4 + 2] = v_val_f4.z;
-                    v_tile_entry_ptr[d_chunk * 4 + 3] = v_val_f4.w;
+                device const half4* __attribute__((aligned(8))) v_vec_global_ptr_h4 =
+                    reinterpret_cast<device const half4*>(v_vector_global_ptr);
+
+                threadgroup half4* v_tile_entry_half4 = reinterpret_cast<threadgroup half4*>(v_tile_entry_ptr);
+                const uint num_chunks = params.head_dim / 4;
+                async_event_t v_copy_evt = simdgroup_async_copy(v_tile_entry_half4, v_vec_global_ptr_h4, num_chunks);
+                simdgroup_wait(v_copy_evt);
+
+                threadgroup float4* v_tile_entry_f4 = reinterpret_cast<threadgroup float4*>(v_tile_entry_ptr);
+                for (int d_chunk = int(num_chunks) - 1; d_chunk >= 0; --d_chunk) {
+                    half4 tmp_h4 = v_tile_entry_half4[d_chunk];
+                    v_tile_entry_f4[d_chunk] = float4(tmp_h4);
                 }
             }
         }
