@@ -148,6 +148,7 @@ using namespace metal;
         float4 v = float4(q_vec_h4[chunk]) * params.inv_sqrt_head_dim;
         q_vec_f4[chunk] = v;
     }
+    // All threads read q_shmem in later steps, ensure writes complete across the group
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
     // --- 7/10: History & Sequence Length Setup ---
@@ -194,6 +195,7 @@ using namespace metal;
         (*tg_global_stats).y = 0.0f; // s_global
         (*tg_s_global_comp) = 0.0f; // Kahan summation compensation term
     }
+    // Thread 0 initializes tg_global_stats; all threads read these values
     threadgroup_barrier(mem_flags::mem_threadgroup); // Ensure initialized before use
 
     // --- 9/10: Setup Output Accumulator ---
@@ -274,7 +276,8 @@ using namespace metal;
                 }
             }
         }
-        threadgroup_barrier(mem_flags::mem_threadgroup); // Ensure V_tile is fully populated before use
+
+        // V_tile entries are private to each thread; no barrier needed here
 
         // --- 10.1.1/10: History Tile - Score Calculation (no stashing in fused path) ---
         float thread_score_val = -INFINITY; // Default to a state that would lead to zero contribution
@@ -292,6 +295,8 @@ using namespace metal;
 
         float simd_max_m_tile_val = simd_max(tg_partial_reduce_scratch[local_thread_idx]);
         if (simd_lane_id == 0) { tg_simd_reduce_scratch[simd_group_id] = simd_max_m_tile_val; }
+        // Thread 0 later reads all per-simd-group maxes from tg_simd_reduce_scratch
+        // All simdgroup partial sums must be visible before thread 0 reduces
         threadgroup_barrier(mem_flags::mem_threadgroup); // Ensure G_simd_reduced_maxes written
 
         // --- 10.1.2/10: History Tile - Local Max (m_local_tile_val) Reduction ---
@@ -309,6 +314,8 @@ using namespace metal;
             }
             tg_simd_reduce_scratch[0] = m_local_tile_val;
         }
+        // Broadcast m_local_tile_val from thread 0 to the rest of the group
+        // Share d_local_tile_total_val with all threads
         threadgroup_barrier(mem_flags::mem_threadgroup);
         m_local_tile_val = tg_simd_reduce_scratch[0];
 
@@ -338,6 +345,7 @@ using namespace metal;
             }
             tg_simd_exp_sums_scratch[0] = d_local_tile_total_val;
         }
+        // Share d_local_tile_total_val with all threads
         threadgroup_barrier(mem_flags::mem_threadgroup);
         d_local_tile_total_val = tg_simd_exp_sums_scratch[0];
 
@@ -354,6 +362,7 @@ using namespace metal;
                 params
             );
         }
+        // All threads use updated global stats and scale factor for the next iteration
         threadgroup_barrier(mem_flags::mem_threadgroup); // Full barrier to ensure tg_global_stats and tg_simd_reduce_scratch are visible to all threads
 
         float m_global_current_iter_atomic = (*tg_global_stats).x;
@@ -405,6 +414,7 @@ using namespace metal;
             }
         }
 
+        // Ensure all V_tile contributions complete before reusing the buffers in the next tile
         threadgroup_barrier(mem_flags::mem_threadgroup); // End of history tile processing
     } // End history tiling loop
 
@@ -438,6 +448,7 @@ using namespace metal;
         if (simd_lane_id == 0) {
             tg_simd_v_chunk_sums[simd_group_id] = reduced_simd_group_final_chunk;
         }
+        // Wait for all simd groups to produce their partial sums before thread 0 combines them
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
         if (local_thread_idx == 0) {
@@ -452,6 +463,7 @@ using namespace metal;
             if (i+2 < params.head_dim) output_buffer[output_base_idx + 2] = (half)final_output_chunk.z;
             if (i+3 < params.head_dim) output_buffer[output_base_idx + 3] = (half)final_output_chunk.w;
         }
+        // Reuse tg_simd_v_chunk_sums for the next chunk, ensure previous values consumed
         threadgroup_barrier(mem_flags::mem_threadgroup); // Sync before next chunk
     }
 
