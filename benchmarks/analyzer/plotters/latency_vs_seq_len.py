@@ -6,6 +6,7 @@ import json
 import logging
 from pathlib import Path
 
+import matplotlib.patheffects as pe
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -42,6 +43,7 @@ def plot(df: pd.DataFrame, output_dir: Path, styles: dict[str, str | float] | No
     source_styles = {
         "pal": {
             "color": styles["PAL_COLOR"],
+            "outline_color": styles["PAL_OUTLINE_COLOR"],
             "linestyle": styles["PAL_STYLE"],
             "linewidth": styles["PAL_LINEWIDTH"],
             "marker": styles["PAL_MARKER"],
@@ -49,6 +51,7 @@ def plot(df: pd.DataFrame, output_dir: Path, styles: dict[str, str | float] | No
         },
         "mlx": {
             "color": styles["MLX_COLOR"],
+            "outline_color": styles["MLX_OUTLINE_COLOR"],
             "linestyle": styles["MLX_STYLE"],
             "linewidth": styles["MLX_LINEWIDTH"],
             "marker": styles["MLX_MARKER"],
@@ -80,8 +83,8 @@ def plot(df: pd.DataFrame, output_dir: Path, styles: dict[str, str | float] | No
         else:
             source_style = source_styles["default"]
 
-        # Plot the mean latency line for prefill
-        ax_prefill.plot(
+        # Plot the mean latency line for prefill, with optional outline for visual panache
+        (line,) = ax_prefill.plot(
             sorted_group["sequence_length"],
             sorted_group["mean_latency"],
             color=source_style["color"],
@@ -90,6 +93,16 @@ def plot(df: pd.DataFrame, output_dir: Path, styles: dict[str, str | float] | No
             marker=source_style["marker"],
             label=source_style["label"],
         )
+        if "outline_color" in source_style:
+            line.set_path_effects(
+                [
+                    pe.Stroke(
+                        linewidth=source_style["linewidth"] * 3,
+                        foreground=source_style["outline_color"],
+                    ),
+                    pe.Normal(),
+                ]
+            )
 
     # Add reference lines for prefill if we have enough data points
     x_range_prefill = prefill_df["sequence_length"].dropna()
@@ -164,132 +177,95 @@ def plot(df: pd.DataFrame, output_dir: Path, styles: dict[str, str | float] | No
         include_legend=True,
     )
 
-    # Process decode data
-    # ------------------------------------------------------------------------------
-    if not decode_df.empty:
-        # Plot latency for each source (decode)
-        for src, group_data in decode_df.groupby("group"):
-            # Rename group labels to indicate decode
-            src_label = str(src)
-            if "pal" in src_label.lower():
-                source_style = source_styles["pal"].copy()
-                source_style["label"] = source_style["label"] + " (Decode)"
-            elif "mlx" in src_label.lower():
-                source_style = source_styles["mlx"].copy()
-                source_style["label"] = source_style["label"] + " (Decode)"
-            else:
-                source_style = source_styles["default"].copy()
-                source_style["label"] = source_style["label"] + " (Decode)"
+    # Plot latency for each source (decode)
+    for src, group_data in decode_df.groupby("group"):
+        # Rename group labels to indicate decode
+        src_label = str(src)
+        if "pal" in src_label.lower():
+            src_label = "PAL"
+            source_style = source_styles["pal"].copy()
+            source_style["label"] = source_style["label"] + " (Decode)"
+        elif "mlx" in src_label.lower():
+            src_label = "MLX"
+            source_style = source_styles["mlx"].copy()
+            source_style["label"] = source_style["label"] + " (Decode)"
+        else:
+            source_style = source_styles["default"].copy()
+            source_style["label"] = source_style["label"] + " (Decode)"
 
-            # Sort by sequence length to ensure correct plotting of lines and filled areas
-            sorted_group = group_data.sort_values(by="sequence_length")
+        # Sort by sequence length to ensure correct plotting of lines and filled areas
+        sorted_group = group_data.sort_values(by="sequence_length")
 
-            # Plot the mean latency line for decode
-            ax_decode.plot(
-                sorted_group["sequence_length"],
-                sorted_group["mean_latency"],
-                color=source_style["color"],
-                linestyle=source_style["linestyle"],
-                linewidth=source_style["linewidth"],
-                marker=source_style["marker"],
-                label=source_style["label"],
-            )
-
-        # Add reference lines for decode if we have enough data points
-        x_range_decode = decode_df["sequence_length"].dropna()
-
-        if not x_range_decode.empty:
-            x_max = x_range_decode.max()
-            x_vals = np.linspace(0, x_max, 200)
-            # Find maximum latency value for scaling
-            max_latency = decode_df["mean_latency"].max()
-
-            # Compute O(n) and O(log n) reference lines for decode (since decode should be more efficient)
-            o_n = x_vals
-            o_logn = np.log(np.clip(x_vals, 1, None))  # avoid log(0)
-
-            # Scale so that the max of each reference curve matches max_latency (but never exceeds it)
-            o_n_scaled = max_latency * (o_n / o_n.max()) if np.any(o_n > 0) else o_n
-            o_logn_scaled = max_latency * (o_logn / o_logn.max()) if np.any(o_logn > 0) else o_logn
-
-            # O(n) reference line for decode
-            ax_decode.plot(
-                x_vals,
-                o_n_scaled,
-                color=styles["REF_LINE_COLOR"],
-                linestyle=styles["REF_LINE_STYLE"],
-                linewidth=styles["REF_LINE_WIDTH"],
-                alpha=float(styles["REF_LINE_ALPHA"]),
-                label=r"$O(n)$",
-                zorder=1,
-            )
-            n_label_idx = int(0.7 * len(x_vals))
-            ax_decode.text(
-                x_vals[n_label_idx] * 1.05,
-                o_n_scaled[n_label_idx],
-                r"$O(n)$",
-                color=styles["REF_LINE_COLOR"],
-                fontsize=styles["REF_LINE_FONTSIZE"],
-                zorder=1,
-                ha="left",
-            )
-
-            # O(log n) reference line for decode
-            ax_decode.plot(
-                x_vals,
-                o_logn_scaled,
-                color=styles["REF_LINE_COLOR"],
-                linestyle=styles["REF_LINE_STYLE"],
-                linewidth=styles["REF_LINE_WIDTH"],
-                alpha=float(styles["REF_LINE_ALPHA"]),
-                label=r"$O(\log n)$",
-                zorder=1,
-            )
-            logn_label_idx = int(0.45 * len(x_vals))
-            ax_decode.text(
-                x_vals[logn_label_idx] * 1.05,
-                o_logn_scaled[logn_label_idx],
-                r"$O(\log n)$",
-                color=styles["REF_LINE_COLOR"],
-                fontsize=styles["REF_LINE_FONTSIZE"],
-                zorder=1,
-                ha="left",
-            )
-
-        # Set decode plot aesthetics
-        plot_utils.apply_common_plot_aesthetics(
-            ax_decode,
-            "Decode Latency vs History Length",
-            "History Length (tokens)",
-            "Mean Latency (ms)",
-            styles,
-            x_scale="linear",
-            y_scale="linear",
-            include_legend=True,
+        # Plot the mean latency line for decode
+        (line,) = ax_decode.plot(
+            sorted_group["sequence_length"],
+            sorted_group["mean_latency"],
+            color=source_style["color"],
+            linestyle=source_style["linestyle"],
+            linewidth=source_style["linewidth"],
+            marker=source_style["marker"],
+            label=source_style["label"],
         )
-    else:
-        # If no decode data, display a message
+        if "outline_color" in source_style:
+            line.set_path_effects(
+                [
+                    pe.Stroke(
+                        linewidth=source_style["linewidth"] * 3,
+                        foreground=source_style["outline_color"],
+                    ),  # the outline
+                    pe.Normal(),  # the original line
+                ]
+            )
+
+    # Add reference lines for decode if we have enough data points
+    x_range_decode = decode_df["sequence_length"].dropna()
+
+    if not x_range_decode.empty:
+        x_max = x_range_decode.max()
+        x_vals = np.linspace(0, x_max, 200)
+        # Find maximum latency value for scaling
+        max_latency = decode_df["mean_latency"].max()
+
+        # Compute O(n) reference line for decode (since decode should be more efficient)
+        o_n = x_vals
+        # Scale so that the max of each reference curve matches max_latency (but never exceeds it)
+        o_n_scaled = max_latency * (o_n / o_n.max()) if np.any(o_n > 0) else o_n
+
+        # O(n) reference line for decode
+        ax_decode.plot(
+            x_vals,
+            o_n_scaled,
+            color=styles["REF_LINE_COLOR"],
+            linestyle=styles["REF_LINE_STYLE"],
+            linewidth=styles["REF_LINE_WIDTH"],
+            alpha=float(styles["REF_LINE_ALPHA"]),
+            label=r"$O(n)$",
+            zorder=1,
+        )
+        n_label_idx = int(0.7 * len(x_vals))
         ax_decode.text(
-            0.5,
-            0.5,
-            "No decode benchmark data available",
-            horizontalalignment="center",
-            verticalalignment="center",
-            transform=ax_decode.transAxes,
-            fontsize=14,
+            x_vals[n_label_idx] * 1.05,
+            o_n_scaled[n_label_idx],
+            r"$O(n)$",
+            color=styles["REF_LINE_COLOR"],
+            fontsize=styles["REF_LINE_FONTSIZE"],
+            zorder=1,
+            ha="left",
         )
 
-        # Set plot aesthetics for empty decode plot
-        plot_utils.apply_common_plot_aesthetics(
-            ax_decode,
-            "Decode Latency vs History Length",
-            "History Length (tokens)",
-            "Mean Latency (ms)",
-            styles,
-            x_scale="linear",
-            y_scale="linear",
-            include_legend=False,
-        )
+    # Set decode plot aesthetics
+    plot_utils.apply_common_plot_aesthetics(
+        ax_decode,
+        "Decode Latency vs History Length",
+        "History Length (tokens)",
+        "Mean Latency (ms)",
+        styles,
+        x_scale="linear",
+        y_scale="linear",
+        include_legend=True,
+    )
+
+    ax_decode.legend(loc="best")
 
     # Configure tick formatting for both plots
     ax_prefill.minorticks_on()

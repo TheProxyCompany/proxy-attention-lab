@@ -209,8 +209,16 @@ static void BM_MLX_SDPA_LatencyVsSeqLen(benchmark::State& state) {
         {batch_size, num_kv_heads, seq_len, head_dim}, dtype
     );
 
-    // Create causal mask
+    // Create causal mask that scales with sequence length
     mx::array causal_mask = create_causal_mask(seq_len, dtype);
+
+    // Log tensor shapes to verify scaling with seq_len
+    spdlog::info("PREFILL SDPA - seq_len: {}", seq_len);
+    spdlog::info("  queries shape: [{}, {}, {}, {}]", batch_size, num_q_heads, seq_len, head_dim);
+    spdlog::info("  keys shape: [{}, {}, {}, {}]", batch_size, num_kv_heads, seq_len, head_dim);
+    spdlog::info("  values shape: [{}, {}, {}, {}]", batch_size, num_kv_heads, seq_len, head_dim);
+    spdlog::info("  causal_mask shape: [{}, {}]", seq_len, seq_len);
+
 
     // Main benchmark loop
     for (auto _ : state) {
@@ -391,10 +399,15 @@ static void BM_MLX_SDPA_DecodeLatencyVsHistoryLen(benchmark::State& state) {
         {batch_size, num_kv_heads, history_len, head_dim}, dtype
     );
 
-    // No mask needed for decode - query attends to all history items
-
     // Create a mask of zeros (allows full attention) with shape [1, history_len]
     mx::array mask = mx::zeros({1, history_len}, dtype);
+
+    // Log tensor shapes to verify scaling with history_len
+    spdlog::info("DECODE SDPA - history_len: {}", history_len);
+    spdlog::info("  queries shape: [{}, {}, {}, {}]", batch_size, num_q_heads, 1, head_dim);
+    spdlog::info("  keys shape: [{}, {}, {}, {}]", batch_size, num_kv_heads, history_len, head_dim);
+    spdlog::info("  values shape: [{}, {}, {}, {}]", batch_size, num_kv_heads, history_len, head_dim);
+    spdlog::info("  mask shape: [{}, {}]", 1, history_len);
 
     // Main benchmark loop
     for (auto _ : state) {
@@ -430,20 +443,61 @@ BENCHMARK(BM_MLX_SDPA_LatencyVsSeqLen)
     // ->Arg(4096);
 
 // Register the decode benchmarks with history lengths
+// Setup function for the MLX SDPA decode benchmark
+void BM_MLX_SDPA_DecodeLatencyVsHistoryLen_Setup(const ::benchmark::State& state) {
+    // Create test parameters for a small decode test
+    BaselineConfig params;
+    params.batch_size = DECODE_BATCH_SIZE;
+    int history_len = 64; // Small history for quick warmup
+
+    // Extract params to local variables
+    int batch_size = params.batch_size;
+    int num_q_heads = params.num_q_heads;
+    int num_kv_heads = params.num_kv_heads;
+    int head_dim = params.head_dim;
+    mx::Dtype dtype = params.dtype;
+
+    // Setup input tensors for decode scenario
+    float scale = 1.0f / std::sqrt(static_cast<float>(head_dim));
+
+    // Create query tensor for a single token per sequence
+    mx::array queries = mx::random::normal({batch_size, num_q_heads, 1, head_dim}, dtype);
+
+    // Create keys and values tensors for history
+    mx::array keys = mx::random::normal({batch_size, num_kv_heads, history_len, head_dim}, dtype);
+    mx::array values = mx::random::normal({batch_size, num_kv_heads, history_len, head_dim}, dtype);
+
+    // Create a mask of zeros (all attention allowed) with shape [1, history_len]
+    mx::array mask = mx::zeros({1, history_len}, dtype);
+
+    // Log tensor shapes to verify scaling with history_len
+    spdlog::info("DECODE SDPA SETUP - history_len: {}", history_len);
+    spdlog::info("  queries shape: [{}, {}, {}, {}]", batch_size, num_q_heads, 1, head_dim);
+    spdlog::info("  keys shape: [{}, {}, {}, {}]", batch_size, num_kv_heads, history_len, head_dim);
+    spdlog::info("  values shape: [{}, {}, {}, {}]", batch_size, num_kv_heads, history_len, head_dim);
+    spdlog::info("  mask shape: [{}, {}]", 1, history_len);
+
+    // Warmup to compile the kernel (just once)
+    mx::array warm = mx::fast::scaled_dot_product_attention(
+        queries, keys, values, scale, "array", {mask}, mx::Device::gpu
+    );
+    warm.eval();
+}
+
 BENCHMARK(BM_PAL_DecodeLatencyVsHistoryLen)
     ->Arg(1024)->Iterations(1)->Repetitions(1)
-    // ->Arg(2048)->Iterations(1)->Repetitions(1)
-    // ->Arg(4096)->Iterations(1)->Repetitions(1)
-    // ->Arg(8192)->Iterations(1)->Repetitions(1)
-    // ->Arg(16384)->Iterations(1)->Repetitions(1)
+    ->Arg(2048)->Iterations(1)->Repetitions(1)
+    ->Arg(4096)->Iterations(1)->Repetitions(1)
+    ->Arg(8192)->Iterations(1)->Repetitions(1)
+    ->Arg(16384)->Iterations(1)->Repetitions(1)
     ->Arg(32768)->Iterations(1)->Repetitions(1);
 
 BENCHMARK(BM_MLX_SDPA_DecodeLatencyVsHistoryLen)
-    ->Arg(1024)->Iterations(1)->Repetitions(1)
-    // ->Arg(2048)->Iterations(1)->Repetitions(1)
-    // ->Arg(4096)->Iterations(1)->Repetitions(1)
-    // ->Arg(8192)->Iterations(1)->Repetitions(1)
-    // ->Arg(16384)->Iterations(1)->Repetitions(1)
-    ->Arg(32768)->Iterations(1)->Repetitions(1);
+    ->Arg(1024)->Iterations(1)->Repetitions(1)->Setup(BM_MLX_SDPA_DecodeLatencyVsHistoryLen_Setup)
+    ->Arg(2048)->Iterations(1)->Repetitions(1)->Setup(BM_MLX_SDPA_DecodeLatencyVsHistoryLen_Setup)
+    ->Arg(4096)->Iterations(1)->Repetitions(1)->Setup(BM_MLX_SDPA_DecodeLatencyVsHistoryLen_Setup)
+    ->Arg(8192)->Iterations(1)->Repetitions(1)->Setup(BM_MLX_SDPA_DecodeLatencyVsHistoryLen_Setup)
+    ->Arg(16384)->Iterations(1)->Repetitions(1)->Setup(BM_MLX_SDPA_DecodeLatencyVsHistoryLen_Setup)
+    ->Arg(32768)->Iterations(1)->Repetitions(1)->Setup(BM_MLX_SDPA_DecodeLatencyVsHistoryLen_Setup);
 
 BENCHMARK_MAIN();

@@ -9,15 +9,17 @@ from matplotlib.axes import Axes
 def get_plot_styles() -> dict[str, str | float]:
     """Return standardized plotting styles."""
     styles: dict[str, str | float] = {}
-    styles["PAL_COLOR"] = "#024645"  # green
-    styles["MLX_COLOR"] = "#000000"  # black
+    styles["PAL_COLOR"] = "#DAD0AF"  # light gold
+    styles["PAL_OUTLINE_COLOR"] = "#024645"  # green
+    styles["MLX_COLOR"] = "#FFFFFF"  # white
+    styles["MLX_OUTLINE_COLOR"] = "#000000"  # black
     styles["PAL_STYLE"] = "-"  # Solid
     styles["MLX_STYLE"] = "-"  # Dotted
     # Use consistent line widths for both kernels
-    styles["PAL_LINEWIDTH"] = 3.0
-    styles["MLX_LINEWIDTH"] = 3.0
+    styles["PAL_LINEWIDTH"] = 1.5
+    styles["MLX_LINEWIDTH"] = 1.5
     styles["PAL_MARKER"] = "o"
-    styles["MLX_MARKER"] = "s"  # square
+    styles["MLX_MARKER"] = "o"
     styles["REF_LINE_COLOR"] = "red"
     styles["REF_LINE_STYLE"] = "-."
     styles["REF_LINE_WIDTH"] = 1.0

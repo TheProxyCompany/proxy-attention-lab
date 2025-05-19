@@ -204,9 +204,16 @@ def setup_sdpa_decode_inputs(params):
     keys = mx.random.normal((batch_size, num_kv_heads, history_len, head_dim), dtype=dtype)
     values = mx.random.normal((batch_size, num_kv_heads, history_len, head_dim), dtype=dtype)
 
-    # No mask needed for decode - query attends to all history items
-    # Using None means all tokens can attend to each other
-    causal_mask = None
+    # Create a mask of zeros to allow full attention from query to all history
+    # Shape: [1, history_len] - additive mask where zeros allow full attention
+    causal_mask = mx.zeros((1, history_len), dtype=dtype)
+
+    # Log the tensor shapes to verify scaling
+    logger.info(f"DECODE SDPA - history_len: {history_len}")
+    logger.info(f"  queries shape: {queries.shape}")
+    logger.info(f"  keys shape: {keys.shape}")
+    logger.info(f"  values shape: {values.shape}")
+    logger.info(f"  mask shape: {None if causal_mask is None else causal_mask.shape}")
 
     return queries, keys, values, scale, causal_mask
 
@@ -228,24 +235,35 @@ def test_mlx_latency_vs_seq_len(benchmark, seq_len_val):
     params = BASELINE_CONFIG.copy()
     params["seq_len"] = seq_len_val
 
+    # Add benchmark metadata if supported
+    if hasattr(benchmark, "extra_info"):
+        benchmark.extra_info["run_params"] = params.copy()
+
     # Setup input tensors (evaluated during setup)
     scale = 1.0 / mx.sqrt(float(params["head_dim"]))
+    batch_size = params["batch_size"]
+    num_q_heads = params["num_q_heads"]
+    num_kv_heads = params["num_kv_heads"]
+    head_dim = params["head_dim"]
+    seq_len = params["seq_len"]
+    dtype = params["dtype"]
 
-    # Create input tensors
-    queries = mx.random.normal(
-        (params["batch_size"], params["num_q_heads"], params["seq_len"], params["head_dim"]), dtype=params["dtype"]
-    )
+    # Create input tensors - ensuring shapes scale with seq_len_val
+    queries = mx.random.normal((batch_size, num_q_heads, seq_len, head_dim), dtype=dtype)
 
-    keys = mx.random.normal(
-        (params["batch_size"], params["num_kv_heads"], params["seq_len"], params["head_dim"]), dtype=params["dtype"]
-    )
+    keys = mx.random.normal((batch_size, num_kv_heads, seq_len, head_dim), dtype=dtype)
 
-    values = mx.random.normal(
-        (params["batch_size"], params["num_kv_heads"], params["seq_len"], params["head_dim"]), dtype=params["dtype"]
-    )
+    values = mx.random.normal((batch_size, num_kv_heads, seq_len, head_dim), dtype=dtype)
 
-    # Create causal mask
-    causal_mask = mlx.nn.MultiHeadAttention.create_additive_causal_mask(params["seq_len"]).astype(params["dtype"])
+    # Create causal mask that scales with sequence length
+    causal_mask = mlx.nn.MultiHeadAttention.create_additive_causal_mask(seq_len).astype(dtype)
+
+    # Log tensor shapes for verification
+    logger.info(f"PREFILL SDPA - seq_len: {seq_len}")
+    logger.info(f"  queries shape: {queries.shape}")
+    logger.info(f"  keys shape: {keys.shape}")
+    logger.info(f"  values shape: {values.shape}")
+    logger.info(f"  causal_mask shape: {causal_mask.shape}")
 
     # Define benchmark function that evaluates the result
     def operation_to_benchmark():
@@ -263,7 +281,7 @@ def test_mlx_latency_vs_seq_len(benchmark, seq_len_val):
     result = benchmark(operation_to_benchmark)
 
     # Assert the output has expected shape and valid values
-    expected_shape = (params["batch_size"], params["num_q_heads"], params["seq_len"], params["head_dim"])
+    expected_shape = (batch_size, num_q_heads, seq_len, head_dim)
     assert result.shape == expected_shape
     assert mx.isfinite(result).all()
 
