@@ -184,14 +184,11 @@ def plot(df: pd.DataFrame, output_dir: Path, styles: dict[str, str | float] | No
         if "pal" in src_label.lower():
             src_label = "PAL"
             source_style = source_styles["pal"].copy()
-            source_style["label"] = source_style["label"] + " (Decode)"
         elif "mlx" in src_label.lower():
             src_label = "MLX"
             source_style = source_styles["mlx"].copy()
-            source_style["label"] = source_style["label"] + " (Decode)"
         else:
             source_style = source_styles["default"].copy()
-            source_style["label"] = source_style["label"] + " (Decode)"
 
         # Sort by sequence length to ensure correct plotting of lines and filled areas
         sorted_group = group_data.sort_values(by="sequence_length")  # type: ignore[arg-type]

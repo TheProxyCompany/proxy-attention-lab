@@ -27,15 +27,12 @@ logger = logging.getLogger(__name__)
 BASELINE_CONFIG = {
     "batch_size": 1,
     "seq_len": 2048,  # tokens
-    "num_q_heads": 32,
-    "num_kv_heads": 16,
+    "num_q_heads": 1,
+    "num_kv_heads": 1,
     "head_dim": 128,
     "tokens_per_page": 64,
     "dtype": mx.float16,
 }
-
-# Decode-specific batch size
-DECODE_BATCH_SIZE = 1
 
 
 @pytest.mark.parametrize("seq_len_val", [64, 128, 256, 512, 1024, 2048])
@@ -112,6 +109,68 @@ def test_pal_latency_vs_seq_len(benchmark, seq_len_val):
     num_q_heads = queries.shape[1]
     expected_shape = (num_tokens * num_q_heads, head_dim)
 
+    assert result.shape == expected_shape
+    assert mx.isfinite(result).all()
+
+
+@pytest.mark.parametrize("seq_len_val", [64, 128, 256, 512, 1024, 2048])
+def test_mlx_latency_vs_seq_len(benchmark, seq_len_val):
+    """
+    Benchmark MLX scaled_dot_product_attention operation performance across different sequence lengths.
+
+    This test uses a fixed batch size (COMPARISON_BATCH_SIZE) to measure how latency
+    scales with sequence length for a consistent number of parallel sequences.
+    Both PAL and MLX benchmarks use the same fixed batch size for direct comparison.
+
+    Args:
+        benchmark: pytest-benchmark fixture for performance measurement
+        seq_len_val: sequence length value to test
+    """
+    # Create parameters with the fixed batch size and specified sequence length
+    params = BASELINE_CONFIG.copy()
+    params["seq_len"] = seq_len_val
+
+    # Add benchmark metadata if supported
+    if hasattr(benchmark, "extra_info"):
+        benchmark.extra_info["run_params"] = params.copy()
+
+    # Setup input tensors (evaluated during setup)
+    scale = 1.0 / mx.sqrt(float(params["head_dim"]))
+    batch_size = params["batch_size"]
+    num_q_heads = params["num_q_heads"]
+    num_kv_heads = params["num_kv_heads"]
+    head_dim = params["head_dim"]
+    seq_len = params["seq_len"]
+    dtype = params["dtype"]
+
+    # Create input tensors - ensuring shapes scale with seq_len_val
+    queries = mx.random.normal((batch_size, num_q_heads, seq_len, head_dim), dtype=dtype)
+
+    keys = mx.random.normal((batch_size, num_kv_heads, seq_len, head_dim), dtype=dtype)
+
+    values = mx.random.normal((batch_size, num_kv_heads, seq_len, head_dim), dtype=dtype)
+
+    # Create causal mask that scales with sequence length
+    causal_mask = mlx.nn.MultiHeadAttention.create_additive_causal_mask(seq_len).astype(dtype)
+
+    # Log tensor shapes for verification
+    logger.info(f"PREFILL SDPA - seq_len: {seq_len}")
+    logger.info(f"  queries shape: {queries.shape}")
+    logger.info(f"  keys shape: {keys.shape}")
+    logger.info(f"  values shape: {values.shape}")
+    logger.info(f"  causal_mask shape: {causal_mask.shape}")
+
+    # Define benchmark function that evaluates the result
+    def operation_to_benchmark():
+        output = mx.fast.scaled_dot_product_attention(queries, keys, values, scale=scale, mask=causal_mask)
+        mx.eval(output)
+        return output
+
+    # Run benchmark
+    result = benchmark(operation_to_benchmark)
+
+    # Assert the output has expected shape and valid values
+    expected_shape = (batch_size, num_q_heads, seq_len, head_dim)
     assert result.shape == expected_shape
     assert mx.isfinite(result).all()
 
@@ -218,74 +277,6 @@ def setup_sdpa_decode_inputs(params):
     return queries, keys, values, scale, causal_mask
 
 
-@pytest.mark.parametrize("seq_len_val", [64, 128, 256, 512, 1024, 2048])
-def test_mlx_latency_vs_seq_len(benchmark, seq_len_val):
-    """
-    Benchmark MLX scaled_dot_product_attention operation performance across different sequence lengths.
-
-    This test uses a fixed batch size (COMPARISON_BATCH_SIZE) to measure how latency
-    scales with sequence length for a consistent number of parallel sequences.
-    Both PAL and MLX benchmarks use the same fixed batch size for direct comparison.
-
-    Args:
-        benchmark: pytest-benchmark fixture for performance measurement
-        seq_len_val: sequence length value to test
-    """
-    # Create parameters with the fixed batch size and specified sequence length
-    params = BASELINE_CONFIG.copy()
-    params["seq_len"] = seq_len_val
-
-    # Add benchmark metadata if supported
-    if hasattr(benchmark, "extra_info"):
-        benchmark.extra_info["run_params"] = params.copy()
-
-    # Setup input tensors (evaluated during setup)
-    scale = 1.0 / mx.sqrt(float(params["head_dim"]))
-    batch_size = params["batch_size"]
-    num_q_heads = params["num_q_heads"]
-    num_kv_heads = params["num_kv_heads"]
-    head_dim = params["head_dim"]
-    seq_len = params["seq_len"]
-    dtype = params["dtype"]
-
-    # Create input tensors - ensuring shapes scale with seq_len_val
-    queries = mx.random.normal((batch_size, num_q_heads, seq_len, head_dim), dtype=dtype)
-
-    keys = mx.random.normal((batch_size, num_kv_heads, seq_len, head_dim), dtype=dtype)
-
-    values = mx.random.normal((batch_size, num_kv_heads, seq_len, head_dim), dtype=dtype)
-
-    # Create causal mask that scales with sequence length
-    causal_mask = mlx.nn.MultiHeadAttention.create_additive_causal_mask(seq_len).astype(dtype)
-
-    # Log tensor shapes for verification
-    logger.info(f"PREFILL SDPA - seq_len: {seq_len}")
-    logger.info(f"  queries shape: {queries.shape}")
-    logger.info(f"  keys shape: {keys.shape}")
-    logger.info(f"  values shape: {values.shape}")
-    logger.info(f"  causal_mask shape: {causal_mask.shape}")
-
-    # Define benchmark function that evaluates the result
-    def operation_to_benchmark():
-        output = mx.fast.scaled_dot_product_attention(
-            queries,
-            keys,
-            values,
-            scale=scale,
-            mask=causal_mask,
-        )
-        mx.eval(output)
-        return output
-
-    # Run benchmark
-    result = benchmark(operation_to_benchmark)
-
-    # Assert the output has expected shape and valid values
-    expected_shape = (batch_size, num_q_heads, seq_len, head_dim)
-    assert result.shape == expected_shape
-    assert mx.isfinite(result).all()
-
-
 @pytest.mark.parametrize("history_len_val", [1024, 2048, 4096, 8192, 16384, 32768])
 def test_pal_decode_latency_vs_history_len(benchmark, history_len_val):
     """
@@ -301,7 +292,6 @@ def test_pal_decode_latency_vs_history_len(benchmark, history_len_val):
     """
     # Create test parameters for decode phase
     params = BASELINE_CONFIG.copy()
-    params["batch_size"] = DECODE_BATCH_SIZE
     params["history_len"] = history_len_val
 
     # Calculate the number of query items for benchmarking info
@@ -348,7 +338,6 @@ def test_mlx_decode_latency_vs_history_len(benchmark, history_len_val):
     """
     # Create test parameters for decode phase
     params = BASELINE_CONFIG.copy()
-    params["batch_size"] = DECODE_BATCH_SIZE
     params["history_len"] = history_len_val
 
     # Add benchmark metadata if supported
