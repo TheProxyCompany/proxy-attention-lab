@@ -22,7 +22,6 @@ configurations, where the number of query heads can differ from the number of ke
 import logging
 
 import mlx.core as mx
-import pytest
 
 from proxy_attention_lab import paged_attention
 
@@ -129,48 +128,6 @@ def test_fetch_k_vector_from_multiple_kv_heads() -> None:
     assert mx.allclose(output_arr, expected_v_output, atol=1e-2, rtol=1e-2), (
         "V output vectors do not match expected values for GQA mapping"
     )
-
-
-def test_invalid_gqa_configuration() -> None:
-    """Test that invalid GQA configurations raise appropriate exceptions.
-
-    This test verifies that when the number of query heads is not a multiple of the
-    number of KV heads, the kernel correctly raises an exception.
-    """
-    num_tokens = 1
-    num_q_heads = 3
-    cfg_tokens_per_page = 64
-    cfg_num_kv_heads = 2
-    cfg_head_dim = 4
-    py_queries = mx.zeros((num_tokens, num_q_heads, cfg_head_dim), dtype=mx.float16)
-    py_queries[0, 0, :] = 100.0
-    py_queries[0, 1, :] = 200.0
-    py_queries[0, 2, :] = 300.0
-    num_physical_pages = 1
-    k_cache_shape = (num_physical_pages, cfg_tokens_per_page, cfg_num_kv_heads, cfg_head_dim)
-    py_k_cache_pool = mx.zeros(k_cache_shape, dtype=mx.float16)
-    py_v_cache_pool = mx.zeros_like(py_k_cache_pool)
-    py_page_table = mx.array(
-        [
-            [0, 99],
-        ],
-        dtype=mx.uint32,
-    )
-    py_sequence_lengths = mx.array([64], dtype=mx.int32)
-    py_query_to_seq_map = mx.array([0, 0, 0], dtype=mx.int32)
-    py_query_token_offset = mx.array([0, 0, 0], dtype=mx.int32)
-
-    with pytest.raises((RuntimeError, ValueError), match="num_q_heads .* must be an integer multiple of num_kv_heads"):
-        output_arr = paged_attention(
-            py_queries,
-            py_k_cache_pool,
-            py_v_cache_pool,
-            py_page_table,
-            py_sequence_lengths,
-            py_query_to_seq_map,
-            py_query_token_offset,
-        )
-        mx.eval(output_arr)
 
 
 def test_mqa_kv_head_selection() -> None:

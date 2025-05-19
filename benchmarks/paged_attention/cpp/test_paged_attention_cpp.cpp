@@ -164,16 +164,6 @@ static void BM_PAL_LatencyVsSeqLen(benchmark::State& state) {
     // Create query token offsets: [num_tokens]
     mx::array query_token_offset = create_query_token_offset(batch_size, seq_len);
 
-    // ----------------------------------------------------
-    //  Warm-up (compile shader, register Metal lib, etc.)
-    // ----------------------------------------------------
-    mx::array warm = pal::cpp::paged_attention(
-        queries, k_cache_pool, v_cache_pool,
-        page_table, sequence_lengths,
-        query_to_seq_map, query_token_offset,
-        mx::Device::gpu);
-    warm.eval();                  // wait for GPU
-
     // Main benchmark loop
     for (auto _ : state) {
         mx::array out = pal::cpp::paged_attention(
@@ -238,6 +228,7 @@ static void BM_MLX_SDPA_LatencyVsSeqLen(benchmark::State& state) {
 }
 
 
+// only need this one time to register the metal lib
 void BM_PAL_LatencyVsSeqLen_Setup(const ::benchmark::State& state) {
     // Create test parameters from baseline with specified sequence length
     BaselineConfig params;
@@ -350,15 +341,6 @@ static void BM_PAL_DecodeLatencyVsHistoryLen(benchmark::State& state) {
     }
     mx::array query_token_offset = mx::array(offset_data.data(), {batch_size}, mx::int32);
 
-    // ----------------------------------------------------
-    //  Warm-up (compile shader, register Metal lib, etc.)
-    // ----------------------------------------------------
-    mx::array warm = pal::cpp::paged_attention(
-        queries, k_cache_pool, v_cache_pool,
-        page_table, sequence_lengths,
-        query_to_seq_map, query_token_offset,
-        mx::Device::gpu);
-    warm.eval();
 
     // Main benchmark loop
     for (auto _ : state) {
@@ -447,111 +429,21 @@ BENCHMARK(BM_MLX_SDPA_LatencyVsSeqLen)
     // ->Arg(2048)
     // ->Arg(4096);
 
-// Setup function for the PAL decode benchmark
-void BM_PAL_DecodeLatencyVsHistoryLen_Setup(const ::benchmark::State& state) {
-    // Create test parameters for a small decode test
-    BaselineConfig params;
-    params.batch_size = DECODE_BATCH_SIZE;
-    int history_len = 64; // Small history for quick warmup
-
-    // Extract params to local variables for clarity
-    int batch_size = params.batch_size;
-    int num_q_heads = params.num_q_heads;
-    int num_kv_heads = params.num_kv_heads;
-    int head_dim = params.head_dim;
-    int tokens_per_page = params.tokens_per_page;
-    mx::Dtype dtype = params.dtype;
-
-    // Setup input tensors for decode scenario
-    int num_tokens = batch_size;  // One token per sequence for decode
-    int num_logical_pages_per_seq = (history_len + tokens_per_page - 1) / tokens_per_page;
-    int num_total_physical_pages = batch_size * num_logical_pages_per_seq;
-
-    // Create query tensor with shape [num_tokens, num_q_heads, head_dim]
-    mx::array queries = mx::random::normal({num_tokens, num_q_heads, head_dim}, dtype);
-
-    // K/V cache pools: [num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim]
-    mx::array k_cache_pool = mx::random::normal(
-        {num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim}, dtype
-    );
-    mx::array v_cache_pool = mx::random::normal(
-        {num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim}, dtype
-    );
-
-    // Create page table: [num_sequences_in_batch, num_logical_pages_per_seq]
-    mx::array page_table = create_page_table(batch_size, num_logical_pages_per_seq);
-
-    // Set sequence length for each batch item to the history length
-    mx::array sequence_lengths = mx::full({batch_size}, history_len, mx::int32);
-
-    // Create query-to-sequence mapping for decode (just sequence indices)
-    mx::array query_to_seq_map = mx::arange(batch_size, mx::int32);
-
-    // Create query token offsets for decode (position after history)
-    std::vector<int32_t> offset_data(batch_size);
-    for (int i = 0; i < batch_size; ++i) {
-        offset_data[i] = history_len + 1; // Position after history
-    }
-    mx::array query_token_offset = mx::array(offset_data.data(), {batch_size}, mx::int32);
-
-    // Warmup to compile shaders, register Metal lib, etc.
-    mx::array warm = pal::cpp::paged_attention(
-        queries, k_cache_pool, v_cache_pool,
-        page_table, sequence_lengths,
-        query_to_seq_map, query_token_offset,
-        mx::Device::gpu);
-    warm.eval();
-}
-
 // Register the decode benchmarks with history lengths
 BENCHMARK(BM_PAL_DecodeLatencyVsHistoryLen)
-    ->Arg(1024)->Iterations(1)->Repetitions(1)->Setup(BM_PAL_DecodeLatencyVsHistoryLen_Setup)
-    ->Arg(2048)->Iterations(1)->Repetitions(1)->Setup(BM_PAL_DecodeLatencyVsHistoryLen_Setup)
-    ->Arg(4096)->Iterations(1)->Repetitions(1)->Setup(BM_PAL_DecodeLatencyVsHistoryLen_Setup)
-    ->Arg(8192)->Iterations(1)->Repetitions(1)->Setup(BM_PAL_DecodeLatencyVsHistoryLen_Setup)
-    ->Arg(16384)->Iterations(1)->Repetitions(1)->Setup(BM_PAL_DecodeLatencyVsHistoryLen_Setup)
-    ->Arg(32768)->Iterations(1)->Repetitions(1)->Setup(BM_PAL_DecodeLatencyVsHistoryLen_Setup);
-
-// Setup function for the MLX SDPA decode benchmark
-void BM_MLX_SDPA_DecodeLatencyVsHistoryLen_Setup(const ::benchmark::State& state) {
-    // Create test parameters for a small decode test
-    BaselineConfig params;
-    params.batch_size = DECODE_BATCH_SIZE;
-    int history_len = 64; // Small history for quick warmup
-
-    // Extract params to local variables
-    int batch_size = params.batch_size;
-    int num_q_heads = params.num_q_heads;
-    int num_kv_heads = params.num_kv_heads;
-    int head_dim = params.head_dim;
-    mx::Dtype dtype = params.dtype;
-
-    // Setup input tensors for decode scenario
-    float scale = 1.0f / std::sqrt(static_cast<float>(head_dim));
-
-    // Create query tensor for a single token per sequence
-    mx::array queries = mx::random::normal({batch_size, num_q_heads, 1, head_dim}, dtype);
-
-    // Create keys and values tensors for history
-    mx::array keys = mx::random::normal({batch_size, num_kv_heads, history_len, head_dim}, dtype);
-    mx::array values = mx::random::normal({batch_size, num_kv_heads, history_len, head_dim}, dtype);
-
-    // Create an empty mask that allows full attention (zeros)
-    mx::array mask = mx::zeros({1, history_len}, dtype);
-
-    // Warmup to compile and cache any kernel
-    mx::array warm = mx::fast::scaled_dot_product_attention(
-        queries, keys, values, scale, "array", {mask}, mx::Device::gpu
-    );
-    warm.eval();
-}
+    ->Arg(1024)->Iterations(1)->Repetitions(1)
+    // ->Arg(2048)->Iterations(1)->Repetitions(1)
+    // ->Arg(4096)->Iterations(1)->Repetitions(1)
+    // ->Arg(8192)->Iterations(1)->Repetitions(1)
+    // ->Arg(16384)->Iterations(1)->Repetitions(1)
+    ->Arg(32768)->Iterations(1)->Repetitions(1);
 
 BENCHMARK(BM_MLX_SDPA_DecodeLatencyVsHistoryLen)
-    ->Arg(1024)->Iterations(1)->Repetitions(1)->Setup(BM_MLX_SDPA_DecodeLatencyVsHistoryLen_Setup)
-    ->Arg(2048)->Iterations(1)->Repetitions(1)->Setup(BM_MLX_SDPA_DecodeLatencyVsHistoryLen_Setup)
-    ->Arg(4096)->Iterations(1)->Repetitions(1)->Setup(BM_MLX_SDPA_DecodeLatencyVsHistoryLen_Setup)
-    ->Arg(8192)->Iterations(1)->Repetitions(1)->Setup(BM_MLX_SDPA_DecodeLatencyVsHistoryLen_Setup)
-    ->Arg(16384)->Iterations(1)->Repetitions(1)->Setup(BM_MLX_SDPA_DecodeLatencyVsHistoryLen_Setup)
-    ->Arg(32768)->Iterations(1)->Repetitions(1)->Setup(BM_MLX_SDPA_DecodeLatencyVsHistoryLen_Setup);
+    ->Arg(1024)->Iterations(1)->Repetitions(1)
+    // ->Arg(2048)->Iterations(1)->Repetitions(1)
+    // ->Arg(4096)->Iterations(1)->Repetitions(1)
+    // ->Arg(8192)->Iterations(1)->Repetitions(1)
+    // ->Arg(16384)->Iterations(1)->Repetitions(1)
+    ->Arg(32768)->Iterations(1)->Repetitions(1);
 
 BENCHMARK_MAIN();

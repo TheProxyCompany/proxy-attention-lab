@@ -90,18 +90,16 @@ def test_pal_latency_vs_seq_len(benchmark, seq_len_val):
     # Offsets are [1, 2, ..., SL, 1, 2, ..., SL, ...]
     query_token_offset = mx.tile(mx.arange(1, seq_len + 1, dtype=mx.int32), batch_size)
 
-    mx.eval(queries)
-    mx.eval(k_cache_pool)
-    mx.eval(v_cache_pool)
-    mx.eval(page_table)
-    mx.eval(sequence_lengths)
-    mx.eval(query_to_seq_map)
-    mx.eval(query_token_offset)
-
     # Define benchmark function that evaluates the result
     def operation_to_benchmark():
         out = paged_attention(
-            queries, k_cache_pool, v_cache_pool, page_table, sequence_lengths, query_to_seq_map, query_token_offset
+            queries,
+            k_cache_pool,
+            v_cache_pool,
+            page_table,
+            sequence_lengths,
+            query_to_seq_map,
+            query_token_offset,
         )
         mx.eval(out)
         return out
@@ -249,11 +247,6 @@ def test_mlx_latency_vs_seq_len(benchmark, seq_len_val):
     # Create causal mask
     causal_mask = mlx.nn.MultiHeadAttention.create_additive_causal_mask(params["seq_len"]).astype(params["dtype"])
 
-    mx.eval(queries)
-    mx.eval(keys)
-    mx.eval(values)
-    mx.eval(causal_mask)
-
     # Define benchmark function that evaluates the result
     def operation_to_benchmark():
         output = mx.fast.scaled_dot_product_attention(
@@ -303,15 +296,6 @@ def test_pal_decode_latency_vs_history_len(benchmark, history_len_val):
     # Setup decode inputs
     queries, k_hist, v_hist, pt, slens_hist, q_map, q_off = setup_pal_decode_inputs(params)
 
-    # Ensure tensors are evaluated before benchmark
-    mx.eval(queries)
-    mx.eval(k_hist)
-    mx.eval(v_hist)
-    mx.eval(pt)
-    mx.eval(slens_hist)
-    mx.eval(q_map)
-    mx.eval(q_off)
-
     # Define benchmark function that evaluates the result
     def operation_to_benchmark():
         out = paged_attention(queries, k_hist, v_hist, pt, slens_hist, q_map, q_off)
@@ -355,13 +339,6 @@ def test_mlx_decode_latency_vs_history_len(benchmark, history_len_val):
 
     # Setup decode inputs
     queries, keys, values, scale, causal_mask = setup_sdpa_decode_inputs(params)
-
-    # Ensure tensors are evaluated before benchmark
-    mx.eval(queries)
-    mx.eval(keys)
-    mx.eval(values)
-    if causal_mask is not None:
-        mx.eval(causal_mask)
 
     # Define benchmark function that evaluates the result
     def operation_to_benchmark():
