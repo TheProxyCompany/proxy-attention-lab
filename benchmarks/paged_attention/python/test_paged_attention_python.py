@@ -23,12 +23,12 @@ from proxy_attention_lab import paged_attention
 
 logger = logging.getLogger(__name__)
 
-# Define baseline configuration for benchmarks
+# Gemma 3 Model Config, 2048 tokens
 BASELINE_CONFIG = {
     "batch_size": 1,
     "seq_len": 2048,  # tokens
-    "num_q_heads": 1,
-    "num_kv_heads": 1,
+    "num_q_heads": 32,
+    "num_kv_heads": 16,
     "head_dim": 128,
     "tokens_per_page": 64,
     "dtype": mx.float16,

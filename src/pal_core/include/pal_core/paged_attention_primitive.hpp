@@ -105,7 +105,6 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
   int num_kv_heads_;
   int head_dim_;
   int tokens_per_page_;
-  MTL::ComputePipelineState* kernel_state_{nullptr};
 
   /**
    * @brief Implements vector-Jacobian product for backpropagation.

@@ -124,23 +124,14 @@ static inline device const half* fetch_kv_pointer(
     }
 
     // Calculate indices for page table lookup
-    uint tokens_per_page = kernel_params.tokens_per_page;
-    bool tpp_is_pow2 = (tokens_per_page & (tokens_per_page - 1u)) == 0u;
-    uint logical_block_idx = 0;
-    uint token_slot_in_page = 0;
-    if (tpp_is_pow2) {
-        uint shift = kernel_params.tokens_per_page_shift;
-        logical_block_idx = actual_hist_token_pos >> shift;
-        token_slot_in_page = actual_hist_token_pos & (tokens_per_page - 1u);
-    } else {
-        logical_block_idx = actual_hist_token_pos / tokens_per_page;
-        token_slot_in_page = actual_hist_token_pos % tokens_per_page;
-    }
+    uint logical_block_idx = actual_hist_token_pos / kernel_params.tokens_per_page;
     if (logical_block_idx >= kernel_params.max_logical_blocks_per_seq) {
         return nullptr;  // Invalid block index
     }
-    uint physical_page_id = page_table_slice[logical_block_idx];
 
+    uint tokens_per_page = kernel_params.tokens_per_page;
+    uint token_slot_in_page = actual_hist_token_pos % tokens_per_page;
+    uint physical_page_id = page_table_slice[logical_block_idx];
     if (physical_page_id >= kernel_params.num_physical_pages_in_pool) {
         return nullptr;  // Invalid page
     }

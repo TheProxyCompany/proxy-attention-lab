@@ -224,25 +224,20 @@ using namespace metal;
                 params
             );
 
-            if (k_vector_global_ptr != nullptr) {
-                // Each thread loads its K-vector into the K_tile
-                // K_tile is now [tile_size_T_runtime][padded_head_dim] to avoid bank conflicts
-                threadgroup float* k_tile_entry_ptr = K_tile + (local_thread_idx * padded_head_dim_hoisted);
-
-                // Load the entire K-vector using float4 chunks
-                // Note: We only fill the actual head_dim elements, leaving padding untouched
-                device const half4* __attribute__((aligned(8))) k_vec_global_ptr_h4 = reinterpret_cast<device const half4*>(k_vector_global_ptr);
-                for (uint d_chunk = 0; d_chunk < params.head_dim / 4; ++d_chunk) {
-                    half4 k_val_h4 = k_vec_global_ptr_h4[d_chunk];
-                    float4 k_val_f4 = float4(k_val_h4);
-                    k_tile_entry_ptr[d_chunk * 4 + 0] = k_val_f4.x;
-                    k_tile_entry_ptr[d_chunk * 4 + 1] = k_val_f4.y;
-                    k_tile_entry_ptr[d_chunk * 4 + 2] = k_val_f4.z;
-                    k_tile_entry_ptr[d_chunk * 4 + 3] = k_val_f4.w;
-                }
+            threadgroup float* k_tile_entry_ptr = K_tile + (local_thread_idx * padded_head_dim_hoisted);
+            // Load the entire K-vector using float4 chunks
+            // Note: We only fill the actual head_dim elements, leaving padding untouched
+            device const half4* __attribute__((aligned(8))) k_vec_global_ptr_h4 = reinterpret_cast<device const half4*>(k_vector_global_ptr);
+            for (uint d_chunk = 0; d_chunk < params.head_dim / 4; ++d_chunk) {
+                half4 k_val_h4 = k_vec_global_ptr_h4[d_chunk];
+                float4 k_val_f4 = float4(k_val_h4);
+                k_tile_entry_ptr[d_chunk * 4 + 0] = k_val_f4.x;
+                k_tile_entry_ptr[d_chunk * 4 + 1] = k_val_f4.y;
+                k_tile_entry_ptr[d_chunk * 4 + 2] = k_val_f4.z;
+                k_tile_entry_ptr[d_chunk * 4 + 3] = k_val_f4.w;
             }
         }
-        // Barrier after K load removed (no use until after V load)
+        // threadgroup_barrier(mem_flags::mem_threadgroup);
 
         // --- Load V-vectors into V_tile ---
         if (local_thread_idx < current_hist_tile_actual_len) {
@@ -262,22 +257,19 @@ using namespace metal;
             // Each thread loads its V-vector into the V_tile
             threadgroup float* v_tile_entry_ptr = V_tile + (local_thread_idx * padded_head_dim_hoisted);
 
-            if (v_vector_global_ptr != nullptr) {
-                // Load the entire V-vector using float4 chunks
-                // Note: We only fill the actual head_dim elements, leaving padding untouched
-                device const half4* __attribute__((aligned(8))) v_vec_global_ptr_h4 = reinterpret_cast<device const half4*>(v_vector_global_ptr);
-                for (uint d_chunk = 0; d_chunk < params.head_dim / 4; ++d_chunk) {
-                    half4 v_val_h4 = v_vec_global_ptr_h4[d_chunk];
-                    float4 v_val_f4 = float4(v_val_h4);
-                    v_tile_entry_ptr[d_chunk * 4 + 0] = v_val_f4.x;
-                    v_tile_entry_ptr[d_chunk * 4 + 1] = v_val_f4.y;
-                    v_tile_entry_ptr[d_chunk * 4 + 2] = v_val_f4.z;
-                    v_tile_entry_ptr[d_chunk * 4 + 3] = v_val_f4.w;
-                }
+            // Load the entire V-vector using float4 chunks
+            // Note: We only fill the actual head_dim elements, leaving padding untouched
+            device const half4* __attribute__((aligned(8))) v_vec_global_ptr_h4 = reinterpret_cast<device const half4*>(v_vector_global_ptr);
+            for (uint d_chunk = 0; d_chunk < params.head_dim / 4; ++d_chunk) {
+                half4 v_val_h4 = v_vec_global_ptr_h4[d_chunk];
+                float4 v_val_f4 = float4(v_val_h4);
+                v_tile_entry_ptr[d_chunk * 4 + 0] = v_val_f4.x;
+                v_tile_entry_ptr[d_chunk * 4 + 1] = v_val_f4.y;
+                v_tile_entry_ptr[d_chunk * 4 + 2] = v_val_f4.z;
+                v_tile_entry_ptr[d_chunk * 4 + 3] = v_val_f4.w;
             }
         }
-
-        // V_tile entries are private to each thread; no barrier needed here
+        // threadgroup_barrier(mem_flags::mem_threadgroup);
 
         // --- 10.1.1/10: History Tile - Score Calculation (no stashing in fused path) ---
         float thread_score_val = -INFINITY; // Default to a state that would lead to zero contribution
@@ -386,7 +378,6 @@ using namespace metal;
             }
         }
 
-
         // --- 10.1.6/10: History Tile - Weighted V Accumulation (Fused Path) ---
         if (local_thread_idx < current_hist_tile_actual_len) {
 
@@ -413,7 +404,6 @@ using namespace metal;
                 if (d_idx + 3 < params.head_dim) acc_tile_local[d_idx + 3] += v_chunk.w;
             }
         }
-
         // Ensure all V_tile contributions complete before reusing the buffers in the next tile
         threadgroup_barrier(mem_flags::mem_threadgroup); // End of history tile processing
     } // End history tiling loop
@@ -448,8 +438,6 @@ using namespace metal;
         if (simd_lane_id == 0) {
             tg_simd_v_chunk_sums[simd_group_id] = reduced_simd_group_final_chunk;
         }
-        // Wait for all simd groups to produce their partial sums before thread 0 combines them
-        threadgroup_barrier(mem_flags::mem_threadgroup);
 
         if (local_thread_idx == 0) {
             float4 final_output_chunk = float4(0.0f);
@@ -464,7 +452,6 @@ using namespace metal;
             if (i+3 < params.head_dim) output_buffer[output_base_idx + 3] = (half)final_output_chunk.w;
         }
         // Reuse tg_simd_v_chunk_sums for the next chunk, ensure previous values consumed
-        threadgroup_barrier(mem_flags::mem_threadgroup); // Sync before next chunk
     }
 
 } // End of kernel

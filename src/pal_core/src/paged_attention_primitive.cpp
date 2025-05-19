@@ -207,8 +207,6 @@ static ThreadgroupMemoryLayout prepare_inputs_layout_memory(
         params_for_fixed_sizing,
         threads_per_item_group_for_dispatch
     ).total_bytes - kFinalTgMemoryPaddingGuardBytes;
-    // Add padding for alignment and final guard bytes
-    precise_fixed_tg_mem_bytes = (precise_fixed_tg_mem_bytes + kAlignmentMask) & ~kAlignmentMask;
 
     // 1. Gather constants once
     const size_t tg_limit = mtl_device_ptr->maxThreadgroupMemoryLength();
@@ -261,6 +259,14 @@ static ThreadgroupMemoryLayout prepare_inputs_layout_memory(
         params.tile_size_T_runtime = std::max(params.tile_size_T_runtime, min_T_soft);
     }
 
+    if (params.tile_size_T_runtime > 0) {
+       params.tile_size_T_runtime = (params.tile_size_T_runtime / align_val) * align_val;
+       if (params.tile_size_T_runtime == 0) params.tile_size_T_runtime = align_val; // Ensure not zero if it was viable
+    } else {
+        // This case should ideally be caught by max_T_fit == 0 check earlier
+        throw std::runtime_error("[PAL Primitive] tile_size_T_runtime became 0 after all adjustments.");
+    }
+
     if (params.tile_size_T_runtime == 0) {
         throw std::runtime_error(
             "[PAL Primitive] head_dim/tokens_per_page combination leaves no "
@@ -283,10 +289,12 @@ static CoreDims validate_inputs_and_populate_initial_params(const std::vector<mx
     const auto& query_token_offset = inputs[6];
 
     // --- Dtype Checks ---
-    if (page_table.dtype() != mx::uint32) {
-         throw std::invalid_argument("[PAL Primitive Validate] page_table must be uint32.");
-    }
-    if (sequence_lengths.dtype() != mx::int32 || query_to_seq_map.dtype() != mx::int32 || query_token_offset.dtype() != mx::int32) {
+    if (
+        page_table.dtype() != mx::uint32 ||
+        sequence_lengths.dtype() != mx::int32 ||
+        query_to_seq_map.dtype() != mx::int32 ||
+        query_token_offset.dtype() != mx::int32
+    ) {
          throw std::invalid_argument("[PAL Primitive Validate] sequence_lengths, query_to_seq_map, and query_token_offset must be int32.");
     }
 
@@ -301,9 +309,6 @@ static CoreDims validate_inputs_and_populate_initial_params(const std::vector<mx
     dims.head_dim = k_pool.shape(3);
 
     constexpr uint32_t kMaxHeadDimMetalInKernel = 256;
-    if (dims.head_dim == 0) {
-        throw std::invalid_argument("[PAL Primitive Validate] head_dim from K-pool cannot be 0.");
-    }
     if (dims.head_dim > kMaxHeadDimMetalInKernel) {
          throw std::invalid_argument("[PAL Primitive Validate] head_dim (" + std::to_string(dims.head_dim) +
                                    ") exceeds kernel's internal processing limit kMaxHeadDimMetal (" +
@@ -373,22 +378,7 @@ PagedAttentionPrimitive::PagedAttentionPrimitive(
       num_q_heads_(num_q_heads),
       num_kv_heads_(num_kv_heads),
       head_dim_(head_dim),
-      tokens_per_page_(tokens_per_page) {
-  spdlog::debug(
-      "[PAL Primitive] Constructed with params: num_q_heads={}, "
-      "num_kv_heads={}, head_dim={}, tokens_per_page={}",
-      num_q_heads_, num_kv_heads_, head_dim_, tokens_per_page_);
-
-  const std::string library_name_for_mlx = "pal";
-  const std::string kernel_name = "paged_attn_kernel";
-  // Get the device from the stream
-  auto& s = stream();
-  auto& d = mlx::core::metal::device(s.device);
-  kernel_state_ = d.get_kernel(kernel_name, library_name_for_mlx);
-  if (!kernel_state_) {
-    throw std::runtime_error("[PAL Primitive] Failed to load kernel: " + kernel_name);
-  }
-}
+      tokens_per_page_(tokens_per_page) { }
 
 void PagedAttentionPrimitive::eval_cpu(const std::vector<mx::array>& inputs, mx::array& out) {
     std::ostringstream oss;
@@ -440,6 +430,13 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
   auto& s = stream();
   auto& d = mlx::core::metal::device(s.device);
 
+const std::string library_name_for_mlx = "pal";
+  const std::string kernel_name = "paged_attn_kernel";
+  auto kernel_state_ = d.get_kernel(kernel_name, library_name_for_mlx);
+  if (!kernel_state_) {
+    throw std::runtime_error("[PAL Primitive] Failed to load kernel: " + kernel_name);
+  }
+
   size_t bytes = out.nbytes();
   out.set_data(mx::allocator::malloc(bytes));
   auto& compute_encoder = d.get_command_encoder(s.index);
@@ -447,12 +444,6 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
   // Create and populate PagedAttentionParams struct
   PagedAttentionParams params_struct;
   CoreDims core_dims = validate_inputs_and_populate_initial_params(inputs);
-
-  // Early exit if no items to process
-  if (core_dims.num_items_to_process == 0) {
-      spdlog::info("[PAL Primitive] No items to process. Returning empty result or as per output_shapes.");
-      return;
-  }
 
   // Populate initial parts directly for head_dim check
   params_struct.head_dim = core_dims.head_dim;
@@ -485,7 +476,7 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
   );
 
   // Adjust threadgroup size based on computed tile_size_T_runtime
-  threads_per_item_group = std::min(static_cast<size_t>(64), max_threads);
+  threads_per_item_group = std::min(static_cast<size_t>(params_struct.tile_size_T_runtime), max_threads);
 
   // Verify all pointers are valid before passing to Metal
   if (!inputs[0].data<void>() || !inputs[1].data<void>() || !inputs[2].data<void>() ||
