@@ -207,8 +207,6 @@ using namespace metal;
                 params
             );
 
-            // Use padded head dimension from hoisted calculation
-
             if (k_vector_global_ptr != nullptr) {
                 // Each thread loads its K-vector into the K_tile
                 // K_tile is now [tile_size_T_runtime][padded_head_dim] to avoid bank conflicts

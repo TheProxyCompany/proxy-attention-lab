@@ -301,6 +301,7 @@ run_cpp_benchmarks() {
                 ${filter_option}
 
             log "C++ benchmarks from ${benchmark_exe} completed. Results saved to ${cpp_json_output}"
+            break
         done
     fi
 

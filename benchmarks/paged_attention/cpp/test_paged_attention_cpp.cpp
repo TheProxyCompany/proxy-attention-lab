@@ -36,7 +36,6 @@ namespace mx = mlx::core;
 struct BenchmarkSpdlogInitializer {
     BenchmarkSpdlogInitializer() {
         // Set default log level for benchmarks to warning to reduce noise
-        pal::core::detail::MetalLibRegistrar::ensure_pal_metallib_registered(mx::Device::gpu);
         spdlog::set_level(spdlog::level::warn);
         spdlog::info("PAL C++ Benchmarks: spdlog level set to 'warn'. Debug/trace messages from pal_core_lib will be suppressed.");
     }
@@ -162,13 +161,15 @@ static void BM_PAL_LatencyVsSeqLen(benchmark::State& state) {
     // Create query token offsets: [num_tokens]
     mx::array query_token_offset = create_query_token_offset(batch_size, seq_len);
 
-    queries.eval();
-    k_cache_pool.eval();
-    v_cache_pool.eval();
-    page_table.eval();
-    sequence_lengths.eval();
-    query_to_seq_map.eval();
-    query_token_offset.eval();
+    // ----------------------------------------------------
+    //  Warm-up (compile shader, register Metal lib, etc.)
+    // ----------------------------------------------------
+    mx::array warm = pal::cpp::paged_attention(
+        queries, k_cache_pool, v_cache_pool,
+        page_table, sequence_lengths,
+        query_to_seq_map, query_token_offset,
+        mx::Device::gpu);
+    warm.eval();                  // wait for GPU
 
     // Main benchmark loop
     for (auto _ : state) {
@@ -218,11 +219,6 @@ static void BM_MLX_SDPA_LatencyVsSeqLen(benchmark::State& state) {
     // Create causal mask
     mx::array causal_mask = create_causal_mask(seq_len, dtype);
 
-    queries.eval();
-    keys.eval();
-    values.eval();
-    causal_mask.eval();
-
     // Main benchmark loop
     for (auto _ : state) {
         mx::array out = mx::fast::scaled_dot_product_attention(
@@ -234,13 +230,72 @@ static void BM_MLX_SDPA_LatencyVsSeqLen(benchmark::State& state) {
             {causal_mask},
             mx::Device::gpu
         );
-        out.eval();  // Ensure GPU computation completes
+        out.eval();
     }
+}
+
+
+void BM_PAL_LatencyVsSeqLen_Setup(const ::benchmark::State& state) {
+    // Create test parameters from baseline with specified sequence length
+    BaselineConfig params;
+    params.seq_len = 16;
+
+    // Extract params to local variables for clarity
+    int batch_size = params.batch_size;
+    int seq_len = params.seq_len;
+    int num_q_heads = params.num_q_heads;
+    int num_kv_heads = params.num_kv_heads;
+    int head_dim = params.head_dim;
+    int tokens_per_page = params.tokens_per_page;
+    mx::Dtype dtype = params.dtype;
+
+    // Setup input tensors
+    int num_tokens = batch_size * seq_len;
+    int num_logical_pages_per_seq = (seq_len + tokens_per_page - 1) / tokens_per_page;
+    int num_total_physical_pages = batch_size * num_logical_pages_per_seq;
+
+    // Create query tensor with shape [num_tokens, num_q_heads, head_dim]
+    mx::array queries = mx::random::normal(
+        {num_tokens, num_q_heads, head_dim},
+        dtype
+    );
+
+    // K/V cache pools: [num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim]
+    mx::array k_cache_pool = mx::random::normal(
+        {num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim},
+        dtype
+    );
+    mx::array v_cache_pool = mx::random::normal(
+        {num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim},
+        dtype
+    );
+
+    // Create page table: [num_sequences_in_batch, num_logical_pages_per_seq]
+    mx::array page_table = create_page_table(batch_size, num_logical_pages_per_seq);
+
+    // Set sequence length for each batch item: [num_sequences_in_batch]
+    mx::array sequence_lengths = mx::full({batch_size}, seq_len, mx::int32);
+
+    // Create query-to-sequence mapping: [num_tokens]
+    mx::array query_to_seq_map = create_query_to_seq_map(batch_size, seq_len);
+
+    // Create query token offsets: [num_tokens]
+    mx::array query_token_offset = create_query_token_offset(batch_size, seq_len);
+
+    // ----------------------------------------------------
+    //  Warm-up (compile shader, register Metal lib, etc.)
+    // ----------------------------------------------------
+    mx::array warm = pal::cpp::paged_attention(
+        queries, k_cache_pool, v_cache_pool,
+        page_table, sequence_lengths,
+        query_to_seq_map, query_token_offset,
+        mx::Device::gpu);
+    warm.eval();                  // wait for GPU
 }
 
 // Register the benchmarks with all sequence lengths from Python benchmark
 BENCHMARK(BM_PAL_LatencyVsSeqLen)
-    // ->Arg(64)
+    ->Arg(64)->Iterations(1)->Repetitions(1)->Setup(BM_PAL_LatencyVsSeqLen_Setup)
     // ->Arg(128)
     // ->Arg(256)
     // ->Arg(512)
@@ -249,7 +304,7 @@ BENCHMARK(BM_PAL_LatencyVsSeqLen)
     // ->Arg(4096);
 
 BENCHMARK(BM_MLX_SDPA_LatencyVsSeqLen)
-    // ->Arg(64)
+    ->Arg(64)->Iterations(1)->Repetitions(1)
     // ->Arg(128)
     // ->Arg(256)
     // ->Arg(512)

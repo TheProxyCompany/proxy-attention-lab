@@ -31,7 +31,10 @@ def process_cpp_file(file_data: dict) -> pd.DataFrame:
     if "param" not in results_df.columns:
         results_df["param"] = results_df["name"].apply(lambda x: x.split("/")[1])
 
-    results_df["mean_latency"] = results_df["real_time"] / results_df["iterations"]
+    if "aggregate_name" in results_df.columns:
+        results_df = results_df[(results_df["run_type"] == "aggregate") & (results_df["aggregate_name"] == "median")]
+
+    results_df["mean_latency"] = results_df["real_time"]
     # convert to milliseconds
     if "time_unit" in results_df.columns:
         match str(results_df["time_unit"].iloc[0]):
