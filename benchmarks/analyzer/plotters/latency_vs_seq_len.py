@@ -281,19 +281,60 @@ def plot(df: pd.DataFrame, output_dir: Path, styles: dict[str, str | float] | No
     fig.savefig(output_dir / filename, dpi=300)
     plt.close(fig)
 
-    # save the dataframe to results.json in the output directory
+    # Save the dataframe to results.json in the output directory. If an existing
+    # results.json is found, compute percentage differences and save them to
+    # diff.json.
+
+    results_path = output_dir / "results.json"
+    old_results: dict | None = None
+    if results_path.exists():
+        try:
+            with open(results_path) as f:
+                old_results = json.load(f)
+        except Exception as exc:
+            logger.warning("Failed to load existing results.json: %s", exc)
 
     # Group the data as {group: {sequence_length: mean_latency, ...}, ...}
-    output_dict = {}
+    output_dict: dict[str, dict[float, float]] = {}
     for group, group_df in df.groupby("group"):
-        # Use float for sequence_length keys to avoid accidental stringification
         seq_lat_map = {
             float(seq_len): float(m_lat)
-            for seq_len, m_lat in zip(group_df["sequence_length"], group_df["mean_latency"], strict=False)
+            for seq_len, m_lat in zip(
+                group_df["sequence_length"],
+                group_df["mean_latency"],
+                strict=False,
+            )
         }
         output_dict[group] = seq_lat_map
 
-    with open(output_dir / "results.json", "w") as f:
+    with open(results_path, "w") as f:
         json.dump(output_dict, f, indent=4)
+
+    if old_results is not None:
+        diff_dict: dict[str, dict[str, float]] = {}
+        for group, new_map in output_dict.items():
+            old_map = old_results.get(group)
+            if not isinstance(old_map, dict):
+                continue
+            diff_map: dict[str, float] = {}
+            for param, new_val in new_map.items():
+                old_val = old_map.get(str(param)) if isinstance(old_map, dict) else None
+                if old_val is None:
+                    continue
+                try:
+                    old_val_f = float(old_val)
+                    if old_val_f == 0:
+                        continue
+                    pct_change = (float(new_val) - old_val_f) / old_val_f * 100
+                    diff_map[str(param)] = pct_change
+                except Exception as exc:
+                    logger.debug("Skipping diff for %s/%s: %s", group, param, exc)
+            if diff_map:
+                diff_dict[group] = diff_map
+
+        if diff_dict:
+            with open(output_dir / "diff.json", "w") as f:
+                json.dump(diff_dict, f, indent=4)
+            logger.info("Saved diff.json with percentage changes")
 
     return filename

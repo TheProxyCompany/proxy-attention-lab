@@ -28,13 +28,15 @@ def process_cpp_file(file_data: dict) -> pd.DataFrame:
 
     # Create group labels indicating both the implementation and whether it's a prefill or decode benchmark
     results_df["group"] = results_df["name"].apply(
-        lambda x: "cpp_pal_paged_attention_decode"
-        if "pal" in x.lower() and "decode" in x.lower()
-        else "cpp_mlx_sdpa_decode"
-        if "mlx" in x.lower() and "decode" in x.lower()
-        else "cpp_pal_paged_attention"
-        if "pal" in x.lower()
-        else "cpp_mlx_sdpa"
+        lambda x: (
+            "cpp_pal_paged_attention_decode"
+            if "pal" in x.lower() and "decode" in x.lower()
+            else (
+                "cpp_mlx_sdpa_decode"
+                if "mlx" in x.lower() and "decode" in x.lower()
+                else "cpp_pal_paged_attention" if "pal" in x.lower() else "cpp_mlx_sdpa"
+            )
+        )
     )
 
     if "param" not in results_df.columns:
@@ -65,13 +67,15 @@ def process_python_file(file_data: dict) -> pd.DataFrame:
 
     # Create group labels indicating both the implementation and whether it's a prefill or decode benchmark
     results_df["group"] = results_df["name"].apply(
-        lambda x: "python_pal_paged_attention_decode"
-        if "pal" in x.lower() and "decode" in x.lower()
-        else "python_mlx_sdpa_decode"
-        if "mlx" in x.lower() and "decode" in x.lower()
-        else "python_pal_paged_attention"
-        if "pal" in x.lower()
-        else "python_mlx_sdpa"
+        lambda x: (
+            "python_pal_paged_attention_decode"
+            if "pal" in x.lower() and "decode" in x.lower()
+            else (
+                "python_mlx_sdpa_decode"
+                if "mlx" in x.lower() and "decode" in x.lower()
+                else "python_pal_paged_attention" if "pal" in x.lower() else "python_mlx_sdpa"
+            )
+        )
     )
 
     results_df["sequence_length"] = results_df["param"].astype(float)
@@ -132,6 +136,9 @@ def main() -> None:
         logger.info(f"Successfully generated latency vs sequence length plot: {seq_len_plot}")
 
     logger.info(f"Results saved to: {args.output_dir}/results.json")
+    diff_path = args.output_dir / "diff.json"
+    if diff_path.exists():
+        logger.info(f"Diff saved to: {diff_path}")
     if plot_filenames:
         logger.info("Generated plots:")
         for category, filename in plot_filenames.items():

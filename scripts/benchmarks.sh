@@ -207,24 +207,23 @@ backup_previous_results() {
     fi
 }
 
-save_and_diff_results() {
+save_results_history() {
     local results_file="${BENCHMARK_OUTPUT_ROOT}/results.json"
+    local diff_file="${BENCHMARK_OUTPUT_ROOT}/diff.json"
     mkdir -p "${BENCHMARK_HISTORY_DIR}"
     if [ -f "${results_file}" ]; then
         local ts
         ts=$(date +"%Y%m%d_%H%M%S")
         local saved_file="${BENCHMARK_HISTORY_DIR}/results_${ts}.json"
-        local last_saved
-        last_saved=$(find "${BENCHMARK_HISTORY_DIR}" -type f -name 'results_*.json' | sort | tail -n 1)
         cp "${results_file}" "${saved_file}"
         log "Saved benchmark results to ${saved_file}"
-        if [ -n "${last_saved}" ] && [ "${last_saved}" != "${saved_file}" ]; then
-            local diff_file="${BENCHMARK_HISTORY_DIR}/diff_${ts}.txt"
-            diff -u "${last_saved}" "${results_file}" > "${diff_file}" || true
-            log "Diff with previous results stored in ${diff_file}"
+        if [ -f "${diff_file}" ]; then
+            local saved_diff="${BENCHMARK_HISTORY_DIR}/diff_${ts}.json"
+            cp "${diff_file}" "${saved_diff}"
+            log "Saved diff output to ${saved_diff}"
         fi
     else
-        log "No results.json found to save or compare." >&2
+        log "No results.json found to save." >&2
     fi
 }
 
@@ -378,7 +377,7 @@ analyze_results() {
     python -m benchmarks.analyzer "${BENCHMARK_OUTPUT_ROOT}" "${BENCHMARK_OUTPUT_ROOT}" ${analyzer_args}
 
     log "Analysis complete. Results saved to ${BENCHMARK_OUTPUT_ROOT}"
-    save_and_diff_results
+    save_results_history
     hr
 }
 
