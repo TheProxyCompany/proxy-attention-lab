@@ -31,6 +31,13 @@ constant static const uint kAlignmentMask = kAlignmentBytes - 1;
 
 constant static const float kEpsilonForZeroGuard = 1e-9f;
 
+// Hardware capability: prefer float8 vector width when available.
+#if defined(__METAL_PREFERRED_VECTOR_WIDTH_FLOAT) && (__METAL_PREFERRED_VECTOR_WIDTH_FLOAT >= 8)
+constant static const bool kSupportsFloat8 = true;
+#else
+constant static const bool kSupportsFloat8 = false;
+#endif
+
 
 /**
  * @brief Main kernel for paged attention computation.
@@ -253,11 +260,35 @@ static inline float dot_product_qk(
     constant const PagedAttentionParams& kernel_params
 ) {
     float score = 0.0f;
+    // Prefer float8 vectorization when the hardware supports it and the head_dim allows.
+#if kSupportsFloat8
+    uint d = 0;
+    if ((kernel_params.head_dim & 7u) == 0u) {
+        threadgroup const float8* q_vec_f8 = reinterpret_cast<threadgroup const float8*>(q_vec_shmem_param);
+        threadgroup const float8* k_vec_f8 = reinterpret_cast<threadgroup const float8*>(k_vec_tile_entry_param);
+        for (; d < kernel_params.head_dim; d += 8) {
+            float8 qv8 = q_vec_f8[d / 8];
+            float8 kv8 = k_vec_f8[d / 8];
+            float4 qlo = float4(qv8[0], qv8[1], qv8[2], qv8[3]);
+            float4 klo = float4(kv8[0], kv8[1], kv8[2], kv8[3]);
+            float4 qhi = float4(qv8[4], qv8[5], qv8[6], qv8[7]);
+            float4 khi = float4(kv8[4], kv8[5], kv8[6], kv8[7]);
+            score += dot(qlo, klo);
+            score += dot(qhi, khi);
+        }
+    }
+    for (; d < kernel_params.head_dim; d += 4) {
+        float4 qv = *((threadgroup const float4*)(q_vec_shmem_param + d));
+        float4 kv = *((threadgroup const float4*)(k_vec_tile_entry_param + d));
+        score += dot(qv, kv);
+    }
+#else
     // The helper assumes it's always called for a full head_dim that's a multiple of 4.
     for(uint d = 0; d < kernel_params.head_dim; d += 4) {
         float4 qv = *((threadgroup const float4*)(q_vec_shmem_param + d));
         float4 kv = *((threadgroup const float4*)(k_vec_tile_entry_param + d));
         score += dot(qv, kv);
     }
+#endif
     return score;
 }

@@ -212,16 +212,26 @@ using namespace metal;
                 // K_tile is now [tile_size_T_runtime][padded_head_dim] to avoid bank conflicts
                 threadgroup float* k_tile_entry_ptr = K_tile + (local_thread_idx * padded_head_dim_hoisted);
 
-                // Load the entire K-vector using float4 chunks
-                // Note: We only fill the actual head_dim elements, leaving padding untouched
-                device const half4* __attribute__((aligned(8))) k_vec_global_ptr_h4 = reinterpret_cast<device const half4*>(k_vector_global_ptr);
-                for (uint d_chunk = 0; d_chunk < params.head_dim / 4; ++d_chunk) {
-                    half4 k_val_h4 = k_vec_global_ptr_h4[d_chunk];
-                    float4 k_val_f4 = float4(k_val_h4);
-                    k_tile_entry_ptr[d_chunk * 4 + 0] = k_val_f4.x;
-                    k_tile_entry_ptr[d_chunk * 4 + 1] = k_val_f4.y;
-                    k_tile_entry_ptr[d_chunk * 4 + 2] = k_val_f4.z;
-                    k_tile_entry_ptr[d_chunk * 4 + 3] = k_val_f4.w;
+                // Load the entire K-vector using float4 or float8 chunks depending on support
+#if kSupportsFloat8
+                if ((params.head_dim & 7u) == 0u) {
+                    device const half8* __attribute__((aligned(16))) k_vec_global_ptr_h8 = reinterpret_cast<device const half8*>(k_vector_global_ptr);
+                    threadgroup float8* k_tile_entry_f8 = reinterpret_cast<threadgroup float8*>(k_tile_entry_ptr);
+                    for (uint d_chunk = 0; d_chunk < params.head_dim / 8; ++d_chunk) {
+                        k_tile_entry_f8[d_chunk] = float8(k_vec_global_ptr_h8[d_chunk]);
+                    }
+                } else
+#endif
+                {
+                    device const half4* __attribute__((aligned(8))) k_vec_global_ptr_h4 = reinterpret_cast<device const half4*>(k_vector_global_ptr);
+                    for (uint d_chunk = 0; d_chunk < params.head_dim / 4; ++d_chunk) {
+                        half4 k_val_h4 = k_vec_global_ptr_h4[d_chunk];
+                        float4 k_val_f4 = float4(k_val_h4);
+                        k_tile_entry_ptr[d_chunk * 4 + 0] = k_val_f4.x;
+                        k_tile_entry_ptr[d_chunk * 4 + 1] = k_val_f4.y;
+                        k_tile_entry_ptr[d_chunk * 4 + 2] = k_val_f4.z;
+                        k_tile_entry_ptr[d_chunk * 4 + 3] = k_val_f4.w;
+                    }
                 }
             }
         }
@@ -247,16 +257,26 @@ using namespace metal;
             threadgroup float* v_tile_entry_ptr = V_tile + (local_thread_idx * padded_head_dim_hoisted);
 
             if (v_vector_global_ptr != nullptr) {
-                // Load the entire V-vector using float4 chunks
-                // Note: We only fill the actual head_dim elements, leaving padding untouched
-                device const half4* __attribute__((aligned(8))) v_vec_global_ptr_h4 = reinterpret_cast<device const half4*>(v_vector_global_ptr);
-                for (uint d_chunk = 0; d_chunk < params.head_dim / 4; ++d_chunk) {
-                    half4 v_val_h4 = v_vec_global_ptr_h4[d_chunk];
-                    float4 v_val_f4 = float4(v_val_h4);
-                    v_tile_entry_ptr[d_chunk * 4 + 0] = v_val_f4.x;
-                    v_tile_entry_ptr[d_chunk * 4 + 1] = v_val_f4.y;
-                    v_tile_entry_ptr[d_chunk * 4 + 2] = v_val_f4.z;
-                    v_tile_entry_ptr[d_chunk * 4 + 3] = v_val_f4.w;
+                // Load the entire V-vector using float4 or float8 chunks depending on support
+#if kSupportsFloat8
+                if ((params.head_dim & 7u) == 0u) {
+                    device const half8* __attribute__((aligned(16))) v_vec_global_ptr_h8 = reinterpret_cast<device const half8*>(v_vector_global_ptr);
+                    threadgroup float8* v_tile_entry_f8 = reinterpret_cast<threadgroup float8*>(v_tile_entry_ptr);
+                    for (uint d_chunk = 0; d_chunk < params.head_dim / 8; ++d_chunk) {
+                        v_tile_entry_f8[d_chunk] = float8(v_vec_global_ptr_h8[d_chunk]);
+                    }
+                } else
+#endif
+                {
+                    device const half4* __attribute__((aligned(8))) v_vec_global_ptr_h4 = reinterpret_cast<device const half4*>(v_vector_global_ptr);
+                    for (uint d_chunk = 0; d_chunk < params.head_dim / 4; ++d_chunk) {
+                        half4 v_val_h4 = v_vec_global_ptr_h4[d_chunk];
+                        float4 v_val_f4 = float4(v_val_h4);
+                        v_tile_entry_ptr[d_chunk * 4 + 0] = v_val_f4.x;
+                        v_tile_entry_ptr[d_chunk * 4 + 1] = v_val_f4.y;
+                        v_tile_entry_ptr[d_chunk * 4 + 2] = v_val_f4.z;
+                        v_tile_entry_ptr[d_chunk * 4 + 3] = v_val_f4.w;
+                    }
                 }
             }
         }
@@ -350,7 +370,15 @@ using namespace metal;
             // If m_global increased due to the current tile's m_local_tile,
             // previous contributions to acc_tile_local were effectively based on an older, smaller m_global.
             // This scale_for_acc_iter_atomic adjusts them to the new m_global for consistent normalization.
-            for (uint d = 0; d < params.head_dim; d += 4) {
+#if kSupportsFloat8
+            for (uint d = 0; d + 7 < params.head_dim; d += 8) {
+                thread float8* acc_chunk_ptr = reinterpret_cast<thread float8*>(acc_tile_local + d);
+                float8 acc_chunk = *acc_chunk_ptr;
+                acc_chunk *= scale_for_acc_iter_atomic;
+                *acc_chunk_ptr = acc_chunk;
+            }
+#endif
+            for (uint d = (params.head_dim & ~7u); d < params.head_dim; d += 4) {
                 float4 acc_chunk = float4(acc_tile_local[d],
                                         (d + 1 < params.head_dim) ? acc_tile_local[d+1] : 0.0f,
                                         (d + 2 < params.head_dim) ? acc_tile_local[d+2] : 0.0f,
@@ -373,17 +401,23 @@ using namespace metal;
             float exp_term = fast::exp(max(m_local_tile_val - m_global_current_iter_atomic, params.log_exp_min_clamp));
             float final_p_attn_weight_numerator = weight_term * exp_term;
 
-            for (uint d_idx = 0; d_idx < params.head_dim; d_idx += 4) {
+#if kSupportsFloat8
+            for (uint d_idx = 0; d_idx + 7 < params.head_dim; d_idx += 8) {
+                float8 v_chunk = *((thread const float8*)(v_vector_from_tile + d_idx));
+                v_chunk *= final_p_attn_weight_numerator;
+                thread float8* acc_ptr = reinterpret_cast<thread float8*>(acc_tile_local + d_idx);
+                *acc_ptr += v_chunk;
+            }
+#endif
+            for (uint d_idx = (params.head_dim & ~7u); d_idx < params.head_dim; d_idx += 4) {
                 float4 v_chunk;
                 v_chunk.x = v_vector_from_tile[d_idx];
                 v_chunk.y = (d_idx + 1 < params.head_dim) ? v_vector_from_tile[d_idx + 1] : 0.0f;
                 v_chunk.z = (d_idx + 2 < params.head_dim) ? v_vector_from_tile[d_idx + 2] : 0.0f;
                 v_chunk.w = (d_idx + 3 < params.head_dim) ? v_vector_from_tile[d_idx + 3] : 0.0f;
 
-                // Weighted contribution from this token's V-vector
                 v_chunk *= final_p_attn_weight_numerator;
 
-                // Accumulate into acc_tile_local
                 acc_tile_local[d_idx] += v_chunk.x;
                 if (d_idx + 1 < params.head_dim) acc_tile_local[d_idx + 1] += v_chunk.y;
                 if (d_idx + 2 < params.head_dim) acc_tile_local[d_idx + 2] += v_chunk.z;
@@ -399,8 +433,16 @@ using namespace metal;
     float s_global_final = (*tg_global_stats).y;
     float inv_s_global = (s_global_final > kEpsilonForZeroGuard) ? (1.0f / s_global_final) : 0.0f;
 
-    // Normalize the full acc_tile_local using float4 chunks
-    for (uint i = 0; i < params.head_dim; i += 4) {
+    // Normalize the full acc_tile_local using float8 where possible
+#if kSupportsFloat8
+    for (uint i = 0; i + 7 < params.head_dim; i += 8) {
+        thread float8* chunk_ptr = reinterpret_cast<thread float8*>(acc_tile_local + i);
+        float8 chunk = *chunk_ptr;
+        chunk *= inv_s_global;
+        *chunk_ptr = chunk;
+    }
+#endif
+    for (uint i = (params.head_dim & ~7u); i < params.head_dim; i += 4) {
         thread float4* chunk_ptr = reinterpret_cast<thread float4*>(acc_tile_local + i);
         float4 chunk = *chunk_ptr;
         chunk *= inv_s_global;
@@ -408,7 +450,43 @@ using namespace metal;
     }
 
     // Reduce the now-normalized acc_tile_local across the threadgroup and write to output_buffer
-    for (uint i = 0; i < params.head_dim; i += 4) {
+#if kSupportsFloat8
+    for (uint i = 0; i + 7 < params.head_dim; i += 8) {
+        float8 chunk_to_write = *((thread float8*)(acc_tile_local + i));
+        float4 chunk0 = float4(chunk_to_write[0], chunk_to_write[1], chunk_to_write[2], chunk_to_write[3]);
+        float4 chunk1 = float4(chunk_to_write[4], chunk_to_write[5], chunk_to_write[6], chunk_to_write[7]);
+        float4 reduced_chunk0;
+        reduced_chunk0.x = simd_sum(chunk0.x);
+        reduced_chunk0.y = simd_sum(chunk0.y);
+        reduced_chunk0.z = simd_sum(chunk0.z);
+        reduced_chunk0.w = simd_sum(chunk0.w);
+        float4 reduced_chunk1;
+        reduced_chunk1.x = simd_sum(chunk1.x);
+        reduced_chunk1.y = simd_sum(chunk1.y);
+        reduced_chunk1.z = simd_sum(chunk1.z);
+        reduced_chunk1.w = simd_sum(chunk1.w);
+
+        if (simd_lane_id == 0) {
+            tg_simd_v_chunk_sums[simd_group_id] = reduced_chunk0 + reduced_chunk1;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        if (local_thread_idx == 0) {
+            float4 final_output_chunk = float4(0.0f);
+            for (uint sg_idx = 0; sg_idx < num_simd_groups; ++sg_idx) {
+                final_output_chunk += tg_simd_v_chunk_sums[sg_idx];
+            }
+
+            uint output_base_idx = global_item_idx * params.head_dim + i;
+            output_buffer[output_base_idx + 0] = (half)final_output_chunk.x;
+            output_buffer[output_base_idx + 1] = (half)final_output_chunk.y;
+            output_buffer[output_base_idx + 2] = (half)final_output_chunk.z;
+            output_buffer[output_base_idx + 3] = (half)final_output_chunk.w;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+#endif
+    for (uint i = (params.head_dim & ~7u); i < params.head_dim; i += 4) {
         float4 chunk_to_write = float4(0.0f);
         if (i < params.head_dim)     chunk_to_write.x = acc_tile_local[i+0];
         if (i+1 < params.head_dim) chunk_to_write.y = acc_tile_local[i+1];
