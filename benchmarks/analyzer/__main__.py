@@ -25,9 +25,18 @@ logger = logging.getLogger(__name__)
 def process_cpp_file(file_data: dict) -> pd.DataFrame:
     benchmarks_data = file_data["benchmarks"]
     results_df = pd.DataFrame(benchmarks_data)
+
+    # Create group labels indicating both the implementation and whether it's a prefill or decode benchmark
     results_df["group"] = results_df["name"].apply(
-        lambda x: "cpp_pal_paged_attention" if "pal" in x.lower() else "cpp_mlx_sdpa"
+        lambda x: "cpp_pal_paged_attention_decode"
+        if "pal" in x.lower() and "decode" in x.lower()
+        else "cpp_mlx_sdpa_decode"
+        if "mlx" in x.lower() and "decode" in x.lower()
+        else "cpp_pal_paged_attention"
+        if "pal" in x.lower()
+        else "cpp_mlx_sdpa"
     )
+
     if "param" not in results_df.columns:
         results_df["param"] = results_df["name"].apply(lambda x: x.split("/")[1])
 
@@ -53,8 +62,16 @@ def process_cpp_file(file_data: dict) -> pd.DataFrame:
 def process_python_file(file_data: dict) -> pd.DataFrame:
     benchmarks_data = file_data["benchmarks"]
     results_df = pd.DataFrame(benchmarks_data)
+
+    # Create group labels indicating both the implementation and whether it's a prefill or decode benchmark
     results_df["group"] = results_df["name"].apply(
-        lambda x: "python_pal_paged_attention" if "pal" in x.lower() else "python_mlx_sdpa"
+        lambda x: "python_pal_paged_attention_decode"
+        if "pal" in x.lower() and "decode" in x.lower()
+        else "python_mlx_sdpa_decode"
+        if "mlx" in x.lower() and "decode" in x.lower()
+        else "python_pal_paged_attention"
+        if "pal" in x.lower()
+        else "python_mlx_sdpa"
     )
 
     results_df["sequence_length"] = results_df["param"].astype(float)

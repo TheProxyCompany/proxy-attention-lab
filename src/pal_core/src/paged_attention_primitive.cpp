@@ -328,17 +328,6 @@ static CoreDims validate_inputs_and_populate_initial_params(const std::vector<mx
          throw std::invalid_argument("[PAL Primitive Validate] num_items_to_process is 0 but query array is not empty.");
     }
 
-    // --- GQA Validation ---
-    if (dims.num_q_heads > dims.num_kv_heads) {
-        if (dims.num_kv_heads == 0) {
-            throw std::invalid_argument("[PAL Primitive Validate] GQA: num_kv_heads cannot be 0 if num_q_heads > 0.");
-        }
-        if (dims.num_q_heads % dims.num_kv_heads != 0) {
-            throw std::invalid_argument("[PAL Primitive Validate] GQA: num_q_heads (" + std::to_string(dims.num_q_heads) +
-                                       ") must be an integer multiple of num_kv_heads (" + std::to_string(dims.num_kv_heads) + ").");
-        }
-    }
-
     // --- Page Table Validation ---
     if (page_table.ndim() != 2) {
         throw std::invalid_argument("[PAL Primitive Validate] page_table must be 2D [NumBatchSeq, MaxLogBlocksPerSeq].");
