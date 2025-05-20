@@ -5,7 +5,7 @@ set -euo pipefail
 trap 'echo "ERROR: Script failed at line $LINENO" >&2' ERR
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BUILD_DIR="${PROJECT_ROOT}/build"
+BUILD_DIR="${PROJECT_ROOT}/build/xcode"
 GENERATOR="Xcode"
 CMAKE_ARGS=("-DCMAKE_BUILD_TYPE=Release")
 
