@@ -1,4 +1,4 @@
-// paged_attention.metal
+// paged_attention_prefill.metal
 // Metal shader implementation for paged attention operations with tiled V accumulation.
 //
 // Copyright 2024 The Proxy Company. All Rights Reserved.
@@ -22,7 +22,7 @@
 using namespace metal;
 
 /**
- * paged_attn_kernel
+ * paged_attn_prefill_kernel
  * -----------------
  * Fused paged attention for transformer models. Supports MHA, GQA and MQA with
  * vectorized loads, K/V caching and SIMD reductions. One threadgroup handles a
@@ -30,7 +30,7 @@ using namespace metal;
  * load & scale Q, tile K/V history, online softmax, accumulate V and final normalization.
  * Assumes params.head_dim is a multiple of 4, validated on host.
  */
-[[kernel]] void paged_attn_kernel(
+[[kernel]] void paged_attn_prefill_kernel(
     device      const half* queries_in              [[buffer(0)]],
     device      const half* k_cache_pool_in         [[buffer(1)]],
     device      const half* v_cache_pool_in         [[buffer(2)]],
@@ -40,6 +40,7 @@ using namespace metal;
     device      const int*  query_token_offset_in   [[buffer(6)]],
     constant    const PagedAttentionParams& params  [[buffer(7)]],
     device      half* output_buffer                 [[buffer(8)]],
+    uint actual_simd_width                          [[threads_per_simdgroup]],
     threadgroup float* tg_mem                       [[threadgroup(0)]],
     uint3       tg_pos_in_grid                      [[threadgroup_position_in_grid]],
     uint3       tg_dim                              [[threads_per_threadgroup]],
@@ -60,7 +61,7 @@ using namespace metal;
     uint global_item_idx = tg_pos_in_grid.x;    // Now identifies the query token, not query-head item
     uint token_idx = global_item_idx;           // For clarity: token_idx is now just global_item_idx
     uint local_thread_idx = local_idx_in_tg;    // Thread ID within this group
-    const uint num_simd_groups = max(1u, (tg_dim.x + kSimdLanesPerGroup - 1) / kSimdLanesPerGroup); // Calculate number of actual SIMD groups
+    const uint num_simd_groups = max(1u, (tg_dim.x + actual_simd_width - 1) / actual_simd_width);
 
     // --- 5/10: Threadgroup Memory Carving ---
     // Layout for reductions, statistics and vector caching.
@@ -221,7 +222,7 @@ using namespace metal;
             uint current_hist_tile_actual_len = min(params.tile_size_T_runtime, item_effective_history_length - hist_tile_start);
 
             // --- Load K-vectors into K_tile ---
-            const uint simd_size_const = kSimdLanesPerGroup; // Use our defined constant
+            const uint simd_size_const = actual_simd_width; // Use the new argument
             const uint threads_pg_const = tg_dim.x;          // Total threads launched for this group
             const uint num_sg_const = max(1u, (threads_pg_const + simd_size_const - 1) / simd_size_const);
             const uint rows_in_tile_const = current_hist_tile_actual_len;
@@ -230,7 +231,7 @@ using namespace metal;
             // Each SIMD group cooperatively loads one or more rows assigned to it
             for (uint row_idx_in_tile = simd_group_id; // SIMD group 'simd_group_id' starts with this row
                  row_idx_in_tile < rows_in_tile_const;
-                 row_idx_in_tile += num_sg_const) { // Strides by number of SIMD groups
+                 row_idx_in_tile += num_sg_const) {
 
                 // 1A. Get global pointer to the K-vector for this row_idx_in_tile
                 device const half* k_vector_global_ptr = fetch_kv_pointer(
@@ -254,7 +255,7 @@ using namespace metal;
                     // Lanes within this SIMD group load chunks of the K-vector for 'row_idx_in_tile'
                     for (uint chunk_idx_in_row = simd_lane_id; // Lane 'simd_lane_id' starts with this chunk
                          chunk_idx_in_row < chunks_per_row_const;
-                         chunk_idx_in_row += simd_size_const) { // Strides by SIMD width if head_dim > (simd_size * 4)
+                         chunk_idx_in_row += simd_size_const) {
 
                         half4 h4_val = src_h4_ptr[chunk_idx_in_row];    // Coalesced 16-byte read
                         dst_row_h4_ptr[chunk_idx_in_row] = h4_val;      // Store directly as half4

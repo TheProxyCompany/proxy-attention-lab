@@ -173,7 +173,8 @@ static void BM_PAL_LatencyVsSeqLen(benchmark::State& state) {
             page_table,
             sequence_lengths,
             query_to_seq_map,
-            query_token_offset
+            query_token_offset,
+            true // use prefill mode for this benchmark
         );
         out.eval();
     }
@@ -288,7 +289,8 @@ void BM_PAL_LatencyVsSeqLen_Setup(const ::benchmark::State& state) {
     mx::array warm = pal::cpp::paged_attention(
         queries, k_cache_pool, v_cache_pool,
         page_table, sequence_lengths,
-        query_to_seq_map, query_token_offset);
+        query_to_seq_map, query_token_offset,
+        true); // use prefill mode
     warm.eval();                  // wait for GPU
 }
 
@@ -355,7 +357,8 @@ static void BM_PAL_DecodeLatencyVsHistoryLen(benchmark::State& state) {
             page_table,
             sequence_lengths,
             query_to_seq_map,
-            query_token_offset
+            query_token_offset,
+            false // use decode mode for this benchmark
         );
         out.eval();
     }

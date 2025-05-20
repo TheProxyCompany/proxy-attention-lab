@@ -76,14 +76,15 @@ struct ThreadgroupMemoryLayout {
 
 static ThreadgroupMemoryLayout calculate_threadgroup_memory_breakdown_and_total(
     const PagedAttentionParams& params,
-    size_t threads_per_group // This is the target_threads_per_group for sizing fixed components
+    size_t threads_per_group, // This is the target_threads_per_group for sizing fixed components
+    size_t actual_simd_lanes_per_group // Added parameter for actual SIMD width
 ) {
     ThreadgroupMemoryLayout layout;
     uintptr_t tg_mem_current_offset_bytes = 0;
 
     // Calculate the number of SIMD groups based on the actual threads_per_group being dispatched
-    constexpr size_t kSimdLanesPerGroup = 32; // Should ideally match queried threadExecutionWidth
-    const uint32_t num_simd_groups = (threads_per_group + kSimdLanesPerGroup - 1) / kSimdLanesPerGroup;
+    // constexpr size_t kSimdLanesPerGroup = 32; // Should ideally match queried threadExecutionWidth
+    const uint32_t num_simd_groups = (threads_per_group + actual_simd_lanes_per_group - 1) / actual_simd_lanes_per_group;
 
     // 1. q_shmem: head_dim floats
     layout.q_shmem_bytes = params.head_dim * sizeof(float);
@@ -162,7 +163,8 @@ static ThreadgroupMemoryLayout calculate_final_params_and_memory_layout(
     const mx::array& k_pool_arr,
     const mx::array& page_table_arr,
     MTL::Device* mtl_device_ptr,
-    size_t target_threads_per_group
+    size_t target_threads_per_group,
+    size_t actual_simd_lanes_per_group // Added parameter for actual SIMD width
 ) {
     params.num_q_heads              = extracted_core_dims.num_q_heads;
     params.num_kv_heads             = extracted_core_dims.num_kv_heads;
@@ -208,7 +210,8 @@ static ThreadgroupMemoryLayout calculate_final_params_and_memory_layout(
     size_t precise_fixed_tg_mem_bytes =
     calculate_threadgroup_memory_breakdown_and_total(
         params_for_fixed_sizing,
-        target_threads_per_group // Use target_threads_per_group here
+        target_threads_per_group, // Use target_threads_per_group here
+        actual_simd_lanes_per_group // Pass actual_simd_lanes_per_group
     ).total_bytes - kFinalTgMemoryPaddingGuardBytes;
 
     // 1. Gather constants once
@@ -274,7 +277,7 @@ static ThreadgroupMemoryLayout calculate_final_params_and_memory_layout(
     }
 
     // Recalculate final total memory with the chosen tile_size_T_runtime
-    return calculate_threadgroup_memory_breakdown_and_total(params, target_threads_per_group);
+    return calculate_threadgroup_memory_breakdown_and_total(params, target_threads_per_group, actual_simd_lanes_per_group);
 }
 
 static CoreDims validate_inputs_and_populate_initial_params(const std::vector<mx::array>& inputs) {
@@ -374,12 +377,14 @@ PagedAttentionPrimitive::PagedAttentionPrimitive(
     int num_q_heads,
     int num_kv_heads,
     int head_dim,
-    int tokens_per_page)
-    : mx::UnaryPrimitive(mx::to_stream(stream_or_device)),
+    int tokens_per_page,
+    bool is_prefill
+) : mx::UnaryPrimitive(mx::to_stream(stream_or_device)),
       num_q_heads_(num_q_heads),
       num_kv_heads_(num_kv_heads),
       head_dim_(head_dim),
-      tokens_per_page_(tokens_per_page) { }
+      tokens_per_page_(tokens_per_page),
+      is_prefill_(is_prefill) { }
 
 void PagedAttentionPrimitive::eval_cpu(const std::vector<mx::array>& inputs, mx::array& out) {
     std::ostringstream oss;
@@ -434,8 +439,8 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
   auto& s = stream();
   auto& d = mlx::core::metal::device(s.device);
 
-const std::string library_name_for_mlx = "pal";
-  const std::string kernel_name = "paged_attn_kernel";
+  const std::string library_name_for_mlx = "pal";
+  const std::string kernel_name = is_prefill_ ? "paged_attn_prefill_kernel" : "paged_attn_decode_kernel";
   auto kernel_state_ = d.get_kernel(kernel_name, library_name_for_mlx);
   if (!kernel_state_) {
     throw std::runtime_error("[PAL Primitive] Failed to load kernel: " + kernel_name);
@@ -457,8 +462,8 @@ const std::string library_name_for_mlx = "pal";
   size_t execution_width = kernel_state_->threadExecutionWidth();
   size_t max_threads_device = kernel_state_->maxTotalThreadsPerThreadgroup();
 
-  // Use fixed thread count for both layout calculation and execution
-  size_t threads_to_launch = 64; // Default to 2 SIMD groups
+  // Use fixed thread count for both layout calculation and execution - reverted to original logic
+  size_t threads_to_launch = 64; // Default
   threads_to_launch = ((threads_to_launch + execution_width - 1) / execution_width) * execution_width; // Align to exec width
   threads_to_launch = std::min(threads_to_launch, max_threads_device); // Cap by device max
 
@@ -469,7 +474,8 @@ const std::string library_name_for_mlx = "pal";
       inputs[1], // k_pool
       inputs[3], // page_table
       device_ptr,
-      threads_to_launch // Use the same threads_to_launch for memory layout calculation
+      threads_to_launch, // Use the same threads_to_launch for memory layout calculation
+      execution_width    // Pass the actual execution_width here
   );
 
   // Use the same threads_to_launch for kernel execution
@@ -481,7 +487,7 @@ const std::string library_name_for_mlx = "pal";
       final_threads_to_launch,
       params_struct.tile_size_T_runtime,
       execution_width,
-      max_threads_device
+      execution_width
   );
 
   // Verify all pointers are valid before passing to Metal
@@ -492,13 +498,21 @@ const std::string library_name_for_mlx = "pal";
     throw std::runtime_error("Null input data pointers detected in paged attention primitive");
   }
 
-  // Use token-based dispatch grid for prefill
-  // For prefill, we want one threadgroup per query token, not one per query-token-head pair
-  size_t dispatch_grid_width = core_dims.query_token_count;
+  // Determine the dispatch grid width based on prefill or decode mode
+  size_t dispatch_grid_width;
+  if (is_prefill_) {
+      // For prefill, we want one threadgroup per query token, not one per query-token-head pair
+      dispatch_grid_width = core_dims.query_token_count;
+      spdlog::debug("[PAL Primitive Dispatch] PREFILL MODE: Using token-based dispatch grid width: {}", dispatch_grid_width);
+      spdlog::debug("[PAL Primitive Dispatch] Using token-based dispatch: {} tokens instead of {} items",
+                  dispatch_grid_width, core_dims.num_items_to_process);
+  } else {
+      // For decode mode, we use item-based dispatch (one threadgroup per query-token-head pair)
+      dispatch_grid_width = core_dims.num_items_to_process;
+      spdlog::debug("[PAL Primitive Dispatch] DECODE MODE: Using item-based dispatch grid width: {}", dispatch_grid_width);
+  }
 
   spdlog::debug("[PAL Primitive Dispatch] Dispatching kernel with tile_size_T_runtime: {}", params_struct.tile_size_T_runtime);
-  spdlog::debug("[PAL Primitive Dispatch] Using token-based dispatch: {} tokens instead of {} items",
-                dispatch_grid_width, core_dims.num_items_to_process);
 
   // Call the dispatch_metal_kernel helper with all needed parameters
   dispatch_metal_kernel(
@@ -508,7 +522,7 @@ const std::string library_name_for_mlx = "pal";
       out,
       params_struct,
       memory_layout.total_bytes,
-      dispatch_grid_width, // Use token count instead of query-head item count
+      dispatch_grid_width, // Use appropriate grid width based on mode
       final_threads_to_launch // Pass the dynamically sized thread count
   );
 }
@@ -525,7 +539,8 @@ bool PagedAttentionPrimitive::is_equivalent(const mx::Primitive& other) const {
   return (this->num_q_heads_ == other_pa.num_q_heads_ &&
           this->num_kv_heads_ == other_pa.num_kv_heads_ &&
           this->head_dim_ == other_pa.head_dim_ &&
-          this->tokens_per_page_ == other_pa.tokens_per_page_);
+          this->tokens_per_page_ == other_pa.tokens_per_page_ &&
+          this->is_prefill_ == other_pa.is_prefill_);
 }
 
 std::vector<mx::array> PagedAttentionPrimitive::vjp(
@@ -585,7 +600,9 @@ std::vector<mx::Shape> PagedAttentionPrimitive::output_shapes(
 }
 
 void PagedAttentionPrimitive::print(std::ostream& os) {
-  os << "PagedAttentionPrimitive(num_q_heads=" << num_q_heads_ << ", num_kv_heads=" << num_kv_heads_ << ", head_dim=" << head_dim_ << ", tokens_per_page=" << tokens_per_page_ << ")";
+  os << "PagedAttentionPrimitive(num_q_heads=" << num_q_heads_ << ", num_kv_heads=" << num_kv_heads_
+     << ", head_dim=" << head_dim_ << ", tokens_per_page=" << tokens_per_page_
+     << ", is_prefill=" << (is_prefill_ ? "true" : "false") << ")";
 }
 
 }  // namespace pal::cpp

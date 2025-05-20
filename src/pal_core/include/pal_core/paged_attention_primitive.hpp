@@ -49,12 +49,16 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
    * @param num_kv_heads Number of key/value heads in the attention mechanism
    * @param head_dim Hidden dimension size per attention head
    * @param tokens_per_page Number of tokens stored in each memory page
+   * @param is_prefill Whether to perform prefill or decoding
    */
-  explicit PagedAttentionPrimitive(mx::StreamOrDevice stream,
-                                   int num_q_heads = 0,
-                                   int num_kv_heads = 0,
-                                   int head_dim = 0,
-                                   int tokens_per_page = 0);
+  explicit PagedAttentionPrimitive(
+    mx::StreamOrDevice stream,
+    int num_q_heads = 0,
+    int num_kv_heads = 0,
+    int head_dim = 0,
+    int tokens_per_page = 0,
+    bool is_prefill = true
+  );
 
   /**
    * @brief Evaluates the primitive on CPU.
@@ -105,6 +109,7 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
   int num_kv_heads_;
   int head_dim_;
   int tokens_per_page_;
+  bool is_prefill_;
 
   /**
    * @brief Implements vector-Jacobian product for backpropagation.
