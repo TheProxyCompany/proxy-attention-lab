@@ -27,7 +27,7 @@ Options:
   --help              Show this help message.
 
 Example:
-  $(basename "$0") --clean --cmake-arg -DPAL_ENABLE_DEBUG_LOGGING=ON
+  $(basename "$0") --clean --cmake-arg -DCMAKE_BUILD_TYPE=Release
 EOF
 }
 

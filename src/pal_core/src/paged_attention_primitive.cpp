@@ -420,6 +420,9 @@ void PagedAttentionPrimitive::dispatch_metal_kernel(
   MTL::Size threadgroups_per_grid = MTL::Size(items_to_process_count, 1, 1);
   MTL::Size threads_per_threadgroup = MTL::Size(threads_per_group_count, 1, 1);
 
+  spdlog::debug("[PAL Primitive Dispatch] Dispatching kernel with items_to_process_count: {}", items_to_process_count);
+  spdlog::debug("[PAL Primitive Dispatch] Dispatching kernel with threads_per_group_count: {}", threads_per_group_count);
+
   // Set the threadgroup memory length and dispatch the kernel
   compute_encoder.set_threadgroup_memory_length(total_tg_memory_bytes, 0);
   compute_encoder.dispatch_threadgroups(threadgroups_per_grid, threads_per_threadgroup);
