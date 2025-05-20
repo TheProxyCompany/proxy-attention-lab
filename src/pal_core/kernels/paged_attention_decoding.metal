@@ -490,4 +490,5 @@ using namespace metal;
         threadgroup_barrier(mem_flags::mem_threadgroup); // Sync before next chunk
     }
 
+
 } // End of kernel

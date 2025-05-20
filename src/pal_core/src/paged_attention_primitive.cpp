@@ -45,9 +45,8 @@ namespace mx = mlx::core;
 
 namespace pal::cpp {
 
-// fp16 - log(2^-24) = -16.6355
-constexpr static float kLogFp16DenormMinVal = -16.6355f;
-constexpr static uint32_t kDefaultPaddingFloatsPerRow = 16;
+constexpr static float kLogFp16DenormMinVal = -88.0f;
+constexpr static uint32_t kDefaultPaddingFloatsPerRow = 4;
 
 struct CoreDims {
     uint32_t head_dim{0};
