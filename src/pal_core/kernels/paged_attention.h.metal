@@ -224,22 +224,24 @@ static inline void zero_output_vector_for_item(
 /**
  * Computes the dot product between a query vector and a key vector in threadgroup memory.
  * Efficient vectorized implementation that assumes head_dim is a multiple of 4.
+ * This version accepts K-vector in half precision and converts to float on-the-fly.
  *
- * @param q_vec_shmem_param Pointer to query vector in shared memory
- * @param k_vec_tile_entry_param Pointer to key vector in threadgroup memory (K_tile)
+ * @param q_vec_shmem_param Pointer to query vector in shared memory (float)
+ * @param k_vec_tile_entry_param Pointer to key vector in threadgroup memory (K_tile, half precision)
  * @param kernel_params Kernel parameters struct with head_dim
  * @return The dot product result as a float
  */
 static inline float dot_product_qk(
     threadgroup const float* q_vec_shmem_param,
-    threadgroup const float* k_vec_tile_entry_param,
+    threadgroup const half* k_vec_tile_entry_param,
     constant const PagedAttentionParams& kernel_params
 ) {
     float score = 0.0f;
     // The helper assumes it's always called for a full head_dim that's a multiple of 4.
     for(uint d = 0; d < kernel_params.head_dim; d += 4) {
         float4 qv = *((threadgroup const float4*)(q_vec_shmem_param + d));
-        float4 kv = *((threadgroup const float4*)(k_vec_tile_entry_param + d));
+        // Convert from half4 to float4 on-the-fly
+        float4 kv = float4(*((threadgroup const half4*)(k_vec_tile_entry_param + d)));
         score += dot(qv, kv);
     }
     return score;

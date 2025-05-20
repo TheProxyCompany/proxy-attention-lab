@@ -36,7 +36,7 @@ namespace mx = mlx::core;
 struct BenchmarkSpdlogInitializer {
     BenchmarkSpdlogInitializer() {
         // Set default log level for benchmarks to warning to reduce noise
-        spdlog::set_level(spdlog::level::debug);
+        spdlog::set_level(spdlog::level::warn);
         spdlog::info("PAL C++ Benchmarks: spdlog level set to 'warn'. Debug/trace messages from pal_core_lib will be suppressed.");
     }
 };
@@ -50,7 +50,7 @@ struct BaselineConfig {
     int seq_len = 2048;  // tokens
     int num_q_heads = 32;
     int num_kv_heads = 16;
-    int head_dim = 128; // bottleneck dim
+    int head_dim = 16; // bottleneck dim
     int tokens_per_page = 64;
     mx::Dtype dtype = mx::float16;
 };
@@ -164,6 +164,14 @@ static void BM_PAL_LatencyVsSeqLen(benchmark::State& state) {
     // Create query token offsets: [num_tokens]
     mx::array query_token_offset = create_query_token_offset(batch_size, seq_len);
 
+    queries.eval();
+    k_cache_pool.eval();
+    v_cache_pool.eval();
+    page_table.eval();
+    sequence_lengths.eval();
+    query_to_seq_map.eval();
+    query_token_offset.eval();
+
     // Main benchmark loop
     for (auto _ : state) {
         mx::array out = pal::cpp::paged_attention(
@@ -184,6 +192,7 @@ static void BM_MLX_SDPA_LatencyVsSeqLen(benchmark::State& state) {
     // Create parameters with the fixed batch size and specified sequence length
     BaselineConfig params;
     params.seq_len = state.range(0); // Use the sequence length from benchmark args
+
 
     // Extract params to local variables for clarity
     int batch_size = params.batch_size;
@@ -219,6 +228,10 @@ static void BM_MLX_SDPA_LatencyVsSeqLen(benchmark::State& state) {
     spdlog::info("  values shape: [{}, {}, {}, {}]", batch_size, num_kv_heads, seq_len, head_dim);
     spdlog::info("  causal_mask shape: [{}, {}]", seq_len, seq_len);
 
+    queries.eval();
+    keys.eval();
+    values.eval();
+    causal_mask.eval();
 
     // Main benchmark loop
     for (auto _ : state) {
@@ -349,6 +362,13 @@ static void BM_PAL_DecodeLatencyVsHistoryLen(benchmark::State& state) {
     }
     mx::array query_token_offset = mx::array(offset_data.data(), {batch_size}, mx::int32);
 
+    queries.eval();
+    k_cache_pool.eval();
+    v_cache_pool.eval();
+    page_table.eval();
+    sequence_lengths.eval();
+    query_to_seq_map.eval();
+    query_token_offset.eval();
 
     // Main benchmark loop
     for (auto _ : state) {
@@ -409,6 +429,11 @@ static void BM_MLX_SDPA_DecodeLatencyVsHistoryLen(benchmark::State& state) {
     spdlog::info("  values shape: [{}, {}, {}, {}]", batch_size, num_kv_heads, history_len, head_dim);
     spdlog::info("  mask shape: [{}, {}]", 1, history_len);
 
+    queries.eval();
+    keys.eval();
+    values.eval();
+    mask.eval();
+
     // Main benchmark loop
     for (auto _ : state) {
         mx::array out = mx::fast::scaled_dot_product_attention(
@@ -425,37 +450,23 @@ static void BM_MLX_SDPA_DecodeLatencyVsHistoryLen(benchmark::State& state) {
 }
 
 BENCHMARK(BM_PAL_LatencyVsSeqLen)
-    ->Arg(64)->Iterations(1)->Repetitions(5)->Setup(BM_PAL_LatencyVsSeqLen_Setup)
-    // ->Arg(128)
-    ->Arg(256)->Iterations(1)->Repetitions(5)
-    // ->Arg(512)
-    ->Arg(1024)->Iterations(1)->Repetitions(5);
-    // ->Arg(2048)
-    // ->Arg(4096);
+    ->Arg(64)->Iterations(1)->Repetitions(1)->Setup(BM_PAL_LatencyVsSeqLen_Setup)
+    ->Arg(512)->Iterations(1)->Repetitions(1)
+    ->Arg(1024)->Iterations(1)->Repetitions(1);
 
 BENCHMARK(BM_MLX_SDPA_LatencyVsSeqLen)
-    ->Arg(64)->Iterations(1)->Repetitions(5)
-    // ->Arg(128)
-    ->Arg(256)->Iterations(1)->Repetitions(5)
-    // ->Arg(512)
-    ->Arg(1024)->Iterations(1)->Repetitions(5);
-    // ->Arg(2048)
-    // ->Arg(4096);
+    ->Arg(64)->Iterations(1)->Repetitions(1)
+    ->Arg(512)->Iterations(1)->Repetitions(1)
+    ->Arg(1024)->Iterations(1)->Repetitions(1);
 
 BENCHMARK(BM_PAL_DecodeLatencyVsHistoryLen)
-    ->Arg(1024)->Iterations(1)->Repetitions(5)
-    // ->Arg(2048)->Iterations(1)->Repetitions(1)
-    ->Arg(4096)->Iterations(1)->Repetitions(5)
-    // ->Arg(8192)->Iterations(1)->Repetitions(1)
-    // ->Arg(16384)->Iterations(1)->Repetitions(1)
-    ->Arg(32768)->Iterations(1)->Repetitions(5);
+    ->Arg(1024)->Iterations(1)->Repetitions(1)
+    ->Arg(2048)->Iterations(1)->Repetitions(1)
+    ->Arg(4096)->Iterations(1)->Repetitions(1);
 
 BENCHMARK(BM_MLX_SDPA_DecodeLatencyVsHistoryLen)
-    ->Arg(1024)->Iterations(1)->Repetitions(5)
-    // ->Arg(2048)->Iterations(1)->Repetitions(1)
-    ->Arg(4096)->Iterations(1)->Repetitions(5)
-    // ->Arg(8192)->Iterations(1)->Repetitions(1)
-    // ->Arg(16384)->Iterations(1)->Repetitions(1)
-    ->Arg(32768)->Iterations(1)->Repetitions(5);
+    ->Arg(1024)->Iterations(1)->Repetitions(1)
+    ->Arg(2048)->Iterations(1)->Repetitions(1)
+    ->Arg(4096)->Iterations(1)->Repetitions(1);
 
 BENCHMARK_MAIN();

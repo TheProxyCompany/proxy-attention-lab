@@ -28,6 +28,9 @@
 #include <limits>
 #include <spdlog/spdlog.h>
 
+// Define half type for memory calculations (matching Metal's half type)
+using half = short;
+
 // MLX and Metal includes
 #include <mlx/allocator.h>
 #include <mlx/array.h>
@@ -125,15 +128,15 @@ static ThreadgroupMemoryLayout calculate_threadgroup_memory_breakdown_and_total(
     // Use pad_floats_per_row from params (should be already set by caller)
     uint32_t padded_head_dim_for_tile = params.head_dim + params.pad_floats_per_row;
 
-    // K_tile requires tile_size_T_runtime * padded_head_dim_for_tile * sizeof(float) bytes
-    layout.k_tile_bytes = params.tile_size_T_runtime * padded_head_dim_for_tile * sizeof(float);
+    // K_tile requires tile_size_T_runtime * padded_head_dim_for_tile * sizeof(half) bytes
+    layout.k_tile_bytes = params.tile_size_T_runtime * padded_head_dim_for_tile * sizeof(half);
     tg_mem_current_offset_bytes += layout.k_tile_bytes;
 
     // 9. V Tile memory - for caching V vectors with padding for bank conflict avoidance
     tg_mem_current_offset_bytes = (tg_mem_current_offset_bytes + kAlignmentMask) & ~kAlignmentMask;
 
-    // V_tile requires tile_size_T_runtime * padded_head_dim_for_tile * sizeof(float) bytes
-    layout.v_tile_bytes = params.tile_size_T_runtime * padded_head_dim_for_tile * sizeof(float);
+    // V_tile requires tile_size_T_runtime * padded_head_dim_for_tile * sizeof(half) bytes
+    layout.v_tile_bytes = params.tile_size_T_runtime * padded_head_dim_for_tile * sizeof(half);
     tg_mem_current_offset_bytes += layout.v_tile_bytes;
 
     // 10. Per-sequence page-table slice
@@ -223,8 +226,8 @@ static ThreadgroupMemoryLayout calculate_final_params_and_memory_layout(
 
     // 3. Compute "bytes per history token" for dynamic tiles (K_tile + V_tile) with padding
     uint32_t padded_head_dim_for_tile_calc = params.head_dim + params.pad_floats_per_row;
-    size_t bytes_per_token_in_tile = (padded_head_dim_for_tile_calc * sizeof(float)) /*K_tile_padded*/ +
-                                    (padded_head_dim_for_tile_calc * sizeof(float)) /*V_tile_padded*/;
+    size_t bytes_per_token_in_tile = (padded_head_dim_for_tile_calc * sizeof(half)) /*K_tile_half_padded*/ +
+                                    (padded_head_dim_for_tile_calc * sizeof(half)) /*V_tile_half_padded*/;
     // 4. Raw ceiling that actually fits
     uint32_t max_T_fit = 0;
     if (tg_limit > fixed_mem + guard) { // Ensure there's some memory left for dynamic parts
@@ -244,7 +247,7 @@ static ThreadgroupMemoryLayout calculate_final_params_and_memory_layout(
     }
 
     // 6. heuristic bump (but never past the limit of max_T_fit)
-    uint32_t desired_T = (params.head_dim <= 256) ? 64u : min_T_soft;
+    uint32_t desired_T = (params.head_dim <= 256) ? 16u : min_T_soft;
     desired_T = std::min(desired_T, practical_max_T);
 
     if (max_T_fit >= desired_T) {
@@ -262,9 +265,6 @@ static ThreadgroupMemoryLayout calculate_final_params_and_memory_layout(
     if (params.tile_size_T_runtime > 0) {
        params.tile_size_T_runtime = (params.tile_size_T_runtime / align_val) * align_val;
        if (params.tile_size_T_runtime == 0) params.tile_size_T_runtime = align_val; // Ensure not zero if it was viable
-    } else {
-        // This case should ideally be caught by max_T_fit == 0 check earlier
-        throw std::runtime_error("[PAL Primitive] tile_size_T_runtime became 0 after all adjustments.");
     }
 
     if (params.tile_size_T_runtime == 0) {

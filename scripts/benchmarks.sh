@@ -517,6 +517,8 @@ main() {
 
     # run unit tests just to be sure
     pytest tests/
+
+    open "${BENCHMARK_OUTPUT_ROOT}/latency_vs_seq_len.png"
 }
 
 # --- Script Execution ---

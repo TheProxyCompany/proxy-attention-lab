@@ -1,5 +1,5 @@
 [build-system]
-requires = ["py-build-cmake", "nanobind==2.5.0"]
+requires = ["py_build_cmake", "nanobind==2.5.0"]
 build-backend = "py_build_cmake.build"
 
 [project]
@@ -11,7 +11,7 @@ requires-python = ">=3.11"
 
 dependencies = [
     "nanobind==2.5.0",
-    "py-build-cmake",
+    "py_build_cmake",
     "pytest",
     "pytest-xdist",
     "pytest-benchmark",
