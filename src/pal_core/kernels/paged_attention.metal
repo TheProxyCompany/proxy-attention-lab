@@ -211,7 +211,6 @@ using namespace metal;
         uint current_hist_tile_actual_len = min(params.tile_size_T_runtime, item_effective_history_length - hist_tile_start);
 
         // --- Load K-vectors into K_tile ---
-
         const uint simd_size_const = kSimdLanesPerGroup; // Use our defined constant
         const uint threads_pg_const = tg_dim.x;          // Total threads launched for this group
         const uint num_sg_const = max(1u, (threads_pg_const + simd_size_const - 1) / simd_size_const);
@@ -259,6 +258,7 @@ using namespace metal;
                 }
             }
         } // end for row_idx_in_tile
+        threadgroup_barrier(mem_flags::mem_threadgroup); // Ensure K_tile is fully populated before use
 
         // --- Load V-vectors into V_tile ---
         // (Constants simd_size_const, threads_pg_const, num_sg_const,
@@ -305,6 +305,7 @@ using namespace metal;
                 }
             }
         } // end for row_idx_in_tile
+        threadgroup_barrier(mem_flags::mem_threadgroup); // Ensure K_tile is fully populated before use
 
         // --- 10.1.1/10: History Tile - Score Calculation (no stashing in fused path) ---
         float thread_score_val = -INFINITY; // Default to a state that would lead to zero contribution
@@ -390,7 +391,7 @@ using namespace metal;
             );
         }
         // All threads use updated global stats and scale factor for the next iteration
-        threadgroup_barrier(mem_flags::mem_threadgroup); // Full barrier to ensure tg_global_stats and tg_simd_reduce_scratch are visible to all threads
+        threadgroup_barrier(mem_flags::mem_threadgroup);
 
         float m_global_current_iter_atomic = (*tg_global_stats).x;
         float scale_for_acc_iter_atomic = tg_simd_reduce_scratch[0]; // This is scale_f from update_softmax_stats_kahan
@@ -475,6 +476,8 @@ using namespace metal;
         if (simd_lane_id == 0) {
             tg_simd_v_chunk_sums[simd_group_id] = reduced_simd_group_final_chunk;
         }
+        // Wait for all simd groups to produce their partial sums before thread 0 combines them
+        threadgroup_barrier(mem_flags::mem_threadgroup);
 
         if (local_thread_idx == 0) {
             float4 final_output_chunk = float4(0.0f);
@@ -489,6 +492,7 @@ using namespace metal;
             if (i+3 < params.head_dim) output_buffer[output_base_idx + 3] = (half)final_output_chunk.w;
         }
         // Reuse tg_simd_v_chunk_sums for the next chunk, ensure previous values consumed
+        threadgroup_barrier(mem_flags::mem_threadgroup); // Sync before next chunk
     }
 
 } // End of kernel

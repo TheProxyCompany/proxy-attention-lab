@@ -47,7 +47,7 @@ namespace pal::cpp {
 
 // fp16 - log(2^-24) = -16.6355
 constexpr static float kLogFp16DenormMinVal = -16.6355f;
-constexpr static uint32_t kDefaultPaddingFloatsPerRow = 4;
+constexpr static uint32_t kDefaultPaddingFloatsPerRow = 16;
 
 struct CoreDims {
     uint32_t head_dim{0};
@@ -162,7 +162,7 @@ static ThreadgroupMemoryLayout calculate_final_params_and_memory_layout(
     const mx::array& k_pool_arr,
     const mx::array& page_table_arr,
     MTL::Device* mtl_device_ptr,
-    size_t target_threads_per_group // Renamed from threads_per_item_group_for_dispatch
+    size_t target_threads_per_group
 ) {
     params.num_q_heads              = extracted_core_dims.num_q_heads;
     params.num_kv_heads             = extracted_core_dims.num_kv_heads;
@@ -247,7 +247,7 @@ static ThreadgroupMemoryLayout calculate_final_params_and_memory_layout(
     }
 
     // 6. heuristic bump (but never past the limit of max_T_fit)
-    uint32_t desired_T = (params.head_dim <= 256) ? 16u : min_T_soft;
+    uint32_t desired_T = (params.head_dim <= 256) ? 64u : min_T_soft;
     desired_T = std::min(desired_T, practical_max_T);
 
     if (max_T_fit >= desired_T) {
@@ -449,47 +449,15 @@ const std::string library_name_for_mlx = "pal";
   // Populate initial parts directly for head_dim check
   params_struct.head_dim = core_dims.head_dim;
 
-  // --- Determine initial threads_per_group for memory layout calculation ---
+  // --- Determine threads per group for kernel execution ---
   auto* device_ptr = d.mtl_device(); // Get device_ptr earlier
   size_t execution_width = kernel_state_->threadExecutionWidth();
   size_t max_threads_device = kernel_state_->maxTotalThreadsPerThreadgroup();
 
-  // For memory layout calculation, we'll use a representative value that's large enough
-  // to accommodate typical SIMD operations (especially reductions)
-  const size_t default_tpg_for_layout_calc = 64; // Use a representative value for layout
-  size_t tpg_for_layout_calc = std::min(default_tpg_for_layout_calc, max_threads_device);
-
-  if (tpg_for_layout_calc == 0) { // Safety check
-      throw std::runtime_error("[PAL Primitive] tpg_for_layout_calc is 0.");
-  }
-
-  spdlog::debug("[PAL Primitive Dispatch] Initial tpg_for_layout_calc: {} (execution_width: {}, max_threads_device: {})",
-                 tpg_for_layout_calc, execution_width, max_threads_device);
-
-
-  // Check if essential fixed parts of threadgroup memory (like Q-cache) would overflow
-  // This check is a rough estimate before detailed calculation.
-  size_t max_tg_memory_bytes = device_ptr->maxThreadgroupMemoryLength();
-
-  PagedAttentionParams temp_params_for_q_check; // Use a more descriptive name
-  temp_params_for_q_check.head_dim = core_dims.head_dim;
-  // Initialize other params that affect fixed memory to typical values or 0 if not directly involved in q_shmem
-  temp_params_for_q_check.tile_size_T_runtime = 0; // K/V tiles are not considered here
-  temp_params_for_q_check.pad_floats_per_row = 0;  // Not relevant for q_shmem
-  temp_params_for_q_check.max_logical_blocks_per_seq = 0; // Page table slice not primary concern for this specific check
-
-  ThreadgroupMemoryLayout q_shmem_focused_layout = calculate_threadgroup_memory_breakdown_and_total(temp_params_for_q_check, tpg_for_layout_calc);
-  spdlog::debug("[PAL Primitive Dispatch] Preliminary check: q_shmem_bytes estimate: {}", q_shmem_focused_layout.q_shmem_bytes);
-
-
-  if (q_shmem_focused_layout.q_shmem_bytes > max_tg_memory_bytes) { // Check q_shmem_bytes specifically
-    throw std::runtime_error(
-        "[PagedAttentionPrimitive] q_shmem size alone (" +
-        std::to_string(q_shmem_focused_layout.q_shmem_bytes) + " bytes) for head_dim " + std::to_string(core_dims.head_dim) +
-        " exceeds device's maximum threadgroup memory (" +
-        std::to_string(max_tg_memory_bytes) + " bytes). Reduce head_dim.");
-  }
-
+  // Use fixed thread count for both layout calculation and execution
+  size_t threads_to_launch = 64; // Default to 2 SIMD groups
+  threads_to_launch = ((threads_to_launch + execution_width - 1) / execution_width) * execution_width; // Align to exec width
+  threads_to_launch = std::min(threads_to_launch, max_threads_device); // Cap by device max
 
   // Call helper to populate the remaining attention parameters and calculate final memory layout
   ThreadgroupMemoryLayout memory_layout = calculate_final_params_and_memory_layout(
@@ -498,38 +466,19 @@ const std::string library_name_for_mlx = "pal";
       inputs[1], // k_pool
       inputs[3], // page_table
       device_ptr,
-      tpg_for_layout_calc // Use tpg_for_layout_calc for memory layout calculation
+      threads_to_launch // Use the same threads_to_launch for memory layout calculation
   );
 
-  // --- Calculate final threads_to_launch for actual dispatch based on tile_size_T_runtime ---
-  // Now that params_struct.tile_size_T_runtime is finalized, calculate the optimal thread count
-  size_t threads_needed_for_tile = static_cast<size_t>(params_struct.tile_size_T_runtime);
-
-  // Align threads_needed_for_tile up to execution_width
-  size_t aligned_threads_for_tile =
-      ((threads_needed_for_tile + execution_width - 1) / execution_width) * execution_width;
-
-  // Ensure at least one execution_width is launched
-  size_t final_threads_to_launch = std::max(execution_width, aligned_threads_for_tile);
-
-  // Cap by device's maxTotalThreadsPerThreadgroup
-  final_threads_to_launch = std::min(final_threads_to_launch, max_threads_device);
-
-  // Also cap by the tpg_for_layout_calc if reductions depend on it
-  // We can launch FEWER threads than used for layout calc, but not MORE
-  final_threads_to_launch = std::min(final_threads_to_launch, tpg_for_layout_calc);
-
-  // And ensure it's still at least execution_width after this cap
-  final_threads_to_launch = std::max(execution_width, final_threads_to_launch);
+  // Use the same threads_to_launch for kernel execution
+  size_t final_threads_to_launch = threads_to_launch;
 
   spdlog::debug(
-      "[PAL Primitive Dispatch] tile_size_T_runtime: {}, execution_width: {}, "
-      "tpg_for_layout_calc: {}, max_threads_device: {}, calculated final_threads_to_launch: {}",
+      "[PAL Primitive Dispatch] Using fixed threads_to_launch: {}, tile_size_T_runtime: {}, "
+      "execution_width: {}, max_threads_device: {}",
+      final_threads_to_launch,
       params_struct.tile_size_T_runtime,
       execution_width,
-      tpg_for_layout_calc,
-      max_threads_device,
-      final_threads_to_launch
+      max_threads_device
   );
 
   // Verify all pointers are valid before passing to Metal

@@ -36,7 +36,7 @@ namespace mx = mlx::core;
 struct BenchmarkSpdlogInitializer {
     BenchmarkSpdlogInitializer() {
         // Set default log level for benchmarks to warning to reduce noise
-        spdlog::set_level(spdlog::level::warn);
+        spdlog::set_level(spdlog::level::debug);
         spdlog::info("PAL C++ Benchmarks: spdlog level set to 'warn'. Debug/trace messages from pal_core_lib will be suppressed.");
     }
 };
@@ -46,7 +46,7 @@ static BenchmarkSpdlogInitializer global_benchmark_spdlog_initializer;
 // Define baseline configuration for benchmarks - matching the Python version exactly
 // Gemma 3 Model Config, 2048 tokens
 struct BaselineConfig {
-    int batch_size = 64;
+    int batch_size = 1;
     int seq_len = 2048;  // tokens
     int num_q_heads = 32;
     int num_kv_heads = 16;
@@ -173,8 +173,7 @@ static void BM_PAL_LatencyVsSeqLen(benchmark::State& state) {
             page_table,
             sequence_lengths,
             query_to_seq_map,
-            query_token_offset,
-            mx::Device::gpu
+            query_token_offset
         );
         out.eval();
     }
@@ -228,8 +227,7 @@ static void BM_MLX_SDPA_LatencyVsSeqLen(benchmark::State& state) {
             values,
             scale,
             "array",
-            {causal_mask},
-            mx::Device::gpu
+            {causal_mask}
         );
         out.eval();
     }
@@ -290,8 +288,7 @@ void BM_PAL_LatencyVsSeqLen_Setup(const ::benchmark::State& state) {
     mx::array warm = pal::cpp::paged_attention(
         queries, k_cache_pool, v_cache_pool,
         page_table, sequence_lengths,
-        query_to_seq_map, query_token_offset,
-        mx::Device::gpu);
+        query_to_seq_map, query_token_offset);
     warm.eval();                  // wait for GPU
 }
 
@@ -358,8 +355,7 @@ static void BM_PAL_DecodeLatencyVsHistoryLen(benchmark::State& state) {
             page_table,
             sequence_lengths,
             query_to_seq_map,
-            query_token_offset,
-            mx::Device::gpu
+            query_token_offset
         );
         out.eval();
     }
@@ -416,15 +412,14 @@ static void BM_MLX_SDPA_DecodeLatencyVsHistoryLen(benchmark::State& state) {
             values,
             scale,
             "array",
-            {mask}, // Provide mask that allows full attention
-            mx::Device::gpu
+            {mask}
         );
         out.eval();
     }
 }
 
-const int REPETITIONS = 3;
-const int ITERATIONS = 1;
+const int REPETITIONS = 1;
+const int ITERATIONS = 3;
 
 BENCHMARK(BM_PAL_LatencyVsSeqLen)
     ->Arg(64)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)->Setup(BM_PAL_LatencyVsSeqLen_Setup)

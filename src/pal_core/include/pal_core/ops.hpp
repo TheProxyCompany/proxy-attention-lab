@@ -54,7 +54,7 @@ mx::array paged_attention(
     const mx::array& sequence_lengths,
     const mx::array& query_to_seq_map,
     const mx::array& query_token_offset,
-    mx::StreamOrDevice stream
+    mx::StreamOrDevice stream = {}
 );
 
 }  // namespace pal::cpp
