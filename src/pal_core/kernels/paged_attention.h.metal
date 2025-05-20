@@ -205,6 +205,9 @@ static inline void update_softmax_stats_kahan(
  * Zeros out the output vector for a given item when an early exit condition is met.
  * This helper centralizes the logic for output zeroing in early exit conditions.
  *
+ * Note: This function is now deprecated in favor of direct zeroing in the kernel
+ * which handles all query heads for a token. This is kept for backwards compatibility.
+ *
  * @param item_global_idx The global item index for which to zero the output
  * @param output_buffer_param Output buffer to write zeros to
  * @param kernel_params Kernel parameters struct with head_dim

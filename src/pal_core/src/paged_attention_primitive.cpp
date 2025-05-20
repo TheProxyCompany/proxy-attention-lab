@@ -492,7 +492,13 @@ const std::string library_name_for_mlx = "pal";
     throw std::runtime_error("Null input data pointers detected in paged attention primitive");
   }
 
+  // Use token-based dispatch grid for prefill
+  // For prefill, we want one threadgroup per query token, not one per query-token-head pair
+  size_t dispatch_grid_width = core_dims.query_token_count;
+
   spdlog::debug("[PAL Primitive Dispatch] Dispatching kernel with tile_size_T_runtime: {}", params_struct.tile_size_T_runtime);
+  spdlog::debug("[PAL Primitive Dispatch] Using token-based dispatch: {} tokens instead of {} items",
+                dispatch_grid_width, core_dims.num_items_to_process);
 
   // Call the dispatch_metal_kernel helper with all needed parameters
   dispatch_metal_kernel(
@@ -502,7 +508,7 @@ const std::string library_name_for_mlx = "pal";
       out,
       params_struct,
       memory_layout.total_bytes,
-      core_dims.num_items_to_process,
+      dispatch_grid_width, // Use token count instead of query-head item count
       final_threads_to_launch // Pass the dynamically sized thread count
   );
 }

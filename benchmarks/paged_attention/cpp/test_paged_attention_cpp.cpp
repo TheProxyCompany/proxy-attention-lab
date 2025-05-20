@@ -418,27 +418,27 @@ static void BM_MLX_SDPA_DecodeLatencyVsHistoryLen(benchmark::State& state) {
     }
 }
 
-const int REPETITIONS = 1;
+const int REPETITIONS = 3;
 const int ITERATIONS = 1;
 
 BENCHMARK(BM_PAL_LatencyVsSeqLen)
-//    ->Arg(64)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)->Setup(BM_PAL_LatencyVsSeqLen_Setup)
-//    ->Arg(512)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+   ->Arg(64)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)->Setup(BM_PAL_LatencyVsSeqLen_Setup)
+   ->Arg(512)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
     ->Arg(1024)->Iterations(ITERATIONS)->Repetitions(REPETITIONS);
 
 BENCHMARK(BM_MLX_SDPA_LatencyVsSeqLen)
-//    ->Arg(64)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-//    ->Arg(512)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+   ->Arg(64)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+   ->Arg(512)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
     ->Arg(1024)->Iterations(ITERATIONS)->Repetitions(REPETITIONS);
 
-//BENCHMARK(BM_PAL_DecodeLatencyVsHistoryLen)
-//    ->Arg(1024)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-//    ->Arg(2048)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-//    ->Arg(4096)->Iterations(ITERATIONS)->Repetitions(REPETITIONS);
-//
-//BENCHMARK(BM_MLX_SDPA_DecodeLatencyVsHistoryLen)
-//    ->Arg(1024)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-//    ->Arg(2048)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-//    ->Arg(4096)->Iterations(ITERATIONS)->Repetitions(REPETITIONS);
+BENCHMARK(BM_PAL_DecodeLatencyVsHistoryLen)
+   ->Arg(1024)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+   ->Arg(2048)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+   ->Arg(4096)->Iterations(ITERATIONS)->Repetitions(REPETITIONS);
+
+BENCHMARK(BM_MLX_SDPA_DecodeLatencyVsHistoryLen)
+   ->Arg(1024)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+   ->Arg(2048)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+   ->Arg(4096)->Iterations(ITERATIONS)->Repetitions(REPETITIONS);
 
 BENCHMARK_MAIN();
