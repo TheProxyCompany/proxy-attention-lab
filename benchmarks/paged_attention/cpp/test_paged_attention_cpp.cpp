@@ -46,11 +46,11 @@ static BenchmarkSpdlogInitializer global_benchmark_spdlog_initializer;
 // Define baseline configuration for benchmarks - matching the Python version exactly
 // Gemma 3 Model Config, 2048 tokens
 struct BaselineConfig {
-    int batch_size = 1;
+    int batch_size = 64;
     int seq_len = 2048;  // tokens
     int num_q_heads = 32;
     int num_kv_heads = 16;
-    int head_dim = 16; // bottleneck dim
+    int head_dim = 128; // bottleneck dim
     int tokens_per_page = 64;
     mx::Dtype dtype = mx::float16;
 };
@@ -164,14 +164,6 @@ static void BM_PAL_LatencyVsSeqLen(benchmark::State& state) {
     // Create query token offsets: [num_tokens]
     mx::array query_token_offset = create_query_token_offset(batch_size, seq_len);
 
-    queries.eval();
-    k_cache_pool.eval();
-    v_cache_pool.eval();
-    page_table.eval();
-    sequence_lengths.eval();
-    query_to_seq_map.eval();
-    query_token_offset.eval();
-
     // Main benchmark loop
     for (auto _ : state) {
         mx::array out = pal::cpp::paged_attention(
@@ -227,11 +219,6 @@ static void BM_MLX_SDPA_LatencyVsSeqLen(benchmark::State& state) {
     spdlog::info("  keys shape: [{}, {}, {}, {}]", batch_size, num_kv_heads, seq_len, head_dim);
     spdlog::info("  values shape: [{}, {}, {}, {}]", batch_size, num_kv_heads, seq_len, head_dim);
     spdlog::info("  causal_mask shape: [{}, {}]", seq_len, seq_len);
-
-    queries.eval();
-    keys.eval();
-    values.eval();
-    causal_mask.eval();
 
     // Main benchmark loop
     for (auto _ : state) {
@@ -362,14 +349,6 @@ static void BM_PAL_DecodeLatencyVsHistoryLen(benchmark::State& state) {
     }
     mx::array query_token_offset = mx::array(offset_data.data(), {batch_size}, mx::int32);
 
-    queries.eval();
-    k_cache_pool.eval();
-    v_cache_pool.eval();
-    page_table.eval();
-    sequence_lengths.eval();
-    query_to_seq_map.eval();
-    query_token_offset.eval();
-
     // Main benchmark loop
     for (auto _ : state) {
         mx::array out = pal::cpp::paged_attention(
@@ -429,11 +408,6 @@ static void BM_MLX_SDPA_DecodeLatencyVsHistoryLen(benchmark::State& state) {
     spdlog::info("  values shape: [{}, {}, {}, {}]", batch_size, num_kv_heads, history_len, head_dim);
     spdlog::info("  mask shape: [{}, {}]", 1, history_len);
 
-    queries.eval();
-    keys.eval();
-    values.eval();
-    mask.eval();
-
     // Main benchmark loop
     for (auto _ : state) {
         mx::array out = mx::fast::scaled_dot_product_attention(
@@ -449,24 +423,27 @@ static void BM_MLX_SDPA_DecodeLatencyVsHistoryLen(benchmark::State& state) {
     }
 }
 
+const int REPETITIONS = 3;
+const int ITERATIONS = 1;
+
 BENCHMARK(BM_PAL_LatencyVsSeqLen)
-    ->Arg(64)->Iterations(1)->Repetitions(1)->Setup(BM_PAL_LatencyVsSeqLen_Setup)
-    ->Arg(512)->Iterations(1)->Repetitions(1)
-    ->Arg(1024)->Iterations(1)->Repetitions(1);
+    ->Arg(64)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)->Setup(BM_PAL_LatencyVsSeqLen_Setup)
+    ->Arg(512)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+    ->Arg(1024)->Iterations(ITERATIONS)->Repetitions(REPETITIONS);
 
 BENCHMARK(BM_MLX_SDPA_LatencyVsSeqLen)
-    ->Arg(64)->Iterations(1)->Repetitions(1)
-    ->Arg(512)->Iterations(1)->Repetitions(1)
-    ->Arg(1024)->Iterations(1)->Repetitions(1);
+    ->Arg(64)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+    ->Arg(512)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+    ->Arg(1024)->Iterations(ITERATIONS)->Repetitions(REPETITIONS);
 
 BENCHMARK(BM_PAL_DecodeLatencyVsHistoryLen)
-    ->Arg(1024)->Iterations(1)->Repetitions(1)
-    ->Arg(2048)->Iterations(1)->Repetitions(1)
-    ->Arg(4096)->Iterations(1)->Repetitions(1);
+    ->Arg(1024)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+    ->Arg(2048)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+    ->Arg(4096)->Iterations(ITERATIONS)->Repetitions(REPETITIONS);
 
 BENCHMARK(BM_MLX_SDPA_DecodeLatencyVsHistoryLen)
-    ->Arg(1024)->Iterations(1)->Repetitions(1)
-    ->Arg(2048)->Iterations(1)->Repetitions(1)
-    ->Arg(4096)->Iterations(1)->Repetitions(1);
+    ->Arg(1024)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+    ->Arg(2048)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+    ->Arg(4096)->Iterations(ITERATIONS)->Repetitions(REPETITIONS);
 
 BENCHMARK_MAIN();
