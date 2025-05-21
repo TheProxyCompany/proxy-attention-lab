@@ -100,7 +100,7 @@ NB_MODULE(pal_core, m) {
                                                 token within its sequence.
             is_prefill (bool, optional): Whether to perform prefill or decoding. Defaults to True.
                 - When True (prefill mode): Processes full sequence with one threadgroup per query token
-                - When False (decode mode): Processes single token per sequence with one threadgroup 
+                - When False (decode mode): Processes single token per sequence with one threadgroup
                                            per query-token-head pair.
             stream (mlx.core.Stream | mlx.core.Device | None, optional): Stream or device
                                                                         for the operation.

@@ -169,16 +169,6 @@ static ThreadgroupMemoryLayout calculate_final_params_and_memory_layout(
     params.num_kv_heads             = extracted_core_dims.num_kv_heads;
     params.head_dim                 = extracted_core_dims.head_dim;
     params.tokens_per_page          = extracted_core_dims.tokens_per_page;
-    // Precompute log2(tokens_per_page) when it's a power of two
-    params.tokens_per_page_shift = 0;
-    if (params.tokens_per_page > 0 &&
-        (params.tokens_per_page & (params.tokens_per_page - 1)) == 0) {
-        uint32_t tmp = params.tokens_per_page;
-        while (tmp > 1) {
-            tmp >>= 1;
-            params.tokens_per_page_shift++;
-        }
-    }
 
     // Kernel constants
     params.pad_floats_per_row       = kDefaultPaddingFloatsPerRow;
@@ -211,7 +201,7 @@ static ThreadgroupMemoryLayout calculate_final_params_and_memory_layout(
         params_for_fixed_sizing,
         target_threads_per_group, // Use target_threads_per_group here
         actual_simd_lanes_per_group // Pass actual_simd_lanes_per_group
-    ).total_bytes - kFinalTgMemoryPaddingGuardBytes;
+    ).total_bytes;
 
     // 1. Gather constants once
     const size_t tg_limit = mtl_device_ptr->maxThreadgroupMemoryLength();
@@ -506,7 +496,6 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
       spdlog::debug("[PAL Primitive Dispatch] Using token-based dispatch: {} tokens instead of {} items",
                   dispatch_grid_width, core_dims.num_items_to_process);
   } else {
-      // For decode mode, we use item-based dispatch (one threadgroup per query-token-head pair)
       dispatch_grid_width = core_dims.num_items_to_process;
       spdlog::debug("[PAL Primitive Dispatch] DECODE MODE: Using item-based dispatch grid width: {}", dispatch_grid_width);
   }
