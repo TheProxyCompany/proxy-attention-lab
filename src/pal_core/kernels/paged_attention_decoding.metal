@@ -161,40 +161,6 @@ using namespace metal;
     // All threads read q_shmem in later steps, ensure writes complete across the group
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    // Debug dump for q_shmem content (global_item_idx=1, head_dim=32)
-    if (global_item_idx == 1 && params.head_dim == 32 && local_idx_in_tg == 0) {
-        // Dump to item 1's output space
-        uint output_base_idx = global_item_idx * params.head_dim;
-
-        // First 8 values: what we're actually reading
-        for (uint d = 0; d < 8; ++d) {
-            output_buffer[output_base_idx + d] = q_vector_item_ptr[d];
-        }
-
-        // Next 8 values: from queries_in base (Q-head 0, for comparison)
-        for (uint d = 0; d < 8; ++d) {
-            output_buffer[output_base_idx + 8 + d] = queries_in[d];
-        }
-
-        // Next 8 values: from expected Q-head 1 location
-        for (uint d = 0; d < 8; ++d) {
-            output_buffer[output_base_idx + 16 + d] = queries_in[32 + d];
-        }
-
-        // Last 8 values: item_token_idx, item_q_head_idx, and calculated offset as float representations
-        if (params.num_q_heads > 1) {
-            uint item_token_idx = global_item_idx / params.num_q_heads;
-            uint item_q_head_idx = global_item_idx % params.num_q_heads;
-            ulong query_base_offset = (ulong)item_token_idx * params.num_q_heads * params.head_dim +
-                                     (ulong)item_q_head_idx * params.head_dim;
-
-            output_buffer[output_base_idx + 24] = (half)(item_token_idx);
-            output_buffer[output_base_idx + 25] = (half)(item_q_head_idx);
-            output_buffer[output_base_idx + 26] = (half)(query_base_offset / 32); // offset in units of 32
-            output_buffer[output_base_idx + 27] = (half)(params.num_q_heads);
-        }
-    }
-
     // --- 7/10: History & Sequence Length Setup ---
     uint token_idx_for_sideband_lookup;
     if (params.num_q_heads > 1) {
@@ -544,48 +510,3 @@ using namespace metal;
 
 
 } // End of kernel
-
-/**
- * debug_dump_buffers_kernel
- * -------------------------
- * Minimal debug kernel to dump raw buffer contents as Metal sees them.
- * Used to verify data passing from MLX to Metal kernel.
- */
-[[kernel]] void debug_dump_buffers_kernel(
-    device const half* queries_in              [[buffer(0)]],
-    device const half* k_cache_pool_in         [[buffer(1)]],
-    device half* debug_output_buffer           [[buffer(8)]],  // Changed to half!
-    constant const PagedAttentionParams& params  [[buffer(7)]],
-    uint3 tg_pos_in_grid                       [[threadgroup_position_in_grid]]
-) {
-    // Only thread 0 does the work
-    if (tg_pos_in_grid.x > 0) return;
-
-    // First, let's verify basic memory access with a simple pattern
-    // Write some known values to check if output is working
-    for (uint i = 0; i < 128; ++i) {
-        debug_output_buffer[i] = (half)((float)(i) + 0.5f);
-    }
-
-    // Override first few with specific pattern
-    debug_output_buffer[0] = (half)123.456f;
-    debug_output_buffer[1] = (half)(-789.012f);
-    debug_output_buffer[2] = (half)3.14159f;
-    debug_output_buffer[3] = (half)(-2.71828f);
-
-    // Now dump first 60 half values from queries_in (shifted by 4)
-    for (uint i = 0; i < 60; ++i) {
-        debug_output_buffer[i + 4] = queries_in[i];  // Direct copy, no conversion needed
-    }
-
-    // Calculate offset for KV-head 1 data in k_cache_pool
-    // For the failing test case: target_kv_head_idx = 1, tokens_per_page = 8
-    // First page (page 0) contains positions 0-7
-    // KV-head 1's first token should be at: k_cache_pool_base + (1 * tokens_per_page * head_dim)
-    uint kv_head_1_offset = 1 * params.tokens_per_page * params.head_dim;
-
-    // Dump first 64 half values from k_cache_pool at KV-head 1 offset
-    for (uint i = 0; i < 64; ++i) {
-        debug_output_buffer[64 + i] = k_cache_pool_in[kv_head_1_offset + i];  // Direct copy
-    }
-}

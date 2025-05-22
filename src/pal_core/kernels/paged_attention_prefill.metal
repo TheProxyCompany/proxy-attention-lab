@@ -192,12 +192,19 @@ using namespace metal;
         }
 
         // --- Stage Q-Vector into Shared Memory ---
-        device const half4* q_vec_h4 = reinterpret_cast<device const half4*>(q_vector_current_head_ptr);
+        // Use scalar loads to avoid misalignment issues
         threadgroup float4* q_vec_f4 = reinterpret_cast<threadgroup float4*>(q_shmem);
 
         for (uint chunk = local_thread_idx; chunk < params.head_dim / 4; chunk += tg_dim.x) {
-            float4 v = float4(q_vec_h4[chunk]) * params.inv_sqrt_head_dim;
-            q_vec_f4[chunk] = v;
+            // Scalar loads from global memory to avoid alignment issues
+            uint base_offset_global_q = chunk * 4;
+            half qh0 = q_vector_current_head_ptr[base_offset_global_q + 0];
+            half qh1 = q_vector_current_head_ptr[base_offset_global_q + 1];
+            half qh2 = q_vector_current_head_ptr[base_offset_global_q + 2];
+            half qh3 = q_vector_current_head_ptr[base_offset_global_q + 3];
+
+            float4 q_float_chunk = float4(qh0, qh1, qh2, qh3) * params.inv_sqrt_head_dim;
+            q_vec_f4[chunk] = q_float_chunk;
         }
         // All threads read q_shmem in later steps, ensure writes complete across the group
         threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -250,15 +257,20 @@ using namespace metal;
 
                 // 1C. Cooperative lane-striped copy (or zero-fill) by this SIMD group for this row
                 if (k_vector_global_ptr != nullptr) {
-                    device const half4* src_h4_ptr = reinterpret_cast<device const half4*>(k_vector_global_ptr);
-
                     // Lanes within this SIMD group load chunks of the K-vector for 'row_idx_in_tile'
                     for (uint chunk_idx_in_row = simd_lane_id; // Lane 'simd_lane_id' starts with this chunk
                          chunk_idx_in_row < chunks_per_row_const;
                          chunk_idx_in_row += simd_size_const) {
 
-                        half4 h4_val = src_h4_ptr[chunk_idx_in_row];    // Coalesced 16-byte read
-                        dst_row_h4_ptr[chunk_idx_in_row] = h4_val;      // Store directly as half4
+                        // Scalar loads from global memory to avoid alignment issues
+                        uint base_offset_global_k = chunk_idx_in_row * 4;
+                        half kh0 = k_vector_global_ptr[base_offset_global_k + 0];
+                        half kh1 = k_vector_global_ptr[base_offset_global_k + 1];
+                        half kh2 = k_vector_global_ptr[base_offset_global_k + 2];
+                        half kh3 = k_vector_global_ptr[base_offset_global_k + 3];
+                        half4 h4_val_from_global = half4(kh0, kh1, kh2, kh3);
+
+                        dst_row_h4_ptr[chunk_idx_in_row] = h4_val_from_global;  // Store to K_tile
                     }
                 } else { // nullptr from fetch_kv_pointer, so zero the row
                     for (uint chunk_idx_in_row = simd_lane_id;
@@ -297,15 +309,20 @@ using namespace metal;
 
                 // 1C. Cooperative lane-striped copy (or zero-fill) by this SIMD group for this row
                 if (v_vector_global_ptr != nullptr) {
-                    device const half4* src_h4_ptr = reinterpret_cast<device const half4*>(v_vector_global_ptr);
-
                     // Lanes within this SIMD group load chunks of the V-vector for 'row_idx_in_tile'
                     for (uint chunk_idx_in_row = simd_lane_id;
                          chunk_idx_in_row < chunks_per_row_const;
                          chunk_idx_in_row += simd_size_const) {
 
-                        half4 h4_val = src_h4_ptr[chunk_idx_in_row];
-                        dst_row_h4_ptr[chunk_idx_in_row] = h4_val;      // Store directly as half4
+                        // Scalar loads from global memory to avoid alignment issues
+                        uint base_offset_global_v = chunk_idx_in_row * 4;
+                        half vh0 = v_vector_global_ptr[base_offset_global_v + 0];
+                        half vh1 = v_vector_global_ptr[base_offset_global_v + 1];
+                        half vh2 = v_vector_global_ptr[base_offset_global_v + 2];
+                        half vh3 = v_vector_global_ptr[base_offset_global_v + 3];
+                        half4 h4_val_from_global = half4(vh0, vh1, vh2, vh3);
+
+                        dst_row_h4_ptr[chunk_idx_in_row] = h4_val_from_global;  // Store to V_tile
                     }
                 } else { // nullptr from fetch_kv_pointer, so zero the row
                     for (uint chunk_idx_in_row = simd_lane_id;
@@ -435,8 +452,12 @@ using namespace metal;
                 float final_p_attn_weight_numerator = weight_term * exp_term;
 
                 for (uint d_idx = 0; d_idx < params.head_dim; d_idx += 4) {
-                    // Read half4 from V_tile and convert to float4 on-the-fly
-                    float4 v_chunk = float4(*((threadgroup const half4*)(v_vector_from_tile_h + d_idx)));
+                    // Scalar loads from V_tile to avoid alignment issues
+                    half vh0 = v_vector_from_tile_h[d_idx + 0];
+                    half vh1 = v_vector_from_tile_h[d_idx + 1];
+                    half vh2 = v_vector_from_tile_h[d_idx + 2];
+                    half vh3 = v_vector_from_tile_h[d_idx + 3];
+                    float4 v_chunk = float4(vh0, vh1, vh2, vh3);
 
                     // For handling head_dim that might not be a multiple of 4 (safety)
                     if (d_idx + 4 > params.head_dim) {
