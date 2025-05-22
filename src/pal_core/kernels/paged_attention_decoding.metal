@@ -144,15 +144,56 @@ using namespace metal;
     }
 
     // --- 6.1/10: Stage Q-Vector into Shared Memory ---
-    device const half4* q_vec_h4 = reinterpret_cast<device const half4*>(q_vector_item_ptr);
+    // Use scalar loads to avoid misalignment issues
     threadgroup float4* q_vec_f4 = reinterpret_cast<threadgroup float4*>(q_shmem);
 
     for (uint chunk = local_thread_idx; chunk < params.head_dim / 4; chunk += tg_dim.x) {
-        float4 v = float4(q_vec_h4[chunk]) * params.inv_sqrt_head_dim;
-        q_vec_f4[chunk] = v;
+        // Scalar loads from global memory to avoid alignment issues
+        uint base_offset_global_q = chunk * 4;
+        half qh0 = q_vector_item_ptr[base_offset_global_q + 0];
+        half qh1 = q_vector_item_ptr[base_offset_global_q + 1];
+        half qh2 = q_vector_item_ptr[base_offset_global_q + 2];
+        half qh3 = q_vector_item_ptr[base_offset_global_q + 3];
+
+        float4 q_float_chunk = float4(qh0, qh1, qh2, qh3) * params.inv_sqrt_head_dim;
+        q_vec_f4[chunk] = q_float_chunk;
     }
     // All threads read q_shmem in later steps, ensure writes complete across the group
     threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Debug dump for q_shmem content (global_item_idx=1, head_dim=32)
+    if (global_item_idx == 1 && params.head_dim == 32 && local_idx_in_tg == 0) {
+        // Dump to item 1's output space
+        uint output_base_idx = global_item_idx * params.head_dim;
+
+        // First 8 values: what we're actually reading
+        for (uint d = 0; d < 8; ++d) {
+            output_buffer[output_base_idx + d] = q_vector_item_ptr[d];
+        }
+
+        // Next 8 values: from queries_in base (Q-head 0, for comparison)
+        for (uint d = 0; d < 8; ++d) {
+            output_buffer[output_base_idx + 8 + d] = queries_in[d];
+        }
+
+        // Next 8 values: from expected Q-head 1 location
+        for (uint d = 0; d < 8; ++d) {
+            output_buffer[output_base_idx + 16 + d] = queries_in[32 + d];
+        }
+
+        // Last 8 values: item_token_idx, item_q_head_idx, and calculated offset as float representations
+        if (params.num_q_heads > 1) {
+            uint item_token_idx = global_item_idx / params.num_q_heads;
+            uint item_q_head_idx = global_item_idx % params.num_q_heads;
+            ulong query_base_offset = (ulong)item_token_idx * params.num_q_heads * params.head_dim +
+                                     (ulong)item_q_head_idx * params.head_dim;
+
+            output_buffer[output_base_idx + 24] = (half)(item_token_idx);
+            output_buffer[output_base_idx + 25] = (half)(item_q_head_idx);
+            output_buffer[output_base_idx + 26] = (half)(query_base_offset / 32); // offset in units of 32
+            output_buffer[output_base_idx + 27] = (half)(params.num_q_heads);
+        }
+    }
 
     // --- 7/10: History & Sequence Length Setup ---
     uint token_idx_for_sideband_lookup;
@@ -239,15 +280,20 @@ using namespace metal;
 
             // 1C. Cooperative lane-striped copy (or zero-fill) by this SIMD group for this row
             if (k_vector_global_ptr != nullptr) {
-                device const half4* src_h4_ptr = reinterpret_cast<device const half4*>(k_vector_global_ptr);
-
                 // Lanes within this SIMD group load chunks of the K-vector for 'row_idx_in_tile'
                 for (uint chunk_idx_in_row = simd_lane_id; // Lane 'simd_lane_id' starts with this chunk
                      chunk_idx_in_row < chunks_per_row_const;
                      chunk_idx_in_row += simd_size_const) {
 
-                    half4 h4_val = src_h4_ptr[chunk_idx_in_row];    // Coalesced 16-byte read
-                    dst_row_h4_ptr[chunk_idx_in_row] = h4_val;      // Store directly as half4
+                    // Scalar loads from global memory to avoid alignment issues
+                    uint base_offset_global_k = chunk_idx_in_row * 4;
+                    half kh0 = k_vector_global_ptr[base_offset_global_k + 0];
+                    half kh1 = k_vector_global_ptr[base_offset_global_k + 1];
+                    half kh2 = k_vector_global_ptr[base_offset_global_k + 2];
+                    half kh3 = k_vector_global_ptr[base_offset_global_k + 3];
+                    half4 h4_val_from_global = half4(kh0, kh1, kh2, kh3);
+
+                    dst_row_h4_ptr[chunk_idx_in_row] = h4_val_from_global;  // Store to K_tile
                 }
             } else { // nullptr from fetch_kv_pointer, so zero the row
                 for (uint chunk_idx_in_row = simd_lane_id;
@@ -259,6 +305,7 @@ using namespace metal;
             }
         } // end for row_idx_in_tile
         threadgroup_barrier(mem_flags::mem_threadgroup); // Ensure K_tile is fully populated before use
+
         // Each SIMD group cooperatively loads one or more rows assigned to it
         for (uint row_idx_in_tile = simd_group_id; // SIMD group 'simd_group_id' starts with this row
              row_idx_in_tile < rows_in_tile_const;
@@ -281,15 +328,20 @@ using namespace metal;
 
             // 1C. Cooperative lane-striped copy (or zero-fill) by this SIMD group for this row
             if (v_vector_global_ptr != nullptr) {
-                device const half4* src_h4_ptr = reinterpret_cast<device const half4*>(v_vector_global_ptr);
-
                 // Lanes within this SIMD group load chunks of the V-vector for 'row_idx_in_tile'
                 for (uint chunk_idx_in_row = simd_lane_id;
                      chunk_idx_in_row < chunks_per_row_const;
                      chunk_idx_in_row += simd_size_const) {
 
-                    half4 h4_val = src_h4_ptr[chunk_idx_in_row];
-                    dst_row_h4_ptr[chunk_idx_in_row] = h4_val;      // Store directly as half4
+                    // Scalar loads from global memory to avoid alignment issues
+                    uint base_offset_global_v = chunk_idx_in_row * 4;
+                    half vh0 = v_vector_global_ptr[base_offset_global_v + 0];
+                    half vh1 = v_vector_global_ptr[base_offset_global_v + 1];
+                    half vh2 = v_vector_global_ptr[base_offset_global_v + 2];
+                    half vh3 = v_vector_global_ptr[base_offset_global_v + 3];
+                    half4 h4_val_from_global = half4(vh0, vh1, vh2, vh3);
+
+                    dst_row_h4_ptr[chunk_idx_in_row] = h4_val_from_global;  // Store to V_tile
                 }
             } else { // nullptr from fetch_kv_pointer, so zero the row
                 for (uint chunk_idx_in_row = simd_lane_id;
@@ -492,3 +544,48 @@ using namespace metal;
 
 
 } // End of kernel
+
+/**
+ * debug_dump_buffers_kernel
+ * -------------------------
+ * Minimal debug kernel to dump raw buffer contents as Metal sees them.
+ * Used to verify data passing from MLX to Metal kernel.
+ */
+[[kernel]] void debug_dump_buffers_kernel(
+    device const half* queries_in              [[buffer(0)]],
+    device const half* k_cache_pool_in         [[buffer(1)]],
+    device half* debug_output_buffer           [[buffer(8)]],  // Changed to half!
+    constant const PagedAttentionParams& params  [[buffer(7)]],
+    uint3 tg_pos_in_grid                       [[threadgroup_position_in_grid]]
+) {
+    // Only thread 0 does the work
+    if (tg_pos_in_grid.x > 0) return;
+
+    // First, let's verify basic memory access with a simple pattern
+    // Write some known values to check if output is working
+    for (uint i = 0; i < 128; ++i) {
+        debug_output_buffer[i] = (half)((float)(i) + 0.5f);
+    }
+
+    // Override first few with specific pattern
+    debug_output_buffer[0] = (half)123.456f;
+    debug_output_buffer[1] = (half)(-789.012f);
+    debug_output_buffer[2] = (half)3.14159f;
+    debug_output_buffer[3] = (half)(-2.71828f);
+
+    // Now dump first 60 half values from queries_in (shifted by 4)
+    for (uint i = 0; i < 60; ++i) {
+        debug_output_buffer[i + 4] = queries_in[i];  // Direct copy, no conversion needed
+    }
+
+    // Calculate offset for KV-head 1 data in k_cache_pool
+    // For the failing test case: target_kv_head_idx = 1, tokens_per_page = 8
+    // First page (page 0) contains positions 0-7
+    // KV-head 1's first token should be at: k_cache_pool_base + (1 * tokens_per_page * head_dim)
+    uint kv_head_1_offset = 1 * params.tokens_per_page * params.head_dim;
+
+    // Dump first 64 half values from k_cache_pool at KV-head 1 offset
+    for (uint i = 0; i < 64; ++i) {
+        debug_output_buffer[64 + i] = k_cache_pool_in[kv_head_1_offset + i];  // Direct copy
+    }
+}

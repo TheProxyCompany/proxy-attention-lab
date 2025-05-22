@@ -20,12 +20,15 @@
 #include "pal_core/paged_attention_primitive.hpp"
 
 #include <cmath>
+#include <cstdlib>
 #include <iostream>
+#include <iomanip>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
 #include <limits>
+#include <mlx/backend/gpu/copy.h>
 #include <spdlog/spdlog.h>
 
 // Define half type for memory calculations (matching Metal's half type)
@@ -201,7 +204,7 @@ static ThreadgroupMemoryLayout calculate_final_params_and_memory_layout(
         params_for_fixed_sizing,
         target_threads_per_group, // Use target_threads_per_group here
         actual_simd_lanes_per_group // Pass actual_simd_lanes_per_group
-    ).total_bytes;
+    ).total_bytes + kFinalTgMemoryPaddingGuardBytes;
 
     // 1. Gather constants once
     const size_t tg_limit = mtl_device_ptr->maxThreadgroupMemoryLength();
@@ -393,11 +396,31 @@ void PagedAttentionPrimitive::dispatch_metal_kernel(
     size_t items_to_process_count,
     size_t threads_per_group_count) {
 
+  bool debug_mode = std::getenv("PAL_DEBUG_BUFFERS") != nullptr;
+  if (debug_mode) {
+    spdlog::info("[PAL Debug] dispatch_metal_kernel called");
+    spdlog::info("[PAL Debug] kernel_pso={:p}", (void*)kernel_pso);
+    spdlog::info("[PAL Debug] items_to_process_count={}, threads_per_group_count={}",
+                 items_to_process_count, threads_per_group_count);
+    spdlog::info("[PAL Debug] total_tg_memory_bytes={}", total_tg_memory_bytes);
+    spdlog::info("[PAL Debug] kernel_params: head_dim={}, num_q_heads={}, num_kv_heads={}, tokens_per_page={}",
+                 kernel_params.head_dim, kernel_params.num_q_heads, kernel_params.num_kv_heads, kernel_params.tokens_per_page);
+  }
+
   compute_encoder.set_compute_pipeline_state(kernel_pso); // Set PSO here
 
   // Set input arrays for the compute encoder
+  if (debug_mode) {
+    spdlog::info("[PAL Debug] Setting input arrays...");
+  }
   compute_encoder.set_input_array(kernel_inputs[0], 0); // q
+  if (debug_mode) {
+    spdlog::info("[PAL Debug] Set queries at buffer index 0");
+  }
   compute_encoder.set_input_array(kernel_inputs[1], 1); // k_pool
+  if (debug_mode) {
+    spdlog::info("[PAL Debug] Set k_pool at buffer index 1");
+  }
   compute_encoder.set_input_array(kernel_inputs[2], 2); // v_pool
   compute_encoder.set_input_array(kernel_inputs[3], 3); // page_table
   compute_encoder.set_input_array(kernel_inputs[4], 4); // sequence_lengths
@@ -419,24 +442,102 @@ void PagedAttentionPrimitive::dispatch_metal_kernel(
 
   // Set the threadgroup memory length and dispatch the kernel
   compute_encoder.set_threadgroup_memory_length(total_tg_memory_bytes, 0);
+
+  if (debug_mode) {
+    spdlog::info("[PAL Debug] Dispatching with grid=({},{},{}), threads=({},{},{})",
+                 threadgroups_per_grid.width, threadgroups_per_grid.height, threadgroups_per_grid.depth,
+                 threads_per_threadgroup.width, threads_per_threadgroup.height, threads_per_threadgroup.depth);
+  }
+
   compute_encoder.dispatch_threadgroups(threadgroups_per_grid, threads_per_threadgroup);
+
+  if (debug_mode) {
+    spdlog::info("[PAL Debug] Kernel dispatch completed");
+  }
 }
 
 void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
                                        mx::array& out) {
+  // Add basic assertions
+  for (size_t i = 0; i < inputs.size(); ++i) {
+    const auto& input = inputs[i];
+
+    // Check for null data pointer
+    if (input.data<void>() == nullptr && input.size() > 0) {
+      spdlog::error("[PAL Primitive] Input {} has null data pointer despite non-zero size!", i);
+    }
+  }
+
   // Prepare Metal kernel and command encoder
   auto& s = stream();
   auto& d = mlx::core::metal::device(s.device);
 
   const std::string library_name_for_mlx = "pal";
-  const std::string kernel_name = is_prefill_ ? "paged_attn_prefill_kernel" : "paged_attn_decode_kernel";
+
+  // Check for debug mode via environment variable
+  bool debug_mode = std::getenv("PAL_DEBUG_BUFFERS") != nullptr;
+  const std::string kernel_name = debug_mode ? "debug_dump_buffers_kernel" :
+                                  (is_prefill_ ? "paged_attn_prefill_kernel" : "paged_attn_decode_kernel");
   auto kernel_state_ = d.get_kernel(kernel_name, library_name_for_mlx);
   if (!kernel_state_) {
     throw std::runtime_error("[PAL Primitive] Failed to load kernel: " + kernel_name);
   }
 
+  if (debug_mode) {
+    spdlog::info("[PAL Debug] Starting comprehensive debug logging");
+
+    // Log input array details
+    for (size_t i = 0; i < inputs.size(); ++i) {
+      const auto& arr = inputs[i];
+      std::stringstream shape_ss;
+      shape_ss << "[";
+      for (size_t j = 0; j < arr.shape().size(); ++j) {
+        if (j > 0) shape_ss << ", ";
+        shape_ss << arr.shape()[j];
+      }
+      shape_ss << "]";
+
+      spdlog::info("[PAL Debug] Input[{}]: shape={}, size={}, nbytes={}, data_ptr={:p}",
+                   i,
+                   shape_ss.str(),
+                   arr.size(),
+                   arr.nbytes(),
+                   arr.data<void>());
+
+      // Log strides
+      std::stringstream stride_ss;
+      for (auto stride : arr.strides()) {
+        stride_ss << stride << " ";
+      }
+      spdlog::info("[PAL Debug] Input[{}] strides: {}", i, stride_ss.str());
+
+      // Check contiguity
+      spdlog::info("[PAL Debug] Input[{}] flags: row_contiguous={}, col_contiguous={}, contiguous={}",
+                   i,
+                   arr.flags().row_contiguous,
+                   arr.flags().col_contiguous,
+                   arr.flags().contiguous);
+
+      // Print first few values for float16 arrays
+      if (arr.dtype() == mx::float16 && arr.size() > 0) {
+        const mx::float16_t* data = arr.data<mx::float16_t>();
+        std::stringstream val_ss;
+        std::stringstream hex_ss;
+        for (size_t j = 0; j < std::min(size_t(8), arr.size()); ++j) {
+          val_ss << static_cast<float>(data[j]) << " ";
+          // Print raw hex values
+          uint16_t raw = *reinterpret_cast<const uint16_t*>(&data[j]);
+          hex_ss << std::hex << "0x" << raw << " ";
+        }
+        spdlog::info("[PAL Debug] Input[{}] first 8 values: {}", i, val_ss.str());
+        spdlog::info("[PAL Debug] Input[{}] first 8 hex values: {}", i, hex_ss.str());
+      }
+    }
+  }
+
   size_t bytes = out.nbytes();
   out.set_data(mx::allocator::malloc(bytes));
+
   auto& compute_encoder = d.get_command_encoder(s.index);
 
   // Create and populate PagedAttentionParams struct
@@ -502,11 +603,23 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
 
   spdlog::debug("[PAL Primitive Dispatch] Dispatching kernel with tile_size_T_runtime: {}", params_struct.tile_size_T_runtime);
 
+  // Override parameters for debug mode
+  if (debug_mode) {
+    spdlog::info("[PAL Debug] Running debug_dump_buffers_kernel with 1 threadgroup and 1 thread");
+    spdlog::info("[PAL Debug] Before override: dispatch_grid_width={}, final_threads_to_launch={}, total_bytes={}",
+                 dispatch_grid_width, final_threads_to_launch, memory_layout.total_bytes);
+    dispatch_grid_width = 1;
+    final_threads_to_launch = 1;
+    memory_layout.total_bytes = 0; // Debug kernel doesn't need threadgroup memory
+    spdlog::info("[PAL Debug] After override: dispatch_grid_width={}, final_threads_to_launch={}, total_bytes={}",
+                 dispatch_grid_width, final_threads_to_launch, memory_layout.total_bytes);
+  }
+
   // Call the dispatch_metal_kernel helper with all needed parameters
   dispatch_metal_kernel(
       compute_encoder,
       kernel_state_,
-      inputs,
+      inputs,  // Use original inputs directly
       out,
       params_struct,
       memory_layout.total_bytes,

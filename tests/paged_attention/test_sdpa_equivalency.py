@@ -28,6 +28,22 @@ import pytest
 
 from proxy_attention_lab import paged_attention
 
+
+def validate_metal_input(array, name):
+    """Validates MLX array state before passing to Metal kernel."""
+    logger.info(f"  Validating '{name}' array:")
+    logger.info(f"    Shape: {array.shape}")
+    logger.info(f"    Dtype: {array.dtype}")
+    # Skip flags check as MLX arrays don't have flags attribute
+
+    # Sample some values
+    if array.size > 0:
+        flat = array.flatten()
+        sample_size = min(8, flat.size)
+        logger.info(f"    Sample values (first {sample_size}): {flat[:sample_size]}")
+    return array
+
+
 logger = logging.getLogger(__name__)
 
 tokens_per_page = 64
@@ -264,6 +280,9 @@ def test_pal_decode_vs_sdpa_equivalency(batch_size, history_len, num_heads, head
     logger.info(f"    Data type: {dtype}")
 
     # --- 1. Setup Inputs & Run MLX SDPA (Reference) ---
+    # Set a fixed seed for reproducible debugging
+    mx.random.seed(42)
+
     # In decode mode, we have a single new token (query) attending to the history
     sdpa_q_shape = (batch_size, num_q_heads, 1, head_dim)  # Single token per sequence
     sdpa_kv_shape = (batch_size, num_kv_heads, history_len, head_dim)  # History tokens
@@ -299,7 +318,11 @@ def test_pal_decode_vs_sdpa_equivalency(batch_size, history_len, num_heads, head
 
     # Reshape the query for PAL format: [batch_size, num_q_heads, head_dim]
     # Each sequence has a single query token
-    pal_queries = sdpa_queries.reshape(batch_size, num_q_heads, head_dim)
+    pal_queries_view = sdpa_queries.reshape(batch_size, num_q_heads, head_dim)
+    # Force contiguous memory layout by creating a new array with explicit copy
+    pal_queries = mx.zeros((batch_size, num_q_heads, head_dim), dtype=dtype)
+    pal_queries[:] = pal_queries_view
+    mx.eval(pal_queries)
 
     # Create empty KV cache pools
     pal_k_cache_pool = mx.zeros((num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim), dtype=dtype)
@@ -360,8 +383,42 @@ def test_pal_decode_vs_sdpa_equivalency(batch_size, history_len, num_heads, head
     logger.info(f"    Query to sequence map: {pal_query_to_seq_map}")
     logger.info(f"    Query token offset (positioned after history): {pal_query_token_offset}")
 
-    # --- 3. Run PAL paged_attention in decode mode ---
+    # --- 3. Apply MLX Best Practices for Array Preparation ---
+    logger.info("  Applying MLX best practices for array preparation:")
+
+    # Ensure pal_queries is fully evaluated and contiguous
+    logger.info("    Preparing pal_queries...")
+    mx.eval(pal_queries)
+    # Make contiguous
+    pal_queries = mx.contiguous(pal_queries)
+    mx.eval(pal_queries)
+    mx.synchronize()  # Global sync after queries are prepared
+
+    # Ensure pal_k_cache_pool is fully evaluated and contiguous
+    logger.info("    Preparing pal_k_cache_pool...")
+    mx.eval(pal_k_cache_pool)
+    # Make contiguous
+    pal_k_cache_pool = mx.contiguous(pal_k_cache_pool)
+    mx.eval(pal_k_cache_pool)
+    mx.synchronize()  # Global sync after k cache is prepared
+
+    # Ensure pal_v_cache_pool is fully evaluated and contiguous
+    logger.info("    Preparing pal_v_cache_pool...")
+    mx.eval(pal_v_cache_pool)
+    # Make contiguous
+    pal_v_cache_pool = mx.contiguous(pal_v_cache_pool)
+    mx.eval(pal_v_cache_pool)
+    mx.synchronize()  # Global sync after v cache is prepared
+
+    # Validate all inputs using the validation function
+    logger.info("  Validating all inputs before passing to Metal kernel:")
+    validate_metal_input(pal_queries, "pal_queries")
+    validate_metal_input(pal_k_cache_pool, "pal_k_cache_pool")
+    validate_metal_input(pal_v_cache_pool, "pal_v_cache_pool")
+
+    # --- 4. Run PAL paged_attention in decode mode ---
     logger.info("  Running PAL paged_attention (decode mode):")
+
     pal_output = paged_attention(
         pal_queries,
         pal_k_cache_pool,
@@ -394,6 +451,55 @@ def test_pal_decode_vs_sdpa_equivalency(batch_size, history_len, num_heads, head
     max_diff = mx.max(diff).item()
     mean_diff = mx.mean(diff).item()
     logger.info(f"    Difference metrics - Max: {max_diff:.6f}, Mean: {mean_diff:.6f}")
+
+    # Debug extraction for K_tile dump (specific to the failing test case)
+    if batch_size == 1 and history_len == 64 and num_q_heads == 2 and num_kv_heads == 2 and head_dim == 32:
+        # Extract the debug dump
+        debug_dump = pal_output[1, :]  # All 32 values from item 1's output
+
+        # Parse the debug sections
+        actual_read = debug_dump[0:8]  # What q_vector_item_ptr is reading
+        from_base = debug_dump[8:16]  # From queries_in[0:8] (Q-head 0)
+        from_offset_32 = debug_dump[16:24]  # From queries_in[32:40] (Q-head 1)
+        debug_values = debug_dump[24:28]  # token_idx, head_idx, offset, num_heads
+
+        # Fetch Python ground truth
+        python_q0 = pal_queries[0, 0, :8]  # Q-head 0, first 8 values
+        python_q1 = pal_queries[0, 1, :8]  # Q-head 1, first 8 values
+
+        logger.info("  Debug Q pointer analysis:")
+        logger.info(f"    What kernel is reading (first 8): {actual_read}")
+        logger.info(f"    From queries_in[0:8] (Q-head 0): {from_base}")
+        logger.info(f"    From queries_in[32:40] (Q-head 1): {from_offset_32}")
+        logger.info(f"    Python Q-head 0 (first 8): {python_q0}")
+        logger.info(f"    Python Q-head 1 (first 8): {python_q1}")
+        logger.info(
+            f"    Debug values - token_idx: {debug_values[0]:.0f}, head_idx: {debug_values[1]:.0f}, offset/32: {debug_values[2]:.0f}, num_heads: {debug_values[3]:.0f}"
+        )
+
+        # Let's also check the actual memory layout of pal_queries
+        logger.info("  PAL queries array info:")
+        logger.info(f"    Shape: {pal_queries.shape}")
+        logger.info(f"    Dtype: {pal_queries.dtype}")
+        logger.info(f"    First 16 elements (flat): {pal_queries.flatten()[:16]}")
+
+        # Check if we need to ensure contiguous memory
+        flat_queries = pal_queries.reshape(-1)
+        logger.info(f"    Q[0:8] via flatten: {flat_queries[0:8]}")
+        logger.info(f"    Q[32:40] via flatten: {flat_queries[32:40]}")
+
+        # Check which data matches
+        if mx.allclose(actual_read, python_q1, atol=1e-5):
+            logger.info("    ✓ Kernel is correctly reading Q-head 1!")
+        elif mx.allclose(actual_read, python_q0, atol=1e-5):
+            logger.info("    ✗ Kernel is incorrectly reading Q-head 0!")
+        else:
+            logger.info("    ✗ Kernel is reading from unknown location!")
+
+        if mx.allclose(from_base, python_q0, atol=1e-5):
+            logger.info("    ✓ queries_in[0:8] matches Python Q-head 0")
+        if mx.allclose(from_offset_32, python_q1, atol=1e-5):
+            logger.info("    ✓ queries_in[32:40] matches Python Q-head 1")
 
     # For FP16, we allow slightly larger differences due to numerical precision & different implementation
     current_atol = 1e-2

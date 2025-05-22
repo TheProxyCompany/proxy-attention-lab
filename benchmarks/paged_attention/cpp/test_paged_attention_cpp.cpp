@@ -35,9 +35,9 @@ namespace mx = mlx::core;
 // Static initializer to set spdlog level for benchmarks
 struct BenchmarkSpdlogInitializer {
     BenchmarkSpdlogInitializer() {
-        // Set default log level for benchmarks to warning to reduce noise
+        // Set default log level for benchmarks to debug to see GPU copy logs
         spdlog::set_level(spdlog::level::debug);
-        spdlog::info("PAL C++ Benchmarks: spdlog level set to 'warn'. Debug/trace messages from pal_core_lib will be suppressed.");
+        spdlog::info("PAL C++ Benchmarks: spdlog level set to 'debug' for debugging GPU copies.");
     }
 };
 // This object will be constructed before main(), ensuring the log level is set
