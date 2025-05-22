@@ -93,7 +93,7 @@ static inline uint map_q_to_kv_head(
     } else { // MHA or MQA (num_q_heads <= num_kv_heads)
         target_kv_head_idx = global_item_q_head_idx; // For MHA, direct map. For MQA (q_heads=1), this is 0.
     }
-    return target_kv_head_idx % num_kv_heads_param; // Final safety modulo
+    return target_kv_head_idx; // Removed redundant modulo
 }
 
 /**

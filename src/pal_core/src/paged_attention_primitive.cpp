@@ -46,7 +46,7 @@ namespace mx = mlx::core;
 namespace pal::cpp {
 
 constexpr static float kLogFp16DenormMinVal = -16.0f;
-constexpr static uint32_t kDefaultPaddingFloatsPerRow = 0;
+constexpr static uint32_t kDefaultPaddingFloatsPerRow = 4;
 
 struct CoreDims {
     uint32_t head_dim{0};

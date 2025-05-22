@@ -425,7 +425,7 @@ using namespace metal;
                 threadgroup const half* v_vector_from_tile_h = V_tile + (local_thread_idx * padded_head_dim_hoisted);
 
                 float weight_term = thread_exp_val;
-                float exp_term = fast::exp(max(m_local_tile_val - m_global_current_iter_atomic, params.log_exp_min_clamp));
+                float exp_term = precise::exp(max(m_local_tile_val - m_global_current_iter_atomic, params.log_exp_min_clamp));
                 float final_p_attn_weight_numerator = weight_term * exp_term;
 
                 for (uint d_idx = 0; d_idx < params.head_dim; d_idx += 4) {
