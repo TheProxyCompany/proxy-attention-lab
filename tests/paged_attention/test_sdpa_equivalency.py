@@ -45,8 +45,9 @@ mx.random.seed(11)  # signed - jckwind :)
         (1, 16, (1, 1), 64, mx.float16),  # Different head dimension
         (1, 16, (2, 2), 32, mx.float16),  # num q = num kv heads
         (1, 16, (4, 2), 128, mx.float16),  # 128 head dim
-        (1, 2048, (32, 16), 128, mx.float16),  # Gemma 3 27b
+        (1, 1024, (32, 16), 128, mx.float16),  # Gemma 3 27b
         (2, 32, (4, 4), 32, mx.float16),  # Batched Example
+        (2, 2048, (32, 16), 128, mx.float16),  # Batch of 2, Gemma 3 27b
     ],
 )
 def test_pal_vs_sdpa_equivalency_mha(batch_size, seq_len, num_heads, head_dim, dtype):
@@ -245,8 +246,9 @@ def test_pal_vs_sdpa_equivalency_mha(batch_size, seq_len, num_heads, head_dim, d
         (1, 16, (1, 1), 64, mx.float16),  # Different head dimension
         (1, 64, (2, 2), 32, mx.float16),  # num q = num kv heads
         (1, 64, (4, 2), 128, mx.float16),  # 128 head dim
-        (1, 2048, (32, 16), 128, mx.float16),  # Gemma 3 27b
+        (1, 1024, (32, 16), 128, mx.float16),  # Gemma 3 27b
         (2, 32, (4, 4), 32, mx.float16),  # Batched Example
+        (2, 2048, (32, 16), 128, mx.float16),  # Batch of 2, Gemma 3 27b
     ],
 )
 def test_pal_decode_vs_sdpa_equivalency(batch_size, history_len, num_heads, head_dim, dtype):
