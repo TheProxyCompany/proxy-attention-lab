@@ -131,14 +131,7 @@ using namespace metal;
     if (item_seq_idx_in_batch >= params.num_sequences_in_batch) {
         // Zero all outputs for this token and exit
         if (local_thread_idx == 0) {
-            // Need to zero out all heads for this token
-            for (uint q_head_idx = 0; q_head_idx < params.num_q_heads; ++q_head_idx) {
-                uint output_offset = token_idx * params.num_q_heads * params.head_dim +
-                                    q_head_idx * params.head_dim;
-                for (uint i = 0; i < params.head_dim; ++i) {
-                    output_buffer[output_offset + i] = 0.0h;
-                }
-            }
+            zero_output_vector_for_item(global_item_idx, output_buffer, params);
         }
         return;
     }
@@ -154,14 +147,7 @@ using namespace metal;
     if (item_signed_query_token_offset < 0) {
         // Zero all outputs for this token and exit
         if (local_thread_idx == 0) {
-            // Need to zero out all heads for this token
-            for (uint q_head_idx = 0; q_head_idx < params.num_q_heads; ++q_head_idx) {
-                uint output_offset = token_idx * params.num_q_heads * params.head_dim +
-                                    q_head_idx * params.head_dim;
-                for (uint i = 0; i < params.head_dim; ++i) {
-                    output_buffer[output_offset + i] = 0.0h;
-                }
-            }
+            zero_output_vector_for_item(global_item_idx, output_buffer, params);
         }
         return;
     }
