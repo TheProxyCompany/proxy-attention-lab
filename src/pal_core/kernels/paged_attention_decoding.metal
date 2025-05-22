@@ -365,7 +365,7 @@ using namespace metal;
         if (local_thread_idx < current_hist_tile_actual_len &&
             m_local_tile_val != -INFINITY &&
             thread_score_val != -INFINITY) {
-            thread_exp_val = fast::exp(max(thread_score_val - m_local_tile_val,
+            thread_exp_val = precise::exp(max(thread_score_val - m_local_tile_val,
                                         params.log_exp_min_clamp));
         }
 

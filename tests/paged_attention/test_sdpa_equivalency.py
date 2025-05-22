@@ -32,6 +32,8 @@ logger = logging.getLogger(__name__)
 
 tokens_per_page = 64
 
+mx.random.seed(11)  # signed - jckwind :)
+
 
 @pytest.mark.parametrize(
     "batch_size, seq_len, num_heads, head_dim, dtype",
