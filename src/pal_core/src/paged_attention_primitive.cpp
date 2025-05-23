@@ -461,13 +461,10 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
       execution_width    // Pass the actual execution_width here
   );
 
-  // Use the same threads_to_launch for kernel execution
-  size_t final_threads_to_launch = threads_to_launch;
-
   spdlog::debug(
       "[PAL Primitive Dispatch] Using fixed threads_to_launch: {}, tile_size_T_runtime: {}, "
       "execution_width: {}, max_threads_device: {}",
-      final_threads_to_launch,
+      threads_to_launch,
       params_struct.tile_size_T_runtime,
       execution_width,
       execution_width
@@ -505,7 +502,7 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
       params_struct,
       memory_layout.total_bytes,
       dispatch_grid_width, // Use appropriate grid width based on mode
-      final_threads_to_launch // Pass the dynamically sized thread count
+      threads_to_launch // Pass the dynamically sized thread count
   );
 }
 
