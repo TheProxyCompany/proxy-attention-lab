@@ -459,7 +459,7 @@ using namespace metal;
     // --- 10.2/10: Final Normalization & Output Write (Fused Path) ---
     // Use the threadgroup shared final s_global value from g_global_stats_ptr
     float s_global_final = (*tg_global_stats).y;
-    float inv_s_global = (s_global_final > kEpsilonForZeroGuard) ? (1.0f / s_global_final) : 0.0f;
+    float inv_s_global = (s_global_final > kEpsilonForZeroGuard) ? fast::divide(1.0f, s_global_final) : 0.0f;
 
     // Normalize the full acc_tile_local_fp32 using float4 chunks
     for (uint i = 0; i < params.head_dim; i += 4) {
