@@ -251,13 +251,9 @@ using namespace metal;
                      chunk_idx_in_row < chunks_per_row_const;
                      chunk_idx_in_row += simd_size_const) {
 
-                    // Scalar loads from global memory to avoid alignment issues
-                    uint base_offset_global_k = chunk_idx_in_row * 4;
-                    half kh0 = k_vector_global_ptr[base_offset_global_k + 0];
-                    half kh1 = k_vector_global_ptr[base_offset_global_k + 1];
-                    half kh2 = k_vector_global_ptr[base_offset_global_k + 2];
-                    half kh3 = k_vector_global_ptr[base_offset_global_k + 3];
-                    half4 h4_val_from_global = half4(kh0, kh1, kh2, kh3);
+                    // Vectorized load - since head_dim is validated to be multiple of 4
+                    device const half4* k_vec_h4_ptr = reinterpret_cast<device const half4*>(k_vector_global_ptr);
+                    half4 h4_val_from_global = k_vec_h4_ptr[chunk_idx_in_row];
 
                     dst_row_h4_ptr[chunk_idx_in_row] = h4_val_from_global;  // Store to K_tile
                 }
@@ -299,13 +295,9 @@ using namespace metal;
                      chunk_idx_in_row < chunks_per_row_const;
                      chunk_idx_in_row += simd_size_const) {
 
-                    // Scalar loads from global memory to avoid alignment issues
-                    uint base_offset_global_v = chunk_idx_in_row * 4;
-                    half vh0 = v_vector_global_ptr[base_offset_global_v + 0];
-                    half vh1 = v_vector_global_ptr[base_offset_global_v + 1];
-                    half vh2 = v_vector_global_ptr[base_offset_global_v + 2];
-                    half vh3 = v_vector_global_ptr[base_offset_global_v + 3];
-                    half4 h4_val_from_global = half4(vh0, vh1, vh2, vh3);
+                    // Vectorized load - since head_dim is validated to be multiple of 4
+                    device const half4* v_vec_h4_ptr = reinterpret_cast<device const half4*>(v_vector_global_ptr);
+                    half4 h4_val_from_global = v_vec_h4_ptr[chunk_idx_in_row];
 
                     dst_row_h4_ptr[chunk_idx_in_row] = h4_val_from_global;  // Store to V_tile
                 }
@@ -318,7 +310,7 @@ using namespace metal;
                 }
             }
         } // end for row_idx_in_tile
-        threadgroup_barrier(mem_flags::mem_threadgroup); // Ensure K_tile is fully populated before use
+        threadgroup_barrier(mem_flags::mem_threadgroup); // Ensure V_tile is fully populated before use
 
         // --- 10.1.1/10: History Tile - Score Calculation (no stashing in fused path) ---
         float thread_score_val = -INFINITY; // Default to a state that would lead to zero contribution
@@ -340,7 +332,6 @@ using namespace metal;
         // All simdgroup partial sums must be visible before thread 0 reduces
         threadgroup_barrier(mem_flags::mem_threadgroup); // Ensure G_simd_reduced_maxes written
 
-        // --- 10.1.2/10: History Tile - Local Max (m_local_tile_val) Reduction ---
         float m_local_tile_val = -INFINITY;
         if (local_thread_idx == 0) {
             if (current_hist_tile_actual_len == 0) {
