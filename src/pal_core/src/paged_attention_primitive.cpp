@@ -377,45 +377,6 @@ void PagedAttentionPrimitive::eval_cpu(const std::vector<mx::array>& inputs, mx:
         "[PagedAttentionPrimitive] CPU evaluation is not supported for " + oss.str());
 }
 
-void PagedAttentionPrimitive::dispatch_metal_kernel(
-    mlx::core::metal::CommandEncoder& compute_encoder,
-    MTL::ComputePipelineState* kernel_pso,
-    const std::vector<mx::array>& kernel_inputs,
-    mx::array& kernel_out_array,
-    const PagedAttentionParams& kernel_params,
-    size_t total_tg_memory_bytes,
-    size_t items_to_process_count,
-    size_t threads_per_group_count) {
-
-  compute_encoder.set_compute_pipeline_state(kernel_pso); // Set PSO here
-
-  // Set input arrays for the compute encoder
-  compute_encoder.set_input_array(kernel_inputs[0], 0); // q
-  compute_encoder.set_input_array(kernel_inputs[1], 1); // k_pool
-  compute_encoder.set_input_array(kernel_inputs[2], 2); // v_pool
-  compute_encoder.set_input_array(kernel_inputs[3], 3); // page_table
-  compute_encoder.set_input_array(kernel_inputs[4], 4); // sequence_lengths
-  compute_encoder.set_input_array(kernel_inputs[5], 5); // query_to_seq_map
-  compute_encoder.set_input_array(kernel_inputs[6], 6); // query_token_offset
-
-  // Upload the parameter struct to the GPU
-  compute_encoder.set_bytes(&kernel_params, sizeof(PagedAttentionParams), 7);
-
-  // Set the output array
-  compute_encoder.set_output_array(kernel_out_array, 8);
-
-  // Configure dispatch grid sizes
-  MTL::Size threadgroups_per_grid = MTL::Size(items_to_process_count, 1, 1);
-  MTL::Size threads_per_threadgroup = MTL::Size(threads_per_group_count, 1, 1);
-
-  spdlog::debug("[PAL Primitive Dispatch] Dispatching kernel with items_to_process_count: {}", items_to_process_count);
-  spdlog::debug("[PAL Primitive Dispatch] Dispatching kernel with threads_per_group_count: {}", threads_per_group_count);
-
-  // Set the threadgroup memory length and dispatch the kernel
-  compute_encoder.set_threadgroup_memory_length(total_tg_memory_bytes, 0);
-  compute_encoder.dispatch_threadgroups(threadgroups_per_grid, threads_per_threadgroup);
-}
-
 void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
                                        mx::array& out) {
   // Prepare Metal kernel and command encoder
@@ -493,17 +454,33 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
 
   spdlog::debug("[PAL Primitive Dispatch] Dispatching kernel with tile_size_T_runtime: {}", params_struct.tile_size_T_runtime);
 
-  // Call the dispatch_metal_kernel helper with all needed parameters
-  dispatch_metal_kernel(
-      compute_encoder,
-      kernel_state_,
-      inputs,
-      out,
-      params_struct,
-      memory_layout.total_bytes,
-      dispatch_grid_width, // Use appropriate grid width based on mode
-      threads_to_launch // Pass the dynamically sized thread count
-  );
+  compute_encoder.set_compute_pipeline_state(kernel_state_); // Set PSO here
+
+  // Set input arrays for the compute encoder
+  compute_encoder.set_input_array(inputs[0], 0); // q
+  compute_encoder.set_input_array(inputs[1], 1); // k_pool
+  compute_encoder.set_input_array(inputs[2], 2); // v_pool
+  compute_encoder.set_input_array(inputs[3], 3); // page_table
+  compute_encoder.set_input_array(inputs[4], 4); // sequence_lengths
+  compute_encoder.set_input_array(inputs[5], 5); // query_to_seq_map
+  compute_encoder.set_input_array(inputs[6], 6); // query_token_offset
+
+  // Upload the parameter struct to the GPU
+  compute_encoder.set_bytes(&params_struct, sizeof(PagedAttentionParams), 7);
+
+  // Set the output array
+  compute_encoder.set_output_array(out, 8);
+
+  // Configure dispatch grid sizes
+  MTL::Size threadgroups_per_grid = MTL::Size(dispatch_grid_width, 1, 1);
+  MTL::Size threads_per_threadgroup = MTL::Size(threads_to_launch, 1, 1);
+
+  spdlog::debug("[PAL Primitive Dispatch] Dispatching kernel with dispatch_grid_width: {}", dispatch_grid_width);
+  spdlog::debug("[PAL Primitive Dispatch] Dispatching kernel with threads_to_launch: {}", threads_to_launch);
+
+  // Set the threadgroup memory length and dispatch the kernel
+  compute_encoder.set_threadgroup_memory_length(memory_layout.total_bytes, 0);
+  compute_encoder.dispatch_threadgroups(threadgroups_per_grid, threads_per_threadgroup);
 }
 
 bool PagedAttentionPrimitive::is_equivalent(const mx::Primitive& other) const {
