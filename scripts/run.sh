@@ -52,6 +52,10 @@ export CMAKE_BUILD_PARALLEL_LEVEL=8 # Set parallel build level to 8
 
 # Run Pytest
 log "Running tests..."
-"$PYTEST_EXE" tests/ "$@"
+if [[ "$*" == *"@"* ]]; then
+    "$PYTEST_EXE" "$@"
+else
+    "$PYTEST_EXE" tests/ "$@"
+fi
 
 log "PAL Build & Test run finished successfully."

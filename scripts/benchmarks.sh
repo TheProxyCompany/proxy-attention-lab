@@ -515,8 +515,8 @@ main() {
     log "Benchmark Suite Finished in ${total_duration}s."
     hr
 
-    # run unit tests just to be sure
-    pytest tests/
+    # run unit tests just to be sure our changes didn't break anything
+    pytest -q tests/ >/dev/null
 
     open "${BENCHMARK_OUTPUT_ROOT}/latency_vs_seq_len.png"
 }
