@@ -1,4 +1,4 @@
-// paged_attention.metal
+// paged_attention_prefill.metal
 // Metal shader implementation for paged attention operations with tiled V accumulation.
 //
 // Copyright 2024 The Proxy Company. All Rights Reserved.
@@ -22,7 +22,7 @@
 using namespace metal;
 
 /**
- * paged_attn_kernel
+ * paged_attn_prefill_kernel
  * -----------------
  * Fused paged attention for transformer models. Supports MHA, GQA and MQA with
  * vectorized loads, K/V caching and SIMD reductions. One threadgroup handles a
@@ -30,7 +30,7 @@ using namespace metal;
  * load & scale Q, tile K/V history, online softmax, accumulate V and final normalization.
  * Assumes params.head_dim is a multiple of 4, validated on host.
  */
-[[kernel]] void paged_attn_kernel(
+[[kernel]] void paged_attn_prefill_kernel(
     device      const half* queries_in              [[buffer(0)]],
     device      const half* k_cache_pool_in         [[buffer(1)]],
     device      const half* v_cache_pool_in         [[buffer(2)]],
@@ -40,6 +40,7 @@ using namespace metal;
     device      const int*  query_token_offset_in   [[buffer(6)]],
     constant    const PagedAttentionParams& params  [[buffer(7)]],
     device      half* output_buffer                 [[buffer(8)]],
+    uint actual_simd_width                          [[threads_per_simdgroup]],
     threadgroup float* tg_mem                       [[threadgroup(0)]],
     uint3       tg_pos_in_grid                      [[threadgroup_position_in_grid]],
     uint3       tg_dim                              [[threads_per_threadgroup]],
@@ -60,7 +61,7 @@ using namespace metal;
     uint global_item_idx = tg_pos_in_grid.x;    // Now identifies the query token, not query-head item
     uint token_idx = global_item_idx;           // For clarity: token_idx is now just global_item_idx
     uint local_thread_idx = local_idx_in_tg;    // Thread ID within this group
-    const uint num_simd_groups = max(1u, (tg_dim.x + kSimdLanesPerGroup - 1) / kSimdLanesPerGroup); // Calculate number of actual SIMD groups
+    const uint num_simd_groups = max(1u, (tg_dim.x + actual_simd_width - 1) / actual_simd_width);
 
     // --- 5/10: Threadgroup Memory Carving ---
     // Layout for reductions, statistics and vector caching.
@@ -130,12 +131,11 @@ using namespace metal;
     if (item_seq_idx_in_batch >= params.num_sequences_in_batch) {
         // Zero all outputs for this token and exit
         if (local_thread_idx == 0) {
-            // Need to zero out all heads for this token
-            for (uint q_head_idx = 0; q_head_idx < params.num_q_heads; ++q_head_idx) {
-                uint output_offset = token_idx * params.num_q_heads * params.head_dim +
-                                    q_head_idx * params.head_dim;
+            // Zero all query heads for this token
+            for (uint q_head = 0; q_head < params.num_q_heads; ++q_head) {
+                uint output_base_idx = token_idx * params.num_q_heads * params.head_dim + q_head * params.head_dim;
                 for (uint i = 0; i < params.head_dim; ++i) {
-                    output_buffer[output_offset + i] = 0.0h;
+                    output_buffer[output_base_idx + i] = 0.0h;
                 }
             }
         }
@@ -153,12 +153,11 @@ using namespace metal;
     if (item_signed_query_token_offset < 0) {
         // Zero all outputs for this token and exit
         if (local_thread_idx == 0) {
-            // Need to zero out all heads for this token
-            for (uint q_head_idx = 0; q_head_idx < params.num_q_heads; ++q_head_idx) {
-                uint output_offset = token_idx * params.num_q_heads * params.head_dim +
-                                    q_head_idx * params.head_dim;
+            // Zero all query heads for this token
+            for (uint q_head = 0; q_head < params.num_q_heads; ++q_head) {
+                uint output_base_idx = token_idx * params.num_q_heads * params.head_dim + q_head * params.head_dim;
                 for (uint i = 0; i < params.head_dim; ++i) {
-                    output_buffer[output_offset + i] = 0.0h;
+                    output_buffer[output_base_idx + i] = 0.0h;
                 }
             }
         }
@@ -191,12 +190,19 @@ using namespace metal;
         }
 
         // --- Stage Q-Vector into Shared Memory ---
-        device const half4* q_vec_h4 = reinterpret_cast<device const half4*>(q_vector_current_head_ptr);
+        // Use scalar loads to avoid misalignment issues
         threadgroup float4* q_vec_f4 = reinterpret_cast<threadgroup float4*>(q_shmem);
 
         for (uint chunk = local_thread_idx; chunk < params.head_dim / 4; chunk += tg_dim.x) {
-            float4 v = float4(q_vec_h4[chunk]) * params.inv_sqrt_head_dim;
-            q_vec_f4[chunk] = v;
+            // Scalar loads from global memory to avoid alignment issues
+            uint base_offset_global_q = chunk * 4;
+            half qh0 = q_vector_current_head_ptr[base_offset_global_q + 0];
+            half qh1 = q_vector_current_head_ptr[base_offset_global_q + 1];
+            half qh2 = q_vector_current_head_ptr[base_offset_global_q + 2];
+            half qh3 = q_vector_current_head_ptr[base_offset_global_q + 3];
+
+            float4 q_float_chunk = float4(qh0, qh1, qh2, qh3) * params.inv_sqrt_head_dim;
+            q_vec_f4[chunk] = q_float_chunk;
         }
         // All threads read q_shmem in later steps, ensure writes complete across the group
         threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -211,9 +217,9 @@ using namespace metal;
         threadgroup_barrier(mem_flags::mem_threadgroup); // Ensure initialized before use
 
         // --- Setup Output Accumulator for this query head ---
-        float acc_tile_local[kMaxHeadDimMetal];
-        for (uint i = 0; i < params.head_dim; ++i) {
-            acc_tile_local[i] = 0.0f;
+        float acc_tile_local_fp32[kMaxHeadDimMetal]; // FP32 accumulator for numerical stability
+        for (uint i_acc = 0; i_acc < params.head_dim; ++i_acc) {
+            acc_tile_local_fp32[i_acc] = 0.0f; // Initialize FP32 accumulator
         }
 
         // --- Main Attention Computation (Fused Pass) for this query head ---
@@ -221,7 +227,7 @@ using namespace metal;
             uint current_hist_tile_actual_len = min(params.tile_size_T_runtime, item_effective_history_length - hist_tile_start);
 
             // --- Load K-vectors into K_tile ---
-            const uint simd_size_const = kSimdLanesPerGroup; // Use our defined constant
+            const uint simd_size_const = actual_simd_width; // Use the new argument
             const uint threads_pg_const = tg_dim.x;          // Total threads launched for this group
             const uint num_sg_const = max(1u, (threads_pg_const + simd_size_const - 1) / simd_size_const);
             const uint rows_in_tile_const = current_hist_tile_actual_len;
@@ -230,7 +236,7 @@ using namespace metal;
             // Each SIMD group cooperatively loads one or more rows assigned to it
             for (uint row_idx_in_tile = simd_group_id; // SIMD group 'simd_group_id' starts with this row
                  row_idx_in_tile < rows_in_tile_const;
-                 row_idx_in_tile += num_sg_const) { // Strides by number of SIMD groups
+                 row_idx_in_tile += num_sg_const) {
 
                 // 1A. Get global pointer to the K-vector for this row_idx_in_tile
                 device const half* k_vector_global_ptr = fetch_kv_pointer(
@@ -249,15 +255,16 @@ using namespace metal;
 
                 // 1C. Cooperative lane-striped copy (or zero-fill) by this SIMD group for this row
                 if (k_vector_global_ptr != nullptr) {
-                    device const half4* src_h4_ptr = reinterpret_cast<device const half4*>(k_vector_global_ptr);
-
                     // Lanes within this SIMD group load chunks of the K-vector for 'row_idx_in_tile'
                     for (uint chunk_idx_in_row = simd_lane_id; // Lane 'simd_lane_id' starts with this chunk
                          chunk_idx_in_row < chunks_per_row_const;
-                         chunk_idx_in_row += simd_size_const) { // Strides by SIMD width if head_dim > (simd_size * 4)
+                         chunk_idx_in_row += simd_size_const) {
 
-                        half4 h4_val = src_h4_ptr[chunk_idx_in_row];    // Coalesced 16-byte read
-                        dst_row_h4_ptr[chunk_idx_in_row] = h4_val;      // Store directly as half4
+                        // Vectorized load - since head_dim is validated to be multiple of 4
+                        device const half4* k_vec_h4_ptr = reinterpret_cast<device const half4*>(k_vector_global_ptr);
+                        half4 h4_val_from_global = k_vec_h4_ptr[chunk_idx_in_row];
+
+                        dst_row_h4_ptr[chunk_idx_in_row] = h4_val_from_global;  // Store to K_tile
                     }
                 } else { // nullptr from fetch_kv_pointer, so zero the row
                     for (uint chunk_idx_in_row = simd_lane_id;
@@ -296,15 +303,16 @@ using namespace metal;
 
                 // 1C. Cooperative lane-striped copy (or zero-fill) by this SIMD group for this row
                 if (v_vector_global_ptr != nullptr) {
-                    device const half4* src_h4_ptr = reinterpret_cast<device const half4*>(v_vector_global_ptr);
-
                     // Lanes within this SIMD group load chunks of the V-vector for 'row_idx_in_tile'
                     for (uint chunk_idx_in_row = simd_lane_id;
                          chunk_idx_in_row < chunks_per_row_const;
                          chunk_idx_in_row += simd_size_const) {
 
-                        half4 h4_val = src_h4_ptr[chunk_idx_in_row];
-                        dst_row_h4_ptr[chunk_idx_in_row] = h4_val;      // Store directly as half4
+                        // Vectorized load - since head_dim is validated to be multiple of 4
+                        device const half4* v_vec_h4_ptr = reinterpret_cast<device const half4*>(v_vector_global_ptr);
+                        half4 h4_val_from_global = v_vec_h4_ptr[chunk_idx_in_row];
+
+                        dst_row_h4_ptr[chunk_idx_in_row] = h4_val_from_global;  // Store to V_tile
                     }
                 } else { // nullptr from fetch_kv_pointer, so zero the row
                     for (uint chunk_idx_in_row = simd_lane_id;
@@ -337,7 +345,6 @@ using namespace metal;
             // All simdgroup partial sums must be visible before thread 0 reduces
             threadgroup_barrier(mem_flags::mem_threadgroup); // Ensure G_simd_reduced_maxes written
 
-            // --- 10.1.2/10: History Tile - Local Max (m_local_tile_val) Reduction ---
             float m_local_tile_val = -INFINITY;
             if (local_thread_idx == 0) {
                 if (current_hist_tile_actual_len == 0) {
@@ -362,7 +369,7 @@ using namespace metal;
             if (local_thread_idx < current_hist_tile_actual_len &&
                 m_local_tile_val != -INFINITY &&
                 thread_score_val != -INFINITY) {
-                thread_exp_val = fast::exp(max(thread_score_val - m_local_tile_val,
+                thread_exp_val = precise::exp(max(thread_score_val - m_local_tile_val,
                                             params.log_exp_min_clamp));
             }
 
@@ -409,18 +416,18 @@ using namespace metal;
             if (scale_for_acc_iter_atomic != 1.0f) {
                 // Rescale previously accumulated V-values.
                 // If m_global increased due to the current tile's m_local_tile,
-                // previous contributions to acc_tile_local were effectively based on an older, smaller m_global.
+                // previous contributions to acc_tile_local_fp32 were effectively based on an older, smaller m_global.
                 // This scale_for_acc_iter_atomic adjusts them to the new m_global for consistent normalization.
                 for (uint d = 0; d < params.head_dim; d += 4) {
-                    float4 acc_chunk = float4(acc_tile_local[d],
-                                            (d + 1 < params.head_dim) ? acc_tile_local[d+1] : 0.0f,
-                                            (d + 2 < params.head_dim) ? acc_tile_local[d+2] : 0.0f,
-                                            (d + 3 < params.head_dim) ? acc_tile_local[d+3] : 0.0f);
+                    float4 acc_chunk = float4(acc_tile_local_fp32[d],
+                                            (d + 1 < params.head_dim) ? acc_tile_local_fp32[d+1] : 0.0f,
+                                            (d + 2 < params.head_dim) ? acc_tile_local_fp32[d+2] : 0.0f,
+                                            (d + 3 < params.head_dim) ? acc_tile_local_fp32[d+3] : 0.0f);
                     acc_chunk *= scale_for_acc_iter_atomic;
-                    acc_tile_local[d] = acc_chunk.x;
-                    if (d + 1 < params.head_dim) acc_tile_local[d+1] = acc_chunk.y;
-                    if (d + 2 < params.head_dim) acc_tile_local[d+2] = acc_chunk.z;
-                    if (d + 3 < params.head_dim) acc_tile_local[d+3] = acc_chunk.w;
+                    acc_tile_local_fp32[d] = acc_chunk.x;
+                    if (d + 1 < params.head_dim) acc_tile_local_fp32[d+1] = acc_chunk.y;
+                    if (d + 2 < params.head_dim) acc_tile_local_fp32[d+2] = acc_chunk.z;
+                    if (d + 3 < params.head_dim) acc_tile_local_fp32[d+3] = acc_chunk.w;
                 }
             }
 
@@ -430,28 +437,25 @@ using namespace metal;
                 threadgroup const half* v_vector_from_tile_h = V_tile + (local_thread_idx * padded_head_dim_hoisted);
 
                 float weight_term = thread_exp_val;
-                float exp_term = fast::exp(max(m_local_tile_val - m_global_current_iter_atomic, params.log_exp_min_clamp));
+                float exp_term = precise::exp(max(m_local_tile_val - m_global_current_iter_atomic, params.log_exp_min_clamp));
                 float final_p_attn_weight_numerator = weight_term * exp_term;
 
                 for (uint d_idx = 0; d_idx < params.head_dim; d_idx += 4) {
-                    // Read half4 from V_tile and convert to float4 on-the-fly
-                    float4 v_chunk = float4(*((threadgroup const half4*)(v_vector_from_tile_h + d_idx)));
+                    // Explicitly construct float4 from half values in V_tile
+                    float4 v_chunk_fp32 = float4(
+                        (d_idx + 0 < params.head_dim) ? float(v_vector_from_tile_h[d_idx + 0]) : 0.0f,
+                        (d_idx + 1 < params.head_dim) ? float(v_vector_from_tile_h[d_idx + 1]) : 0.0f,
+                        (d_idx + 2 < params.head_dim) ? float(v_vector_from_tile_h[d_idx + 2]) : 0.0f,
+                        (d_idx + 3 < params.head_dim) ? float(v_vector_from_tile_h[d_idx + 3]) : 0.0f
+                    );
 
-                    // For handling head_dim that might not be a multiple of 4 (safety)
-                    if (d_idx + 4 > params.head_dim) {
-                        if (d_idx + 3 >= params.head_dim) v_chunk.w = 0.0f;
-                        if (d_idx + 2 >= params.head_dim) v_chunk.z = 0.0f;
-                        if (d_idx + 1 >= params.head_dim) v_chunk.y = 0.0f;
-                    }
+                    v_chunk_fp32 *= final_p_attn_weight_numerator; // Multiply as floats
 
-                    // Weighted contribution from this token's V-vector
-                    v_chunk *= final_p_attn_weight_numerator;
-
-                    // Accumulate into acc_tile_local
-                    acc_tile_local[d_idx] += v_chunk.x;
-                    if (d_idx + 1 < params.head_dim) acc_tile_local[d_idx + 1] += v_chunk.y;
-                    if (d_idx + 2 < params.head_dim) acc_tile_local[d_idx + 2] += v_chunk.z;
-                    if (d_idx + 3 < params.head_dim) acc_tile_local[d_idx + 3] += v_chunk.w;
+                    // Accumulate into FP32 accumulator
+                    acc_tile_local_fp32[d_idx]     += v_chunk_fp32.x;
+                    if (d_idx + 1 < params.head_dim) acc_tile_local_fp32[d_idx + 1] += v_chunk_fp32.y;
+                    if (d_idx + 2 < params.head_dim) acc_tile_local_fp32[d_idx + 2] += v_chunk_fp32.z;
+                    if (d_idx + 3 < params.head_dim) acc_tile_local_fp32[d_idx + 3] += v_chunk_fp32.w;
                 }
             }
         } // End history tiling loop
@@ -459,23 +463,23 @@ using namespace metal;
         // --- 10.2/10: Final Normalization & Output Write (Fused Path) for current query head ---
         // Use the threadgroup shared final s_global value from g_global_stats_ptr
         float s_global_final = (*tg_global_stats).y;
-        float inv_s_global = (s_global_final > kEpsilonForZeroGuard) ? (1.0f / s_global_final) : 0.0f;
+        float inv_s_global = (s_global_final > kEpsilonForZeroGuard) ? fast::divide(1.0f, s_global_final) : 0.0f;
 
-        // Normalize the full acc_tile_local using float4 chunks
+        // Normalize the full acc_tile_local_fp32 using float4 chunks
         for (uint i = 0; i < params.head_dim; i += 4) {
-            thread float4* chunk_ptr = reinterpret_cast<thread float4*>(acc_tile_local + i);
+            thread float4* chunk_ptr = reinterpret_cast<thread float4*>(acc_tile_local_fp32 + i);
             float4 chunk = *chunk_ptr;
             chunk *= inv_s_global;
             *chunk_ptr = chunk;
         }
 
-        // Reduce the now-normalized acc_tile_local across the threadgroup and write to output_buffer
+        // Reduce the now-normalized acc_tile_local_fp32 across the threadgroup and write to output_buffer
         for (uint i = 0; i < params.head_dim; i += 4) {
             float4 chunk_to_write = float4(0.0f);
-            if (i < params.head_dim)     chunk_to_write.x = acc_tile_local[i+0];
-            if (i+1 < params.head_dim) chunk_to_write.y = acc_tile_local[i+1];
-            if (i+2 < params.head_dim) chunk_to_write.z = acc_tile_local[i+2];
-            if (i+3 < params.head_dim) chunk_to_write.w = acc_tile_local[i+3];
+            if (i < params.head_dim)     chunk_to_write.x = acc_tile_local_fp32[i+0];
+            if (i+1 < params.head_dim) chunk_to_write.y = acc_tile_local_fp32[i+1];
+            if (i+2 < params.head_dim) chunk_to_write.z = acc_tile_local_fp32[i+2];
+            if (i+3 < params.head_dim) chunk_to_write.w = acc_tile_local_fp32[i+3];
 
             float4 reduced_simd_group_final_chunk;
             reduced_simd_group_final_chunk.x = simd_sum(chunk_to_write.x);

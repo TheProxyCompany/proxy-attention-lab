@@ -30,14 +30,17 @@
 
 namespace pal::cpp {
 
-mx::array paged_attention(const mx::array& queries,
-                          const mx::array& k_cache_pool,
-                          const mx::array& v_cache_pool,
-                          const mx::array& page_table,
-                          const mx::array& sequence_lengths,
-                          const mx::array& query_to_seq_map,
-                          const mx::array& query_token_offset,
-                          mx::StreamOrDevice stream_or_device) {
+mx::array paged_attention(
+    const mx::array& queries,
+    const mx::array& k_cache_pool,
+    const mx::array& v_cache_pool,
+    const mx::array& page_table,
+    const mx::array& sequence_lengths,
+    const mx::array& query_to_seq_map,
+    const mx::array& query_token_offset,
+    bool is_prefill,
+    mx::StreamOrDevice stream_or_device
+  ) {
   spdlog::debug("[PAL Ops] pal::cpp::paged_attention C++ operation called.");
 
   // Ensure Metal library is loaded and registered
@@ -64,12 +67,12 @@ mx::array paged_attention(const mx::array& queries,
 
   spdlog::debug(
       "[PAL Ops] Creating primitive with extracted params: num_q_heads={}, "
-      "num_kv_heads={}, head_dim={}, tokens_per_page={}",
-      num_q_heads, num_kv_heads, head_dim, tokens_per_page);
+      "num_kv_heads={}, head_dim={}, tokens_per_page={}, is_prefill={}",
+      num_q_heads, num_kv_heads, head_dim, tokens_per_page, is_prefill ? "true" : "false");
 
   // Create the primitive instance with the extracted parameters
   auto primitive = std::make_shared<PagedAttentionPrimitive>(
-      stream_or_device, num_q_heads, num_kv_heads, head_dim, tokens_per_page);
+      stream_or_device, num_q_heads, num_kv_heads, head_dim, tokens_per_page, is_prefill);
 
   spdlog::debug("[PAL Ops] PagedAttentionPrimitive instance created.");
 

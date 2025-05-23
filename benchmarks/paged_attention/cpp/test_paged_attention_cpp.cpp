@@ -35,9 +35,9 @@ namespace mx = mlx::core;
 // Static initializer to set spdlog level for benchmarks
 struct BenchmarkSpdlogInitializer {
     BenchmarkSpdlogInitializer() {
-        // Set default log level for benchmarks to warning to reduce noise
+        // Set default log level for benchmarks to debug to see GPU copy logs
         spdlog::set_level(spdlog::level::debug);
-        spdlog::info("PAL C++ Benchmarks: spdlog level set to 'warn'. Debug/trace messages from pal_core_lib will be suppressed.");
+        spdlog::info("PAL C++ Benchmarks: spdlog level set to 'debug' for debugging GPU copies.");
     }
 };
 // This object will be constructed before main(), ensuring the log level is set
@@ -173,7 +173,8 @@ static void BM_PAL_LatencyVsSeqLen(benchmark::State& state) {
             page_table,
             sequence_lengths,
             query_to_seq_map,
-            query_token_offset
+            query_token_offset,
+            true // use prefill mode for this benchmark
         );
         out.eval();
     }
@@ -288,7 +289,8 @@ void BM_PAL_LatencyVsSeqLen_Setup(const ::benchmark::State& state) {
     mx::array warm = pal::cpp::paged_attention(
         queries, k_cache_pool, v_cache_pool,
         page_table, sequence_lengths,
-        query_to_seq_map, query_token_offset);
+        query_to_seq_map, query_token_offset,
+        true); // use prefill mode
     warm.eval();                  // wait for GPU
 }
 
@@ -355,7 +357,8 @@ static void BM_PAL_DecodeLatencyVsHistoryLen(benchmark::State& state) {
             page_table,
             sequence_lengths,
             query_to_seq_map,
-            query_token_offset
+            query_token_offset,
+            false // use decode mode for this benchmark
         );
         out.eval();
     }

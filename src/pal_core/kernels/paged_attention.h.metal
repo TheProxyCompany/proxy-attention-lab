@@ -30,6 +30,7 @@ constant static const uint kAlignmentBytes = 64;
 constant static const uint kAlignmentMask = kAlignmentBytes - 1;
 
 constant static const float kEpsilonForZeroGuard = 1e-9f;
+constant static const float kSmallDenominatorThreshold = 1e-6f;
 
 
 /**
@@ -92,7 +93,7 @@ static inline uint map_q_to_kv_head(
     } else { // MHA or MQA (num_q_heads <= num_kv_heads)
         target_kv_head_idx = global_item_q_head_idx; // For MHA, direct map. For MQA (q_heads=1), this is 0.
     }
-    return target_kv_head_idx % num_kv_heads_param; // Final safety modulo
+    return target_kv_head_idx; // Removed redundant modulo
 }
 
 /**
@@ -189,7 +190,17 @@ static inline void update_softmax_stats_kahan(
         c_s_new = c_s_prev * scale_f;         // Rescale its compensation term
     }
 
-    float term_to_add = d_local_tile_from_reduction * fast::exp(max(m_local_tile_from_reduction - m_new, params.log_exp_min_clamp));
+    // For improved precision when d_local_tile_from_reduction is very large or small,
+    // use precise::exp for the second exponentiation in critical cases
+    float exp_arg = max(m_local_tile_from_reduction - m_new, params.log_exp_min_clamp);
+    float term_to_add;
+
+    // Use precise::exp when the argument is large in magnitude or d_local is extreme
+    if (abs(exp_arg) > 10.0f || d_local_tile_from_reduction > 1e6f || d_local_tile_from_reduction < 1e-6f) {
+        term_to_add = d_local_tile_from_reduction * precise::exp(exp_arg);
+    } else {
+        term_to_add = d_local_tile_from_reduction * fast::exp(exp_arg);
+    }
 
     float y_kahan = term_to_add - c_s_new; // c_s_new is compensation from *previous* Kahan steps on s_new_uncompensated
     float t_kahan = s_new_uncompensated + y_kahan;
