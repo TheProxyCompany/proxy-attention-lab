@@ -87,6 +87,22 @@ def test_pal_latency_vs_seq_len(benchmark, seq_len_val):
     # Offsets are [1, 2, ..., SL, 1, 2, ..., SL, ...]
     query_token_offset = mx.tile(mx.arange(1, seq_len + 1, dtype=mx.int32), batch_size)
 
+    queries = mx.contiguous(queries)
+    k_cache_pool = mx.contiguous(k_cache_pool)
+    v_cache_pool = mx.contiguous(v_cache_pool)
+    page_table = mx.contiguous(page_table)
+    sequence_lengths = mx.contiguous(sequence_lengths)
+    query_to_seq_map = mx.contiguous(query_to_seq_map)
+    query_token_offset = mx.contiguous(query_token_offset)
+
+    mx.eval(queries)
+    mx.eval(k_cache_pool)
+    mx.eval(v_cache_pool)
+    mx.eval(page_table)
+    mx.eval(sequence_lengths)
+    mx.eval(query_to_seq_map)
+    mx.eval(query_token_offset)
+
     # Define benchmark function that evaluates the result
     def operation_to_benchmark():
         out = paged_attention(
@@ -231,6 +247,22 @@ def setup_pal_decode_inputs(params):
     # For decode, this is history_len + 1 for each token
     query_token_offset = mx.array([history_len + 1] * batch_size, dtype=mx.int32)
 
+    queries = mx.contiguous(queries)
+    k_cache_pool = mx.contiguous(k_cache_pool)
+    v_cache_pool = mx.contiguous(v_cache_pool)
+    page_table = mx.contiguous(page_table)
+    sequence_lengths = mx.contiguous(sequence_lengths)
+    query_to_seq_map = mx.contiguous(query_to_seq_map)
+    query_token_offset = mx.contiguous(query_token_offset)
+
+    mx.eval(queries)
+    mx.eval(k_cache_pool)
+    mx.eval(v_cache_pool)
+    mx.eval(page_table)
+    mx.eval(sequence_lengths)
+    mx.eval(query_to_seq_map)
+    mx.eval(query_token_offset)
+
     return queries, k_cache_pool, v_cache_pool, page_table, sequence_lengths, query_to_seq_map, query_token_offset
 
 
@@ -308,7 +340,13 @@ def test_pal_decode_latency_vs_history_len(benchmark, history_len_val):
     # Define benchmark function that evaluates the result
     def operation_to_benchmark():
         out = paged_attention(
-            queries, k_hist, v_hist, pt, slens_hist, q_map, q_off,
+            queries,
+            k_hist,
+            v_hist,
+            pt,
+            slens_hist,
+            q_map,
+            q_off,
             is_prefill=False,  # explicitly use decode mode for this benchmark
         )
         mx.eval(out)
