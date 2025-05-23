@@ -209,9 +209,9 @@ using namespace metal;
     threadgroup_barrier(mem_flags::mem_threadgroup); // Ensure initialized before use
 
     // --- 9/10: Setup Output Accumulator ---
-    float acc_tile_local[kMaxHeadDimMetal];
-    for (uint i = 0; i < params.head_dim; ++i) {
-        acc_tile_local[i] = 0.0f;
+    float acc_tile_local_fp32[kMaxHeadDimMetal]; // FP32 accumulator for numerical stability
+    for (uint i_acc = 0; i_acc < params.head_dim; ++i_acc) {
+        acc_tile_local_fp32[i_acc] = 0.0f; // Initialize FP32 accumulator
     }
 
     // --- 10/10: Main Attention Computation (Fused Pass) ---
@@ -412,18 +412,18 @@ using namespace metal;
         if (scale_for_acc_iter_atomic != 1.0f) {
             // Rescale previously accumulated V-values.
             // If m_global increased due to the current tile's m_local_tile,
-            // previous contributions to acc_tile_local were effectively based on an older, smaller m_global.
+            // previous contributions to acc_tile_local_fp32 were effectively based on an older, smaller m_global.
             // This scale_for_acc_iter_atomic adjusts them to the new m_global for consistent normalization.
             for (uint d = 0; d < params.head_dim; d += 4) {
-                float4 acc_chunk = float4(acc_tile_local[d],
-                                        (d + 1 < params.head_dim) ? acc_tile_local[d+1] : 0.0f,
-                                        (d + 2 < params.head_dim) ? acc_tile_local[d+2] : 0.0f,
-                                        (d + 3 < params.head_dim) ? acc_tile_local[d+3] : 0.0f);
+                float4 acc_chunk = float4(acc_tile_local_fp32[d],
+                                        (d + 1 < params.head_dim) ? acc_tile_local_fp32[d+1] : 0.0f,
+                                        (d + 2 < params.head_dim) ? acc_tile_local_fp32[d+2] : 0.0f,
+                                        (d + 3 < params.head_dim) ? acc_tile_local_fp32[d+3] : 0.0f);
                 acc_chunk *= scale_for_acc_iter_atomic;
-                acc_tile_local[d] = acc_chunk.x;
-                if (d + 1 < params.head_dim) acc_tile_local[d+1] = acc_chunk.y;
-                if (d + 2 < params.head_dim) acc_tile_local[d+2] = acc_chunk.z;
-                if (d + 3 < params.head_dim) acc_tile_local[d+3] = acc_chunk.w;
+                acc_tile_local_fp32[d] = acc_chunk.x;
+                if (d + 1 < params.head_dim) acc_tile_local_fp32[d+1] = acc_chunk.y;
+                if (d + 2 < params.head_dim) acc_tile_local_fp32[d+2] = acc_chunk.z;
+                if (d + 3 < params.head_dim) acc_tile_local_fp32[d+3] = acc_chunk.w;
             }
         }
 
@@ -437,24 +437,21 @@ using namespace metal;
             float final_p_attn_weight_numerator = weight_term * exp_term;
 
             for (uint d_idx = 0; d_idx < params.head_dim; d_idx += 4) {
-                // Read half4 from V_tile and convert to float4 on-the-fly
-                float4 v_chunk = float4(*((threadgroup const half4*)(v_vector_from_tile_h + d_idx)));
+                // Explicitly construct float4 from half values in V_tile
+                float4 v_chunk_fp32 = float4(
+                    (d_idx + 0 < params.head_dim) ? float(v_vector_from_tile_h[d_idx + 0]) : 0.0f,
+                    (d_idx + 1 < params.head_dim) ? float(v_vector_from_tile_h[d_idx + 1]) : 0.0f,
+                    (d_idx + 2 < params.head_dim) ? float(v_vector_from_tile_h[d_idx + 2]) : 0.0f,
+                    (d_idx + 3 < params.head_dim) ? float(v_vector_from_tile_h[d_idx + 3]) : 0.0f
+                );
 
-                // For handling head_dim that might not be a multiple of 4 (safety)
-                if (d_idx + 4 > params.head_dim) {
-                    if (d_idx + 3 >= params.head_dim) v_chunk.w = 0.0f;
-                    if (d_idx + 2 >= params.head_dim) v_chunk.z = 0.0f;
-                    if (d_idx + 1 >= params.head_dim) v_chunk.y = 0.0f;
-                }
+                v_chunk_fp32 *= final_p_attn_weight_numerator; // Multiply as floats
 
-                // Weighted contribution from this token's V-vector
-                v_chunk *= final_p_attn_weight_numerator;
-
-                // Accumulate into acc_tile_local
-                acc_tile_local[d_idx] += v_chunk.x;
-                if (d_idx + 1 < params.head_dim) acc_tile_local[d_idx + 1] += v_chunk.y;
-                if (d_idx + 2 < params.head_dim) acc_tile_local[d_idx + 2] += v_chunk.z;
-                if (d_idx + 3 < params.head_dim) acc_tile_local[d_idx + 3] += v_chunk.w;
+                // Accumulate into FP32 accumulator
+                acc_tile_local_fp32[d_idx]     += v_chunk_fp32.x;
+                if (d_idx + 1 < params.head_dim) acc_tile_local_fp32[d_idx + 1] += v_chunk_fp32.y;
+                if (d_idx + 2 < params.head_dim) acc_tile_local_fp32[d_idx + 2] += v_chunk_fp32.z;
+                if (d_idx + 3 < params.head_dim) acc_tile_local_fp32[d_idx + 3] += v_chunk_fp32.w;
             }
         }
     } // End history tiling loop
@@ -464,21 +461,21 @@ using namespace metal;
     float s_global_final = (*tg_global_stats).y;
     float inv_s_global = (s_global_final > kEpsilonForZeroGuard) ? (1.0f / s_global_final) : 0.0f;
 
-    // Normalize the full acc_tile_local using float4 chunks
+    // Normalize the full acc_tile_local_fp32 using float4 chunks
     for (uint i = 0; i < params.head_dim; i += 4) {
-        thread float4* chunk_ptr = reinterpret_cast<thread float4*>(acc_tile_local + i);
+        thread float4* chunk_ptr = reinterpret_cast<thread float4*>(acc_tile_local_fp32 + i);
         float4 chunk = *chunk_ptr;
         chunk *= inv_s_global;
         *chunk_ptr = chunk;
     }
 
-    // Reduce the now-normalized acc_tile_local across the threadgroup and write to output_buffer
+    // Reduce the now-normalized acc_tile_local_fp32 across the threadgroup and write to output_buffer
     for (uint i = 0; i < params.head_dim; i += 4) {
         float4 chunk_to_write = float4(0.0f);
-        if (i < params.head_dim)     chunk_to_write.x = acc_tile_local[i+0];
-        if (i+1 < params.head_dim) chunk_to_write.y = acc_tile_local[i+1];
-        if (i+2 < params.head_dim) chunk_to_write.z = acc_tile_local[i+2];
-        if (i+3 < params.head_dim) chunk_to_write.w = acc_tile_local[i+3];
+        if (i < params.head_dim)     chunk_to_write.x = acc_tile_local_fp32[i+0];
+        if (i+1 < params.head_dim) chunk_to_write.y = acc_tile_local_fp32[i+1];
+        if (i+2 < params.head_dim) chunk_to_write.z = acc_tile_local_fp32[i+2];
+        if (i+3 < params.head_dim) chunk_to_write.w = acc_tile_local_fp32[i+3];
 
         float4 reduced_simd_group_final_chunk;
         reduced_simd_group_final_chunk.x = simd_sum(chunk_to_write.x);
