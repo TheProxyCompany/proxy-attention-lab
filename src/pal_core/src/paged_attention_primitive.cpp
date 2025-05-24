@@ -46,7 +46,10 @@ namespace mx = mlx::core;
 namespace pal::cpp {
 
 constexpr static float kLogFp16DenormMinVal = -88.0f;
-constexpr static uint32_t kDefaultPaddingFloatsPerRow = 0;
+
+constexpr static uint32_t PREFILL_TOKENS_PER_TG_KNOB = 1;
+constexpr static uint32_t PREFILL_HEADS_PER_TG_KNOB = 32; // Process all heads for one token
+constexpr static uint32_t DEFAULT_THREADS_PER_GROUP = 64; // 64 is the default
 
 struct CoreDims {
     uint32_t head_dim{0};
@@ -125,18 +128,15 @@ static ThreadgroupMemoryLayout calculate_threadgroup_memory_breakdown_and_total(
     // 8. K Tile memory - for caching K vectors with padding for bank conflict avoidance
     tg_mem_current_offset_bytes = (tg_mem_current_offset_bytes + kAlignmentMask) & ~kAlignmentMask;
 
-    // Use pad_floats_per_row from params (should be already set by caller)
-    uint32_t padded_head_dim_for_tile = params.head_dim + params.pad_floats_per_row;
-
     // K_tile requires tile_size_T_runtime * padded_head_dim_for_tile * sizeof(half) bytes
-    layout.k_tile_bytes = params.tile_size_T_runtime * padded_head_dim_for_tile * sizeof(half);
+    layout.k_tile_bytes = params.tile_size_T_runtime * params.head_dim * sizeof(half);
     tg_mem_current_offset_bytes += layout.k_tile_bytes;
 
     // 9. V Tile memory - for caching V vectors with padding for bank conflict avoidance
     tg_mem_current_offset_bytes = (tg_mem_current_offset_bytes + kAlignmentMask) & ~kAlignmentMask;
 
     // V_tile requires tile_size_T_runtime * padded_head_dim_for_tile * sizeof(half) bytes
-    layout.v_tile_bytes = params.tile_size_T_runtime * padded_head_dim_for_tile * sizeof(half);
+    layout.v_tile_bytes = params.tile_size_T_runtime * params.head_dim * sizeof(half);
     tg_mem_current_offset_bytes += layout.v_tile_bytes;
 
     // 10. Per-sequence page-table slice
@@ -171,7 +171,6 @@ static ThreadgroupMemoryLayout calculate_final_params_and_memory_layout(
     params.tokens_per_page          = extracted_core_dims.tokens_per_page;
 
     // Kernel constants
-    params.pad_floats_per_row       = kDefaultPaddingFloatsPerRow;
     params.log_exp_min_clamp        = kLogFp16DenormMinVal;
 
     // Derived from input array shapes
@@ -216,8 +215,8 @@ static ThreadgroupMemoryLayout calculate_final_params_and_memory_layout(
         throw std::runtime_error("[PAL Primitive] Fixed scratch memory alone exceeds threadgroup memory limit.");
     }
 
-    // 3. Compute "bytes per history token" for dynamic tiles (K_tile + V_tile) with padding
-    uint32_t padded_head_dim_for_tile_calc = params.head_dim + params.pad_floats_per_row;
+    // 3. Compute "bytes per history token" for dynamic tiles (K_tile + V_tile)
+    uint32_t padded_head_dim_for_tile_calc = params.head_dim;
     size_t bytes_per_token_in_tile = (padded_head_dim_for_tile_calc * sizeof(half)) /*K_tile_half_padded*/ +
                                     (padded_head_dim_for_tile_calc * sizeof(half)) /*V_tile_half_padded*/;
     // 4. Raw ceiling that actually fits
@@ -406,8 +405,7 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
   size_t execution_width = kernel_state_->threadExecutionWidth();
   size_t max_threads_device = kernel_state_->maxTotalThreadsPerThreadgroup();
 
-  // Use fixed thread count for both layout calculation and execution - reverted to original logic
-  size_t threads_to_launch = 64; // Default
+  size_t threads_to_launch = DEFAULT_THREADS_PER_GROUP;
   threads_to_launch = ((threads_to_launch + execution_width - 1) / execution_width) * execution_width; // Align to exec width
   threads_to_launch = std::min(threads_to_launch, max_threads_device); // Cap by device max
 
@@ -439,14 +437,22 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
     throw std::runtime_error("Null input data pointers detected in paged attention primitive");
   }
 
-  // Determine the dispatch grid width based on prefill or decode mode
+  // Determine the dispatch grid based on prefill or decode mode
   size_t dispatch_grid_width;
+  size_t dispatch_grid_height = 1;
+
   if (is_prefill_) {
-      // For prefill, we want one threadgroup per query token, not one per query-token-head pair
-      dispatch_grid_width = core_dims.query_token_count;
-      spdlog::debug("[PAL Primitive Dispatch] PREFILL MODE: Using token-based dispatch grid width: {}", dispatch_grid_width);
-      spdlog::debug("[PAL Primitive Dispatch] Using token-based dispatch: {} tokens instead of {} items",
-                  dispatch_grid_width, core_dims.num_items_to_process);
+      // For prefill, use 2D grid: tokens x heads
+      dispatch_grid_width = (core_dims.query_token_count + PREFILL_TOKENS_PER_TG_KNOB - 1) / PREFILL_TOKENS_PER_TG_KNOB;
+      dispatch_grid_height = (core_dims.num_q_heads + PREFILL_HEADS_PER_TG_KNOB - 1) / PREFILL_HEADS_PER_TG_KNOB;
+
+      spdlog::debug("[PAL Primitive Dispatch] PREFILL MODE: Using 2D grid dispatch");
+      spdlog::debug("[PAL Primitive Dispatch] Grid dimensions: {} x {} (tokens x heads)",
+                    dispatch_grid_width, dispatch_grid_height);
+      spdlog::debug("[PAL Primitive Dispatch] Total threadgroups: {}",
+                    dispatch_grid_width * dispatch_grid_height);
+      spdlog::debug("[PAL Primitive Dispatch] Tokens per TG: {}, Heads per TG: {}",
+                    PREFILL_TOKENS_PER_TG_KNOB, PREFILL_HEADS_PER_TG_KNOB);
   } else {
       dispatch_grid_width = core_dims.num_items_to_process;
       spdlog::debug("[PAL Primitive Dispatch] DECODE MODE: Using item-based dispatch grid width: {}", dispatch_grid_width);
@@ -464,7 +470,6 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
   compute_encoder.set_input_array(inputs[4], 4); // sequence_lengths
   compute_encoder.set_input_array(inputs[5], 5); // query_to_seq_map
   compute_encoder.set_input_array(inputs[6], 6); // query_token_offset
-
   // Upload the parameter struct to the GPU
   compute_encoder.set_bytes(&params_struct, sizeof(PagedAttentionParams), 7);
 
@@ -472,10 +477,11 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
   compute_encoder.set_output_array(out, 8);
 
   // Configure dispatch grid sizes
-  MTL::Size threadgroups_per_grid = MTL::Size(dispatch_grid_width, 1, 1);
+  MTL::Size threadgroups_per_grid = MTL::Size(dispatch_grid_width, dispatch_grid_height, 1);
   MTL::Size threads_per_threadgroup = MTL::Size(threads_to_launch, 1, 1);
 
-  spdlog::debug("[PAL Primitive Dispatch] Dispatching kernel with dispatch_grid_width: {}", dispatch_grid_width);
+  spdlog::debug("[PAL Primitive Dispatch] Dispatching kernel with grid: {} x {} x 1",
+                dispatch_grid_width, dispatch_grid_height);
   spdlog::debug("[PAL Primitive Dispatch] Dispatching kernel with threads_to_launch: {}", threads_to_launch);
 
   // Set the threadgroup memory length and dispatch the kernel

@@ -36,7 +36,7 @@ namespace mx = mlx::core;
 struct BenchmarkSpdlogInitializer {
     BenchmarkSpdlogInitializer() {
         // Set default log level for benchmarks to debug to see GPU copy logs
-        spdlog::set_level(spdlog::level::debug);
+        spdlog::set_level(spdlog::level::warn);
         spdlog::info("PAL C++ Benchmarks: spdlog level set to 'debug' for debugging GPU copies.");
     }
 };
