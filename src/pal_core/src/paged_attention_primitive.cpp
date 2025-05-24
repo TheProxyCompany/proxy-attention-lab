@@ -407,7 +407,7 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
   size_t max_threads_device = kernel_state_->maxTotalThreadsPerThreadgroup();
 
   // Use fixed thread count for both layout calculation and execution - reverted to original logic
-  size_t threads_to_launch = 128; // Increased for better occupancy
+  size_t threads_to_launch = 64; // Increased for better occupancy
   threads_to_launch = ((threads_to_launch + execution_width - 1) / execution_width) * execution_width; // Align to exec width
   threads_to_launch = std::min(threads_to_launch, max_threads_device); // Cap by device max
 
