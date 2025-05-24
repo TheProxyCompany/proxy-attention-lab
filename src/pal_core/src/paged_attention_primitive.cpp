@@ -26,6 +26,8 @@
 #include <string>
 #include <type_traits>
 #include <limits>
+#include <unordered_set>
+#include <algorithm>
 #include <spdlog/spdlog.h>
 
 // Define half type for memory calculations (matching Metal's half type)
@@ -51,6 +53,9 @@ constexpr static uint32_t PREFILL_TOKENS_PER_TG_KNOB = 1;
 constexpr static uint32_t PREFILL_HEADS_PER_TG_KNOB = 32; // Process all heads for one token
 constexpr static uint32_t DEFAULT_THREADS_PER_GROUP = 64; // 64 is the default
 
+// New Pass 1 parameters for page-centric prefill architecture
+constexpr static uint32_t PREFILL_PASS1_Q_HEAD_BLOCK_SIZE = 8;
+
 struct CoreDims {
     uint32_t head_dim{0};
     uint32_t num_q_heads{0};
@@ -73,6 +78,33 @@ struct ThreadgroupMemoryLayout {
     size_t page_table_slice_bytes{0};
     size_t final_guard_bytes{0};
     size_t total_bytes{0};
+};
+
+// Struct to represent a single query token's relevance to a specific page
+struct QueryTokenPageRelevance {
+    uint32_t query_token_global_idx;      // Index in the flat queries array
+    uint32_t history_start_offset_on_page; // Where history starts on this page
+    uint32_t num_history_tokens_on_page;   // Number of history tokens on this page
+};
+
+// Struct to hold the complete relevant query mapping for all active pages
+struct RelevantQueryMap {
+    // Primary data: flat array of query-page relevance entries
+    std::vector<QueryTokenPageRelevance> relevance_entries;
+
+    // Secondary data: for each active page, where its entries start/end in relevance_entries
+    std::vector<uint32_t> page_start_offsets; // Size: num_active_pages + 1
+
+    // List of active page IDs in the order they'll be processed
+    std::vector<uint32_t> active_page_ids;
+
+    // Helper method to get relevance entries for a specific page index
+    std::pair<uint32_t, uint32_t> get_page_entry_range(size_t page_index) const {
+        if (page_index >= active_page_ids.size()) {
+            return {0, 0};
+        }
+        return {page_start_offsets[page_index], page_start_offsets[page_index + 1]};
+    }
 };
 
 
@@ -441,18 +473,195 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
   size_t dispatch_grid_width;
   size_t dispatch_grid_height = 1;
 
-  if (is_prefill_) {
-      // For prefill, use 2D grid: tokens x heads
-      dispatch_grid_width = (core_dims.query_token_count + PREFILL_TOKENS_PER_TG_KNOB - 1) / PREFILL_TOKENS_PER_TG_KNOB;
-      dispatch_grid_height = (core_dims.num_q_heads + PREFILL_HEADS_PER_TG_KNOB - 1) / PREFILL_HEADS_PER_TG_KNOB;
+  // Arrays for Pass 1 relevant query mapping (only used in prefill mode)
+  // Initialize with dummy data - will be properly populated in prefill branch
+  uint32_t dummy_uint = 0;
+  mx::array relevant_query_indices(&dummy_uint, {0}, mx::uint32);
+  mx::array relevant_history_starts(&dummy_uint, {0}, mx::uint32);
+  mx::array relevant_history_counts(&dummy_uint, {0}, mx::uint32);
+  mx::array page_offsets(&dummy_uint, {0}, mx::uint32);
+  mx::array active_pages(&dummy_uint, {0}, mx::uint32);
 
-      spdlog::debug("[PAL Primitive Dispatch] PREFILL MODE: Using 2D grid dispatch");
-      spdlog::debug("[PAL Primitive Dispatch] Grid dimensions: {} x {} (tokens x heads)",
+  if (is_prefill_) {
+      // Step 2: CPU-side pre-computation for Pass 1
+      spdlog::debug("[PAL Primitive Dispatch] PREFILL MODE: Starting Pass 1 pre-computation");
+
+      // Extract input arrays
+      const auto& page_table = inputs[3];
+      const auto& sequence_lengths = inputs[4];
+      const auto& query_to_seq_map = inputs[5];
+      const auto& query_token_offset = inputs[6];
+
+      // Get raw pointers for efficient access
+      const uint32_t* page_table_ptr = page_table.data<uint32_t>();
+      const int32_t* sequence_lengths_ptr = sequence_lengths.data<int32_t>();
+      const int32_t* query_to_seq_map_ptr = query_to_seq_map.data<int32_t>();
+      const int32_t* query_token_offset_ptr = query_token_offset.data<int32_t>();
+
+      // Step 2.1: Determine active KV pages
+      std::unordered_set<uint32_t> active_pages_set;
+      RelevantQueryMap query_map;
+
+      // Iterate through all query tokens to find active pages
+      for (size_t query_idx = 0; query_idx < core_dims.query_token_count; ++query_idx) {
+          int32_t seq_idx = query_to_seq_map_ptr[query_idx];
+          if (seq_idx < 0 || seq_idx >= static_cast<int32_t>(params_struct.num_sequences_in_batch)) {
+              continue; // Skip invalid sequence indices
+          }
+
+          int32_t query_offset = query_token_offset_ptr[query_idx];
+          int32_t seq_length = sequence_lengths_ptr[seq_idx];
+
+          // Calculate the range of history tokens for this query
+          int32_t history_start = 0;
+          int32_t history_end = query_offset; // Exclusive end
+
+          if (history_end <= history_start) {
+              continue; // No history for this query token
+          }
+
+          // Find which pages contain the history tokens
+          int32_t first_history_page = history_start / params_struct.tokens_per_page;
+          int32_t last_history_page = (history_end - 1) / params_struct.tokens_per_page;
+
+          // Add all pages in the range to active set
+          for (int32_t page_idx = first_history_page; page_idx <= last_history_page; ++page_idx) {
+              if (page_idx < static_cast<int32_t>(params_struct.max_logical_blocks_per_seq)) {
+                  uint32_t physical_page_id = page_table_ptr[seq_idx * params_struct.max_logical_blocks_per_seq + page_idx];
+                  if (physical_page_id < params_struct.num_physical_pages_in_pool) {
+                      active_pages_set.insert(physical_page_id);
+                  }
+              }
+          }
+      }
+
+      // Convert set to vector for deterministic ordering
+      query_map.active_page_ids.assign(active_pages_set.begin(), active_pages_set.end());
+      std::sort(query_map.active_page_ids.begin(), query_map.active_page_ids.end());
+
+      spdlog::debug("[PAL Primitive Dispatch] Found {} active KV pages", query_map.active_page_ids.size());
+
+      // Step 2.2: Construct the Relevant Query Map
+      query_map.page_start_offsets.resize(query_map.active_page_ids.size() + 1, 0);
+
+      // For each active page, find relevant query tokens
+      for (size_t page_idx = 0; page_idx < query_map.active_page_ids.size(); ++page_idx) {
+          uint32_t physical_page_id = query_map.active_page_ids[page_idx];
+
+          // Iterate through all query tokens to find which ones have history on this page
+          for (size_t query_idx = 0; query_idx < core_dims.query_token_count; ++query_idx) {
+              int32_t seq_idx = query_to_seq_map_ptr[query_idx];
+              if (seq_idx < 0 || seq_idx >= static_cast<int32_t>(params_struct.num_sequences_in_batch)) {
+                  continue;
+              }
+
+              int32_t query_offset = query_token_offset_ptr[query_idx];
+              int32_t history_start = 0;
+              int32_t history_end = query_offset;
+
+              if (history_end <= history_start) {
+                  continue;
+              }
+
+              // Check each logical page in the sequence
+              for (int32_t logical_page_idx = 0; logical_page_idx < static_cast<int32_t>(params_struct.max_logical_blocks_per_seq); ++logical_page_idx) {
+                  uint32_t page_physical_id = page_table_ptr[seq_idx * params_struct.max_logical_blocks_per_seq + logical_page_idx];
+
+                  if (page_physical_id == physical_page_id) {
+                      // Calculate the token range on this logical page
+                      int32_t page_token_start = logical_page_idx * params_struct.tokens_per_page;
+                      int32_t page_token_end = page_token_start + params_struct.tokens_per_page;
+
+                      // Find intersection with history range
+                      int32_t overlap_start = std::max(history_start, page_token_start);
+                      int32_t overlap_end = std::min(history_end, page_token_end);
+
+                      if (overlap_start < overlap_end) {
+                          // This query has history on this page
+                          QueryTokenPageRelevance relevance;
+                          relevance.query_token_global_idx = static_cast<uint32_t>(query_idx);
+                          relevance.history_start_offset_on_page = overlap_start - page_token_start;
+                          relevance.num_history_tokens_on_page = overlap_end - overlap_start;
+
+                          query_map.relevance_entries.push_back(relevance);
+                      }
+                  }
+              }
+          }
+
+          // Update page start offset for next page
+          query_map.page_start_offsets[page_idx + 1] = query_map.relevance_entries.size();
+      }
+
+      spdlog::debug("[PAL Primitive Dispatch] Built relevant query map with {} total entries",
+                    query_map.relevance_entries.size());
+
+      // Step 2.3: Prepare data for kernel - flatten into mx::arrays
+      // Create arrays for the flattened data
+      std::vector<uint32_t> flat_query_indices;
+      std::vector<uint32_t> flat_history_starts;
+      std::vector<uint32_t> flat_history_counts;
+
+      for (const auto& entry : query_map.relevance_entries) {
+          flat_query_indices.push_back(entry.query_token_global_idx);
+          flat_history_starts.push_back(entry.history_start_offset_on_page);
+          flat_history_counts.push_back(entry.num_history_tokens_on_page);
+      }
+
+      // Create mx::arrays from the vectors
+      if (!flat_query_indices.empty()) {
+          relevant_query_indices = mx::array(
+              flat_query_indices.data(),
+              {static_cast<int>(flat_query_indices.size())},
+              mx::uint32);
+          relevant_history_starts = mx::array(
+              flat_history_starts.data(),
+              {static_cast<int>(flat_history_starts.size())},
+              mx::uint32);
+          relevant_history_counts = mx::array(
+              flat_history_counts.data(),
+              {static_cast<int>(flat_history_counts.size())},
+              mx::uint32);
+      } else {
+          // Create empty arrays if no relevant queries
+          uint32_t dummy = 0;
+          relevant_query_indices = mx::array(&dummy, {0}, mx::uint32);
+          relevant_history_starts = mx::array(&dummy, {0}, mx::uint32);
+          relevant_history_counts = mx::array(&dummy, {0}, mx::uint32);
+      }
+
+      if (!query_map.page_start_offsets.empty()) {
+          page_offsets = mx::array(
+              query_map.page_start_offsets.data(),
+              {static_cast<int>(query_map.page_start_offsets.size())},
+              mx::uint32);
+      } else {
+          uint32_t dummy = 0;
+          page_offsets = mx::array(&dummy, {0}, mx::uint32);
+      }
+
+      if (!query_map.active_page_ids.empty()) {
+          active_pages = mx::array(
+              query_map.active_page_ids.data(),
+              {static_cast<int>(query_map.active_page_ids.size())},
+              mx::uint32);
+      } else {
+          uint32_t dummy = 0;
+          active_pages = mx::array(&dummy, {0}, mx::uint32);
+      }
+
+      // Step 3: Modify dispatch grid calculation for Pass 1
+      // Grid dimensions for page-centric Pass 1
+      dispatch_grid_width = query_map.active_page_ids.size();  // One TG per active page
+      dispatch_grid_height = (core_dims.num_q_heads + PREFILL_PASS1_Q_HEAD_BLOCK_SIZE - 1) / PREFILL_PASS1_Q_HEAD_BLOCK_SIZE;
+
+      spdlog::debug("[PAL Primitive Dispatch] PREFILL MODE: Using Pass 1 page-centric grid dispatch");
+      spdlog::debug("[PAL Primitive Dispatch] Grid dimensions: {} x {} (active_pages x q_head_blocks)",
                     dispatch_grid_width, dispatch_grid_height);
+      spdlog::debug("[PAL Primitive Dispatch] Active pages: {}, Q-head blocks: {} (block size: {})",
+                    dispatch_grid_width, dispatch_grid_height, PREFILL_PASS1_Q_HEAD_BLOCK_SIZE);
       spdlog::debug("[PAL Primitive Dispatch] Total threadgroups: {}",
                     dispatch_grid_width * dispatch_grid_height);
-      spdlog::debug("[PAL Primitive Dispatch] Tokens per TG: {}, Heads per TG: {}",
-                    PREFILL_TOKENS_PER_TG_KNOB, PREFILL_HEADS_PER_TG_KNOB);
   } else {
       dispatch_grid_width = core_dims.num_items_to_process;
       spdlog::debug("[PAL Primitive Dispatch] DECODE MODE: Using item-based dispatch grid width: {}", dispatch_grid_width);
@@ -475,6 +684,62 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
 
   // Set the output array
   compute_encoder.set_output_array(out, 8);
+
+  // Set Pass 1 relevant query map arrays (only for prefill)
+  if (is_prefill_) {
+      compute_encoder.set_input_array(relevant_query_indices, 9);  // Flat query indices
+      compute_encoder.set_input_array(relevant_history_starts, 10); // History start offsets on page
+      compute_encoder.set_input_array(relevant_history_counts, 11); // Number of history tokens on page
+      compute_encoder.set_input_array(page_offsets, 12);            // Page start offsets in flat arrays
+      compute_encoder.set_input_array(active_pages, 13);            // Active page IDs
+
+      // Step 4: Allocate dummy output buffers for Pass 1
+      // These will eventually hold intermediate results from Pass 1
+      size_t num_active_pages = active_pages.size();
+      size_t num_q_head_blocks = dispatch_grid_height;
+
+      // m_locals_pass1: per-page, per-q-head-block max scores
+      size_t m_locals_size = num_active_pages * num_q_head_blocks * PREFILL_PASS1_Q_HEAD_BLOCK_SIZE;
+      std::vector<float> m_locals_data(m_locals_size, 0.0f);
+      mx::array m_locals_pass1(m_locals_data.data(),
+                               {static_cast<int>(num_active_pages),
+                                static_cast<int>(num_q_head_blocks),
+                                static_cast<int>(PREFILL_PASS1_Q_HEAD_BLOCK_SIZE)},
+                               mx::float32);
+
+      // s_locals_pass1: per-page, per-q-head-block sum of exponentials
+      size_t s_locals_size = num_active_pages * num_q_head_blocks * PREFILL_PASS1_Q_HEAD_BLOCK_SIZE;
+      std::vector<float> s_locals_data(s_locals_size, 0.0f);
+      mx::array s_locals_pass1(s_locals_data.data(),
+                               {static_cast<int>(num_active_pages),
+                                static_cast<int>(num_q_head_blocks),
+                                static_cast<int>(PREFILL_PASS1_Q_HEAD_BLOCK_SIZE)},
+                               mx::float32);
+
+      // o_partials_pass1: per-page, per-q-head-block partial attention outputs
+      // Shape: [num_active_pages, num_q_head_blocks, PREFILL_PASS1_Q_HEAD_BLOCK_SIZE, head_dim]
+      size_t o_partials_size = num_active_pages * num_q_head_blocks * PREFILL_PASS1_Q_HEAD_BLOCK_SIZE * core_dims.head_dim;
+      std::vector<float> o_partials_data(o_partials_size, 0.0f);
+      mx::array o_partials_pass1(o_partials_data.data(),
+                                 {static_cast<int>(num_active_pages),
+                                  static_cast<int>(num_q_head_blocks),
+                                  static_cast<int>(PREFILL_PASS1_Q_HEAD_BLOCK_SIZE),
+                                  static_cast<int>(core_dims.head_dim)},
+                                 mx::float32);
+
+      // Set these as additional output buffers
+      compute_encoder.set_output_array(m_locals_pass1, 14);  // Max scores from Pass 1
+      compute_encoder.set_output_array(s_locals_pass1, 15);  // Sum exponentials from Pass 1
+      compute_encoder.set_output_array(o_partials_pass1, 16); // Partial outputs from Pass 1
+
+      spdlog::debug("[PAL Primitive Dispatch] Allocated Pass 1 output buffers:");
+      spdlog::debug("  m_locals_pass1 shape: [{}, {}, {}]",
+                    num_active_pages, num_q_head_blocks, PREFILL_PASS1_Q_HEAD_BLOCK_SIZE);
+      spdlog::debug("  s_locals_pass1 shape: [{}, {}, {}]",
+                    num_active_pages, num_q_head_blocks, PREFILL_PASS1_Q_HEAD_BLOCK_SIZE);
+      spdlog::debug("  o_partials_pass1 shape: [{}, {}, {}, {}]",
+                    num_active_pages, num_q_head_blocks, PREFILL_PASS1_Q_HEAD_BLOCK_SIZE, core_dims.head_dim);
+  }
 
   // Configure dispatch grid sizes
   MTL::Size threadgroups_per_grid = MTL::Size(dispatch_grid_width, dispatch_grid_height, 1);
