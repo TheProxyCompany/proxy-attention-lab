@@ -46,9 +46,7 @@ namespace mx = mlx::core;
 namespace pal::cpp {
 
 constexpr static float kLogFp16DenormMinVal = -88.0f;
-constexpr static uint32_t kDefaultPaddingFloatsPerRow = 0;
 
-// DEV_NOTE: These can be tuned later or made dynamic params if needed.
 constexpr static uint32_t PREFILL_TOKENS_PER_TG_KNOB = 1;
 constexpr static uint32_t PREFILL_HEADS_PER_TG_KNOB = 32; // Process all heads for one token
 
@@ -472,19 +470,6 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
   compute_encoder.set_input_array(inputs[4], 4); // sequence_lengths
   compute_encoder.set_input_array(inputs[5], 5); // query_to_seq_map
   compute_encoder.set_input_array(inputs[6], 6); // query_token_offset
-
-  // Set the TG knob parameters and total token count
-  if (is_prefill_) {
-      params_struct.tokens_per_tg_knob = PREFILL_TOKENS_PER_TG_KNOB;
-      params_struct.heads_per_tg_knob = PREFILL_HEADS_PER_TG_KNOB;
-      params_struct.total_num_active_tokens = core_dims.query_token_count;
-  } else {
-      // For decode, these aren't used but set to safe values
-      params_struct.tokens_per_tg_knob = 1;
-      params_struct.heads_per_tg_knob = 1;
-      params_struct.total_num_active_tokens = core_dims.query_token_count;
-  }
-
   // Upload the parameter struct to the GPU
   compute_encoder.set_bytes(&params_struct, sizeof(PagedAttentionParams), 7);
 
