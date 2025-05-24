@@ -195,7 +195,8 @@ static ThreadgroupMemoryLayout calculate_final_params_and_memory_layout(
     const mx::array& page_table_arr,
     MTL::Device* mtl_device_ptr,
     size_t target_threads_per_group,
-    size_t actual_simd_lanes_per_group // Added parameter for actual SIMD width
+    size_t actual_simd_lanes_per_group, // Added parameter for actual SIMD width
+    bool is_prefill
 ) {
     params.num_q_heads              = extracted_core_dims.num_q_heads;
     params.num_kv_heads             = extracted_core_dims.num_kv_heads;
@@ -249,8 +250,33 @@ static ThreadgroupMemoryLayout calculate_final_params_and_memory_layout(
 
     // 3. Compute "bytes per history token" for dynamic tiles (K_tile + V_tile)
     uint32_t padded_head_dim_for_tile_calc = params.head_dim;
-    size_t bytes_per_token_in_tile = (padded_head_dim_for_tile_calc * sizeof(half)) /*K_tile_half_padded*/ +
-                                    (padded_head_dim_for_tile_calc * sizeof(half)) /*V_tile_half_padded*/;
+    
+    // For Pass 1 with spatial KV tiling, we need memory for PAGE_SUB_TILE_TOKEN_COUNT tokens
+    // across all unique KV heads required by a Q-head block
+    size_t bytes_per_token_in_tile;
+    if (is_prefill) {
+        // For prefill Pass 1: Calculate unique KV heads for a Q-head block
+        // With GQA/MQA, PREFILL_PASS1_Q_HEAD_BLOCK_SIZE Q-heads may map to fewer unique KV heads
+        uint32_t q_heads_per_kv_head = params.num_q_heads / params.num_kv_heads;
+        uint32_t max_unique_kv_heads_per_block = std::min(
+            PREFILL_PASS1_Q_HEAD_BLOCK_SIZE,
+            (PREFILL_PASS1_Q_HEAD_BLOCK_SIZE + q_heads_per_kv_head - 1) / q_heads_per_kv_head
+        );
+        
+        // PAGE_SUB_TILE_TOKEN_COUNT is 12 (from the kernel)
+        constexpr uint32_t PAGE_SUB_TILE_TOKEN_COUNT = 12;
+        
+        // Total bytes for spatial KV tiles
+        size_t bytes_for_kv_tiles = PAGE_SUB_TILE_TOKEN_COUNT * max_unique_kv_heads_per_block * 
+                                   padded_head_dim_for_tile_calc * sizeof(half) * 2; // K and V
+        
+        // Calculate effective bytes per token to fit the spatial tiling
+        bytes_per_token_in_tile = bytes_for_kv_tiles / PAGE_SUB_TILE_TOKEN_COUNT;
+    } else {
+        // For decode: Original calculation (one K/V pair per token)
+        bytes_per_token_in_tile = (padded_head_dim_for_tile_calc * sizeof(half)) /*K_tile_half_padded*/ +
+                                 (padded_head_dim_for_tile_calc * sizeof(half)) /*V_tile_half_padded*/;
+    }
     // 4. Raw ceiling that actually fits
     uint32_t max_T_fit = 0;
     if (tg_limit > fixed_mem + guard) { // Ensure there's some memory left for dynamic parts
@@ -449,7 +475,8 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
       inputs[3], // page_table
       device_ptr,
       threads_to_launch, // Use the same threads_to_launch for memory layout calculation
-      execution_width    // Pass the actual execution_width here
+      execution_width,   // Pass the actual execution_width here
+      is_prefill_       // Pass whether this is prefill mode
   );
 
   spdlog::debug(
@@ -685,6 +712,14 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
   // Set the output array
   compute_encoder.set_output_array(out, 8);
 
+  // Declare Pass 1 output arrays outside the if block for later use
+  // Initialize with empty arrays
+  float dummy_float = 0.0f;
+  mx::float16_t dummy_half = mx::float16_t(0.0f);
+  mx::array m_locals_pass1(&dummy_float, {0}, mx::float32);
+  mx::array s_locals_pass1(&dummy_float, {0}, mx::float32);
+  mx::array o_partials_pass1(&dummy_half, {0}, mx::float16);
+  
   // Set Pass 1 relevant query map arrays (only for prefill)
   if (is_prefill_) {
       compute_encoder.set_input_array(relevant_query_indices, 9);  // Flat query indices
@@ -693,39 +728,47 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
       compute_encoder.set_input_array(page_offsets, 12);            // Page start offsets in flat arrays
       compute_encoder.set_input_array(active_pages, 13);            // Active page IDs
 
-      // Step 4: Allocate dummy output buffers for Pass 1
-      // These will eventually hold intermediate results from Pass 1
+      // Step 2: Correct allocation of Pass 1 intermediate output buffers
+      // Structure of Arrays layout for better Pass 2 access:
+      // - m_locals_pass1: [TotalQueryTokens][NumTotalQHeads][NumActivePages]
+      // - s_locals_pass1: [TotalQueryTokens][NumTotalQHeads][NumActivePages]
+      // - o_partials_pass1: [TotalQueryTokens][NumTotalQHeads][NumActivePages][HeadDim]
+      
       size_t num_active_pages = active_pages.size();
-      size_t num_q_head_blocks = dispatch_grid_height;
+      size_t total_query_tokens = core_dims.query_token_count;
+      size_t total_q_heads = core_dims.num_q_heads;
+      
+      // Store num_active_pages in params for Pass 2
+      params_struct.num_active_pages_in_batch = static_cast<uint32_t>(num_active_pages);
 
-      // m_locals_pass1: per-page, per-q-head-block max scores
-      size_t m_locals_size = num_active_pages * num_q_head_blocks * PREFILL_PASS1_Q_HEAD_BLOCK_SIZE;
-      std::vector<float> m_locals_data(m_locals_size, 0.0f);
-      mx::array m_locals_pass1(m_locals_data.data(),
-                               {static_cast<int>(num_active_pages),
-                                static_cast<int>(num_q_head_blocks),
-                                static_cast<int>(PREFILL_PASS1_Q_HEAD_BLOCK_SIZE)},
-                               mx::float32);
+      // Allocate m_locals_pass1: Shape [TotalQueryTokens][NumTotalQHeads][NumActivePages]
+      // Initialize with zeros using vector
+      size_t m_locals_size = total_query_tokens * total_q_heads * num_active_pages;
+      std::vector<float> m_locals_data(m_locals_size, -std::numeric_limits<float>::infinity());  // Initialize with -inf
+      m_locals_pass1 = mx::array(m_locals_data.data(),
+                                {static_cast<int>(total_query_tokens),
+                                 static_cast<int>(total_q_heads),
+                                 static_cast<int>(num_active_pages)},
+                                mx::float32);
 
-      // s_locals_pass1: per-page, per-q-head-block sum of exponentials
-      size_t s_locals_size = num_active_pages * num_q_head_blocks * PREFILL_PASS1_Q_HEAD_BLOCK_SIZE;
+      // Allocate s_locals_pass1: Shape [TotalQueryTokens][NumTotalQHeads][NumActivePages]
+      size_t s_locals_size = total_query_tokens * total_q_heads * num_active_pages;
       std::vector<float> s_locals_data(s_locals_size, 0.0f);
-      mx::array s_locals_pass1(s_locals_data.data(),
-                               {static_cast<int>(num_active_pages),
-                                static_cast<int>(num_q_head_blocks),
-                                static_cast<int>(PREFILL_PASS1_Q_HEAD_BLOCK_SIZE)},
-                               mx::float32);
+      s_locals_pass1 = mx::array(s_locals_data.data(),
+                                {static_cast<int>(total_query_tokens),
+                                 static_cast<int>(total_q_heads),
+                                 static_cast<int>(num_active_pages)},
+                                mx::float32);
 
-      // o_partials_pass1: per-page, per-q-head-block partial attention outputs
-      // Shape: [num_active_pages, num_q_head_blocks, PREFILL_PASS1_Q_HEAD_BLOCK_SIZE, head_dim]
-      size_t o_partials_size = num_active_pages * num_q_head_blocks * PREFILL_PASS1_Q_HEAD_BLOCK_SIZE * core_dims.head_dim;
-      std::vector<float> o_partials_data(o_partials_size, 0.0f);
-      mx::array o_partials_pass1(o_partials_data.data(),
-                                 {static_cast<int>(num_active_pages),
-                                  static_cast<int>(num_q_head_blocks),
-                                  static_cast<int>(PREFILL_PASS1_Q_HEAD_BLOCK_SIZE),
-                                  static_cast<int>(core_dims.head_dim)},
-                                 mx::float32);
+      // Allocate o_partials_pass1: Shape [TotalQueryTokens][NumTotalQHeads][NumActivePages][HeadDim]
+      size_t o_partials_size = total_query_tokens * total_q_heads * num_active_pages * core_dims.head_dim;
+      std::vector<mx::float16_t> o_partials_data(o_partials_size, mx::float16_t(0.0f));
+      o_partials_pass1 = mx::array(o_partials_data.data(),
+                                  {static_cast<int>(total_query_tokens),
+                                   static_cast<int>(total_q_heads),
+                                   static_cast<int>(num_active_pages),
+                                   static_cast<int>(core_dims.head_dim)},
+                                  mx::float16);
 
       // Set these as additional output buffers
       compute_encoder.set_output_array(m_locals_pass1, 14);  // Max scores from Pass 1
@@ -734,11 +777,11 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
 
       spdlog::debug("[PAL Primitive Dispatch] Allocated Pass 1 output buffers:");
       spdlog::debug("  m_locals_pass1 shape: [{}, {}, {}]",
-                    num_active_pages, num_q_head_blocks, PREFILL_PASS1_Q_HEAD_BLOCK_SIZE);
+                    total_query_tokens, total_q_heads, num_active_pages);
       spdlog::debug("  s_locals_pass1 shape: [{}, {}, {}]",
-                    num_active_pages, num_q_head_blocks, PREFILL_PASS1_Q_HEAD_BLOCK_SIZE);
+                    total_query_tokens, total_q_heads, num_active_pages);
       spdlog::debug("  o_partials_pass1 shape: [{}, {}, {}, {}]",
-                    num_active_pages, num_q_head_blocks, PREFILL_PASS1_Q_HEAD_BLOCK_SIZE, core_dims.head_dim);
+                    total_query_tokens, total_q_heads, num_active_pages, core_dims.head_dim);
   }
 
   // Configure dispatch grid sizes
@@ -752,6 +795,66 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
   // Set the threadgroup memory length and dispatch the kernel
   compute_encoder.set_threadgroup_memory_length(memory_layout.total_bytes, 0);
   compute_encoder.dispatch_threadgroups(threadgroups_per_grid, threads_per_threadgroup);
+  
+  // Step 4: Launch Pass 2 kernel for prefill
+  if (is_prefill_) {
+      spdlog::debug("[PAL Primitive Dispatch] Launching Pass 2 finalization kernel");
+      
+      // Get Pass 2 kernel
+      const std::string pass2_kernel_name = "paged_attn_prefill_pass2_kernel";
+      auto pass2_kernel_state = d.get_kernel(pass2_kernel_name, library_name_for_mlx);
+      if (!pass2_kernel_state) {
+          throw std::runtime_error("[PAL Primitive] Failed to load Pass 2 kernel: " + pass2_kernel_name);
+      }
+      
+      // Create new encoder for Pass 2
+      auto& pass2_compute_encoder = d.get_command_encoder(s.index);
+      pass2_compute_encoder.set_compute_pipeline_state(pass2_kernel_state);
+      
+      // Calculate Pass 2 dispatch grid
+      size_t dispatch_grid_width_pass2 = core_dims.query_token_count;   // 1 TG per query token
+      size_t dispatch_grid_height_pass2 = core_dims.num_q_heads;        // 1 TG per Q-head
+      
+      spdlog::debug("[PAL Primitive Dispatch] Pass 2 grid dimensions: {} x {} (query_tokens x q_heads)",
+                    dispatch_grid_width_pass2, dispatch_grid_height_pass2);
+      
+      // Set Pass 1 outputs as Pass 2 inputs
+      pass2_compute_encoder.set_input_array(m_locals_pass1, 17);    // Pass 1 max scores
+      pass2_compute_encoder.set_input_array(s_locals_pass1, 18);    // Pass 1 sum exponentials
+      pass2_compute_encoder.set_input_array(o_partials_pass1, 19);  // Pass 1 partial outputs
+      
+      // Set parameters for Pass 2
+      pass2_compute_encoder.set_bytes(&params_struct, sizeof(PagedAttentionParams), 7);
+      
+      // Set final output buffer
+      pass2_compute_encoder.set_output_array(out, 8);
+      
+      // Calculate Pass 2 threadgroup memory requirements
+      // Pass 2 needs much less memory - just for reductions
+      size_t pass2_threads_per_group = std::min(static_cast<size_t>(256), max_threads_device);
+      pass2_threads_per_group = ((pass2_threads_per_group + execution_width - 1) / execution_width) * execution_width;
+      
+      // Calculate memory for Pass 2 (simplified - just reduction scratch space)
+      size_t pass2_tg_mem_bytes = 0;
+      pass2_tg_mem_bytes += pass2_threads_per_group * sizeof(float);        // Thread max scratch
+      pass2_tg_mem_bytes += pass2_threads_per_group * sizeof(float);        // Thread sum scratch  
+      pass2_tg_mem_bytes += 2 * sizeof(float);                              // Global stats (M, S)
+      pass2_tg_mem_bytes += pass2_threads_per_group * core_dims.head_dim * sizeof(float); // Thread O accumulators
+      pass2_tg_mem_bytes += core_dims.head_dim * sizeof(float);             // Final O accumulator
+      pass2_tg_mem_bytes += 64;                                              // Alignment padding
+      pass2_tg_mem_bytes = (pass2_tg_mem_bytes + 63) & ~63;                 // Align to 64 bytes
+      
+      // Configure Pass 2 dispatch
+      MTL::Size pass2_threadgroups_per_grid = MTL::Size(dispatch_grid_width_pass2, dispatch_grid_height_pass2, 1);
+      MTL::Size pass2_threads_per_threadgroup = MTL::Size(pass2_threads_per_group, 1, 1);
+      
+      spdlog::debug("[PAL Primitive Dispatch] Pass 2 using {} threads per group, {} bytes TG memory",
+                    pass2_threads_per_group, pass2_tg_mem_bytes);
+      
+      // Dispatch Pass 2
+      pass2_compute_encoder.set_threadgroup_memory_length(pass2_tg_mem_bytes, 0);
+      pass2_compute_encoder.dispatch_threadgroups(pass2_threadgroups_per_grid, pass2_threads_per_threadgroup);
+  }
 }
 
 bool PagedAttentionPrimitive::is_equivalent(const mx::Primitive& other) const {
