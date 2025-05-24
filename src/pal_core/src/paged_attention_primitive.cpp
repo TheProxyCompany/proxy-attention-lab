@@ -49,6 +49,7 @@ constexpr static float kLogFp16DenormMinVal = -88.0f;
 
 constexpr static uint32_t PREFILL_TOKENS_PER_TG_KNOB = 1;
 constexpr static uint32_t PREFILL_HEADS_PER_TG_KNOB = 32; // Process all heads for one token
+constexpr static uint32_t DEFAULT_THREADS_PER_GROUP = 64; // 64 is the default
 
 struct CoreDims {
     uint32_t head_dim{0};
@@ -404,8 +405,7 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
   size_t execution_width = kernel_state_->threadExecutionWidth();
   size_t max_threads_device = kernel_state_->maxTotalThreadsPerThreadgroup();
 
-  // Use fixed thread count for both layout calculation and execution - reverted to original logic
-  size_t threads_to_launch = 64; // Increased for better occupancy
+  size_t threads_to_launch = DEFAULT_THREADS_PER_GROUP;
   threads_to_launch = ((threads_to_launch + execution_width - 1) / execution_width) * execution_width; // Align to exec width
   threads_to_launch = std::min(threads_to_launch, max_threads_device); // Cap by device max
 
