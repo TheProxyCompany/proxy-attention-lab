@@ -47,7 +47,9 @@ struct alignas(16) PagedAttentionParams {
   uint32_t tile_size_T_runtime;           // Runtime tile size T for history processing
   float    log_exp_min_clamp;             // Minimum value for exponent in exp function
   float    inv_sqrt_head_dim;             // 1/sqrt(head_dim) precomputed on host
-  uint32_t pad_floats_per_row;            // Padding floats per row for K/V tiles
+  uint32_t tokens_per_tg_knob;            // Number of tokens per threadgroup (prefill)
+  uint32_t heads_per_tg_knob;             // Number of heads per threadgroup (prefill)
+  uint32_t total_num_active_tokens;       // Total number of active query tokens in batch
 };
 
 // --- Assertions ---
@@ -57,12 +59,12 @@ static_assert(std::is_standard_layout_v<PagedAttentionParams>,
               "PagedAttentionParams must be a standard-layout type.");
 static_assert(alignof(PagedAttentionParams) == 16,
               "PagedAttentionParams must have 16-byte alignment.");
-// 9 uint32_t (36 bytes) + 2 float (8 bytes) = 44 data bytes.
-// alignas(16) means total size is 48, as it's padded to multiple of 16.
-static_assert(sizeof(PagedAttentionParams) == 48,
-              "C++ sizeof(PagedAttentionParams) expected to be 48 bytes.");
+// 11 uint32_t (44 bytes) + 2 float (8 bytes) = 52 data bytes.
+// alignas(16) means total size is 64, as it's padded to multiple of 16.
+static_assert(sizeof(PagedAttentionParams) == 64,
+              "C++ sizeof(PagedAttentionParams) expected to be 64 bytes.");
 
 #else // __METAL_VERSION__ (Metal side)
-static_assert(sizeof(PagedAttentionParams) == 48,
-              "Metal sizeof(PagedAttentionParams) expected to be 48 bytes.");
+static_assert(sizeof(PagedAttentionParams) == 64,
+              "Metal sizeof(PagedAttentionParams) expected to be 64 bytes.");
 #endif

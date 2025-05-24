@@ -107,7 +107,7 @@ using namespace metal;
 
     threadgroup half* K_tile = (threadgroup half*)current_offset;
 
-    // Update current_offset for the next section (V_tile) using padded_head_dim_hoisted for K_tile's size
+    // Update current_offset for the next section (V_tile) using params.head_dim for K_tile's size
     current_offset += params.tile_size_T_runtime * params.head_dim * sizeof(half);
     current_offset = (current_offset + kAlignmentMask) & ~kAlignmentMask;
 

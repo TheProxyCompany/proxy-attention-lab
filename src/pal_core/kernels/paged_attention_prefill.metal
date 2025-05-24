@@ -55,9 +55,6 @@ using namespace metal;
     }
 
 
-    // Hoisted: Calculate padded head dimension to avoid bank conflicts
-    const uint padded_head_dim_hoisted = params.head_dim + params.pad_floats_per_row;
-
     uint global_item_idx = tg_pos_in_grid.x;    // Now identifies the query token, not query-head item
     uint token_idx = global_item_idx;           // For clarity: token_idx is now just global_item_idx
     uint local_thread_idx = local_idx_in_tg;    // Thread ID within this group
@@ -103,15 +100,15 @@ using namespace metal;
 
     threadgroup half* K_tile = (threadgroup half*)current_offset;
 
-    // Update current_offset for the next section (V_tile) using padded_head_dim_hoisted for K_tile's size
-    current_offset += params.tile_size_T_runtime * padded_head_dim_hoisted * sizeof(half);
+    // Update current_offset for the next section (V_tile) using params.head_dim for K_tile's size
+    current_offset += params.tile_size_T_runtime * params.head_dim * sizeof(half);
     current_offset = (current_offset + kAlignmentMask) & ~kAlignmentMask;
 
     // V_tile for caching V-vectors in threadgroup memory
     threadgroup half* V_tile = (threadgroup half*)current_offset;
 
     // Update current_offset for page-table slice after V_tile
-    current_offset += params.tile_size_T_runtime * padded_head_dim_hoisted * sizeof(half);
+    current_offset += params.tile_size_T_runtime * params.head_dim * sizeof(half);
     current_offset = (current_offset + kAlignmentMask) & ~kAlignmentMask;
 
     // Threadgroup buffer for current sequence's page-table slice
@@ -168,6 +165,10 @@ using namespace metal;
     uint item_actual_sequence_length = (uint)sequence_lengths_in[item_seq_idx_in_batch];
     uint item_effective_history_length = min(item_current_q_token_logical_pos,
                                          item_actual_sequence_length);
+
+    // Track the last loaded KV head to avoid redundant loads in GQA/MQA
+    uint last_loaded_kv_head = UINT_MAX;  // Invalid initial value
+    uint last_loaded_hist_tile_start = UINT_MAX;  // Invalid initial value
 
     // Main loop over query heads for this token
     for (uint q_head_idx_in_token = 0; q_head_idx_in_token < params.num_q_heads; ++q_head_idx_in_token) {
@@ -226,7 +227,12 @@ using namespace metal;
         for (uint hist_tile_start = 0; hist_tile_start < item_effective_history_length; hist_tile_start += params.tile_size_T_runtime) {
             uint current_hist_tile_actual_len = min(params.tile_size_T_runtime, item_effective_history_length - hist_tile_start);
 
-            // --- Load K-vectors into K_tile ---
+            // Check if we need to load K/V tiles (skip if already loaded for this KV head and tile)
+            bool need_to_load_kv = (target_kv_head_idx_item != last_loaded_kv_head) ||
+                                  (hist_tile_start != last_loaded_hist_tile_start);
+
+            if (need_to_load_kv) {
+                // --- Load K-vectors into K_tile ---
             const uint simd_size_const = actual_simd_width; // Use the new argument
             const uint threads_pg_const = tg_dim.x;          // Total threads launched for this group
             const uint num_sg_const = max(1u, (threads_pg_const + simd_size_const - 1) / simd_size_const);
@@ -250,7 +256,7 @@ using namespace metal;
                 );
 
                 // 1B. Destination row base pointer in K_tile (threadgroup memory)
-                threadgroup half* k_tile_row_base_ptr = K_tile + (row_idx_in_tile * padded_head_dim_hoisted);
+                threadgroup half* k_tile_row_base_ptr = K_tile + (row_idx_in_tile * params.head_dim);
                 threadgroup half4* dst_row_h4_ptr = reinterpret_cast<threadgroup half4*>(k_tile_row_base_ptr);
 
                 // 1C. Cooperative lane-striped copy (or zero-fill) by this SIMD group for this row
@@ -298,7 +304,7 @@ using namespace metal;
                 );
 
                 // 1B. Destination row base pointer in V_tile (threadgroup memory)
-                threadgroup half* v_tile_row_base_ptr = V_tile + (row_idx_in_tile * padded_head_dim_hoisted);
+                threadgroup half* v_tile_row_base_ptr = V_tile + (row_idx_in_tile * params.head_dim);
                 threadgroup half4* dst_row_h4_ptr = reinterpret_cast<threadgroup half4*>(v_tile_row_base_ptr);
 
                 // 1C. Cooperative lane-striped copy (or zero-fill) by this SIMD group for this row
@@ -325,11 +331,16 @@ using namespace metal;
             } // end for row_idx_in_tile
             threadgroup_barrier(mem_flags::mem_threadgroup); // Ensure V_tile is fully populated before use
 
+                // Update tracking variables
+                last_loaded_kv_head = target_kv_head_idx_item;
+                last_loaded_hist_tile_start = hist_tile_start;
+            } // end if need_to_load_kv
+
             // --- 10.1.1/10: History Tile - Score Calculation (no stashing in fused path) ---
             float thread_score_val = -INFINITY; // Default to a state that would lead to zero contribution
 
             if (local_thread_idx < current_hist_tile_actual_len) {
-                threadgroup const half* k_vector_from_tile_h = K_tile + (local_thread_idx * padded_head_dim_hoisted);
+                threadgroup const half* k_vector_from_tile_h = K_tile + (local_thread_idx * params.head_dim);
                 thread_score_val = dot_product_qk(q_shmem, k_vector_from_tile_h, params);
             }
 
@@ -434,7 +445,7 @@ using namespace metal;
             // --- 10.1.6/10: History Tile - Weighted V Accumulation (Fused Path) ---
             if (local_thread_idx < current_hist_tile_actual_len) {
 
-                threadgroup const half* v_vector_from_tile_h = V_tile + (local_thread_idx * padded_head_dim_hoisted);
+                threadgroup const half* v_vector_from_tile_h = V_tile + (local_thread_idx * params.head_dim);
 
                 float weight_term = thread_exp_val;
                 float exp_term = precise::exp(max(m_local_tile_val - m_global_current_iter_atomic, params.log_exp_min_clamp));
