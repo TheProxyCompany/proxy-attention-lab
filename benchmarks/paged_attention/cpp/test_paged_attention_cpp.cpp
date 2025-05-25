@@ -449,7 +449,7 @@ const int REPETITIONS = 10;
 const int ITERATIONS = 5;
 
 BENCHMARK(BM_PAL_LatencyVsSeqLen)
-   ->Arg(64)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+   ->Arg(64)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)->Setup(BM_PAL_LatencyVsSeqLen_Setup)
    ->Arg(256)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
    ->Arg(512)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
    ->Arg(1024)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
