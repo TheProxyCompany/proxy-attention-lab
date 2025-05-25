@@ -60,98 +60,98 @@ using namespace metal;
     uint        simd_group_id                       [[simdgroup_index_in_threadgroup]]
 ) {
 
-    // Early exit for degenerate case where head_dim is zero
-    if (params.head_dim == 0) {
-        return;
-    }
+    // // Early exit for degenerate case where head_dim is zero
+    // if (params.head_dim == 0) {
+    //     return;
+    // }
 
-    // Define Pass 1 constants
-    constexpr uint PREFILL_PASS1_Q_HEAD_BLOCK_SIZE_CONST = 8;
-    constexpr uintptr_t kAlignmentBytes = 64;
-    constexpr uintptr_t kAlignmentMask = kAlignmentBytes - 1;
+    // // Define Pass 1 constants
+    // constexpr uint PREFILL_PASS1_Q_HEAD_BLOCK_SIZE_CONST = 8;
+    // constexpr uintptr_t kAlignmentBytes = 64;
+    // constexpr uintptr_t kAlignmentMask = kAlignmentBytes - 1;
 
-    // --- Step 2: Threadgroup Role Identification ---
-    // Determine assigned Global_KV_Page_ID from X dimension
-    uint assigned_page_index = tg_pos_in_grid.x;  // Index into active_pages array
-    uint assigned_global_kv_page_id = active_pages[assigned_page_index];
+    // // --- Step 2: Threadgroup Role Identification ---
+    // // Determine assigned Global_KV_Page_ID from X dimension
+    // uint assigned_page_index = tg_pos_in_grid.x;  // Index into active_pages array
+    // uint assigned_global_kv_page_id = active_pages[assigned_page_index];
 
-    // Determine Q-Head Block Responsibility from Y dimension
-    uint q_head_block_idx = tg_pos_in_grid.y;
-    uint q_head_start_index_in_model = q_head_block_idx * PREFILL_PASS1_Q_HEAD_BLOCK_SIZE_CONST;
-    uint num_q_heads_for_this_block = min(PREFILL_PASS1_Q_HEAD_BLOCK_SIZE_CONST,
-                                          params.num_q_heads - q_head_start_index_in_model);
+    // // Determine Q-Head Block Responsibility from Y dimension
+    // uint q_head_block_idx = tg_pos_in_grid.y;
+    // uint q_head_start_index_in_model = q_head_block_idx * PREFILL_PASS1_Q_HEAD_BLOCK_SIZE_CONST;
+    // uint num_q_heads_for_this_block = min(PREFILL_PASS1_Q_HEAD_BLOCK_SIZE_CONST,
+    //                                       params.num_q_heads - q_head_start_index_in_model);
 
-    // Access "Relevant Query Map" Data
-    // Find the range of relevance entries for this page
-    uint relevance_start_idx = page_offsets[assigned_page_index];
-    uint relevance_end_idx = page_offsets[assigned_page_index + 1];
-    uint num_relevant_queries_for_page = relevance_end_idx - relevance_start_idx;
+    // // Access "Relevant Query Map" Data
+    // // Find the range of relevance entries for this page
+    // uint relevance_start_idx = page_offsets[assigned_page_index];
+    // uint relevance_end_idx = page_offsets[assigned_page_index + 1];
+    // uint num_relevant_queries_for_page = relevance_end_idx - relevance_start_idx;
 
-    uint local_thread_idx = local_idx_in_tg;    // Thread ID within this group
-    const uint num_simd_groups = max(1u, (tg_dim.x + actual_simd_width - 1) / actual_simd_width);
+    // uint local_thread_idx = local_idx_in_tg;    // Thread ID within this group
+    // const uint num_simd_groups = max(1u, (tg_dim.x + actual_simd_width - 1) / actual_simd_width);
 
-    // --- 5/10: Threadgroup Memory Carving ---
-    // Layout for reductions, statistics and vector caching.
-    // q_shmem for query vectors
-    // tg_partial_reduce_scratch, tg_simd_reduce_scratch, tg_simd_exp_sums_scratch for softmax reductions
-    // tg_global_stats, tg_s_global_comp for Kahan summation
-    // tg_simd_v_chunk_sums for final output reduction
+    // // --- 5/10: Threadgroup Memory Carving ---
+    // // Layout for reductions, statistics and vector caching.
+    // // q_shmem for query vectors
+    // // tg_partial_reduce_scratch, tg_simd_reduce_scratch, tg_simd_exp_sums_scratch for softmax reductions
+    // // tg_global_stats, tg_s_global_comp for Kahan summation
+    // // tg_simd_v_chunk_sums for final output reduction
 
-    threadgroup float* q_shmem = tg_mem;
+    // threadgroup float* q_shmem = tg_mem;
 
-    // Align subsequent threadgroup memory sections to kAlignmentBytes (e.g., 64 bytes).
-    uintptr_t current_offset = (uintptr_t)(q_shmem + params.head_dim);
-    current_offset = (current_offset + kAlignmentMask) & ~kAlignmentMask;
-    threadgroup float* tg_partial_reduce_scratch = (threadgroup float*)current_offset;  // threads_per_tg floats
+    // // Align subsequent threadgroup memory sections to kAlignmentBytes (e.g., 64 bytes).
+    // uintptr_t current_offset = (uintptr_t)(q_shmem + params.head_dim);
+    // current_offset = (current_offset + kAlignmentMask) & ~kAlignmentMask;
+    // threadgroup float* tg_partial_reduce_scratch = (threadgroup float*)current_offset;  // threads_per_tg floats
 
-    current_offset = (uintptr_t)(tg_partial_reduce_scratch + tg_dim.x);
-    current_offset = (current_offset + kAlignmentMask) & ~kAlignmentMask;
-    threadgroup float* tg_simd_reduce_scratch = (threadgroup float*)current_offset; // num_simd_groups floats
+    // current_offset = (uintptr_t)(tg_partial_reduce_scratch + tg_dim.x);
+    // current_offset = (current_offset + kAlignmentMask) & ~kAlignmentMask;
+    // threadgroup float* tg_simd_reduce_scratch = (threadgroup float*)current_offset; // num_simd_groups floats
 
-    current_offset = (uintptr_t)(tg_simd_reduce_scratch + num_simd_groups);
-    current_offset = (current_offset + kAlignmentMask) & ~kAlignmentMask;
-    threadgroup float* tg_simd_exp_sums_scratch = (threadgroup float*)current_offset; // num_simd_groups floats
+    // current_offset = (uintptr_t)(tg_simd_reduce_scratch + num_simd_groups);
+    // current_offset = (current_offset + kAlignmentMask) & ~kAlignmentMask;
+    // threadgroup float* tg_simd_exp_sums_scratch = (threadgroup float*)current_offset; // num_simd_groups floats
 
-    current_offset = (uintptr_t)(tg_simd_exp_sums_scratch + num_simd_groups);
-    current_offset = (current_offset + kAlignmentMask) & ~kAlignmentMask;
-    threadgroup float2* tg_global_stats = (threadgroup float2*)current_offset; // {m_global, s_global}
+    // current_offset = (uintptr_t)(tg_simd_exp_sums_scratch + num_simd_groups);
+    // current_offset = (current_offset + kAlignmentMask) & ~kAlignmentMask;
+    // threadgroup float2* tg_global_stats = (threadgroup float2*)current_offset; // {m_global, s_global}
 
-    current_offset = (uintptr_t)(tg_global_stats + 1);
-    current_offset = (current_offset + kAlignmentMask) & ~kAlignmentMask;
-    threadgroup float* tg_s_global_comp = (threadgroup float*)current_offset; // Kahan summation compensation
+    // current_offset = (uintptr_t)(tg_global_stats + 1);
+    // current_offset = (current_offset + kAlignmentMask) & ~kAlignmentMask;
+    // threadgroup float* tg_s_global_comp = (threadgroup float*)current_offset; // Kahan summation compensation
 
-    current_offset = (uintptr_t)(tg_s_global_comp + 1);
-    current_offset = (current_offset + kAlignmentMask) & ~kAlignmentMask;
-    threadgroup float4* tg_simd_v_chunk_sums = (threadgroup float4*)current_offset; // num_simd_groups float4s (for Pass 2 o_tile reduction)
+    // current_offset = (uintptr_t)(tg_s_global_comp + 1);
+    // current_offset = (current_offset + kAlignmentMask) & ~kAlignmentMask;
+    // threadgroup float4* tg_simd_v_chunk_sums = (threadgroup float4*)current_offset; // num_simd_groups float4s (for Pass 2 o_tile reduction)
 
-    // K_tile for caching K-vectors in threadgroup memory - after SIMD v_chunk_sums
-    current_offset = (uintptr_t)(tg_simd_v_chunk_sums + num_simd_groups);
-    current_offset = (current_offset + kAlignmentMask) & ~kAlignmentMask;
+    // // K_tile for caching K-vectors in threadgroup memory - after SIMD v_chunk_sums
+    // current_offset = (uintptr_t)(tg_simd_v_chunk_sums + num_simd_groups);
+    // current_offset = (current_offset + kAlignmentMask) & ~kAlignmentMask;
 
-    // K_tile and V_tile for spatial KV tiling
-    // These will hold PAGE_SUB_TILE_TOKEN_COUNT tokens for all unique KV heads needed by this Q-head block
-    threadgroup half* K_tile = (threadgroup half*)current_offset;
-    current_offset += params.tile_size_T_runtime * params.head_dim * sizeof(half);
-    current_offset = (current_offset + kAlignmentMask) & ~kAlignmentMask;
+    // // K_tile and V_tile for spatial KV tiling
+    // // These will hold PAGE_SUB_TILE_TOKEN_COUNT tokens for all unique KV heads needed by this Q-head block
+    // threadgroup half* K_tile = (threadgroup half*)current_offset;
+    // current_offset += params.tile_size_T_runtime * params.head_dim * sizeof(half);
+    // current_offset = (current_offset + kAlignmentMask) & ~kAlignmentMask;
 
-    threadgroup half* V_tile = (threadgroup half*)current_offset;
-    current_offset += params.tile_size_T_runtime * params.head_dim * sizeof(half);
-    current_offset = (current_offset + kAlignmentMask) & ~kAlignmentMask;
+    // threadgroup half* V_tile = (threadgroup half*)current_offset;
+    // current_offset += params.tile_size_T_runtime * params.head_dim * sizeof(half);
+    // current_offset = (current_offset + kAlignmentMask) & ~kAlignmentMask;
 
-    // Threadgroup buffer for current sequence's page-table slice
-    // For Pass 1, we'll use a simplified page table since we're processing a single page
-    threadgroup uint* tg_page_table_slice = (threadgroup uint*)current_offset;
-    current_offset += params.max_logical_blocks_per_seq * sizeof(uint);
-    current_offset = (current_offset + kAlignmentMask) & ~kAlignmentMask;
+    // // Threadgroup buffer for current sequence's page-table slice
+    // // For Pass 1, we'll use a simplified page table since we're processing a single page
+    // threadgroup uint* tg_page_table_slice = (threadgroup uint*)current_offset;
+    // current_offset += params.max_logical_blocks_per_seq * sizeof(uint);
+    // current_offset = (current_offset + kAlignmentMask) & ~kAlignmentMask;
 
-    // Final padding guard (mirrors host-side calculation)
-    current_offset += 32;
-    current_offset = (current_offset + kAlignmentMask) & ~kAlignmentMask;
+    // // Final padding guard (mirrors host-side calculation)
+    // current_offset += 32;
+    // current_offset = (current_offset + kAlignmentMask) & ~kAlignmentMask;
 
-    // --- Step 3: Identify unique KV heads for this Q-head block ---
-    // This is done once before the sub-tiling loop
-    uint unique_kv_heads[PREFILL_PASS1_Q_HEAD_BLOCK_SIZE_CONST];  // Max possible unique KV heads
-    uint num_unique_kv_heads = 0;
+    // // --- Step 3: Identify unique KV heads for this Q-head block ---
+    // // This is done once before the sub-tiling loop
+    // uint unique_kv_heads[PREFILL_PASS1_Q_HEAD_BLOCK_SIZE_CONST];  // Max possible unique KV heads
+    // uint num_unique_kv_heads = 0;
 
     // // Find unique KV heads mapped from our Q heads
     // for (uint q_idx = 0; q_idx < num_q_heads_for_this_block; ++q_idx) {

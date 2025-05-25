@@ -16,7 +16,7 @@
 // limitations under the License.
 // ============================================================================
 
-#include "pal_core/metal_loader.hpp"
+#include "pal_core/metal/metal_loader.hpp"
 
 #include <dlfcn.h>
 #include <string>

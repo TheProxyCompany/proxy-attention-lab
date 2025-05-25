@@ -31,27 +31,6 @@ ThreadConfig MetalDispatcher::calculate_optimal_threads(
     return config;
 }
 
-DispatchGrid MetalDispatcher::calculate_2d_dispatch(
-    size_t total_items,
-    size_t items_per_block_x,
-    size_t items_per_block_y
-) {
-    DispatchGrid grid;
-
-    if (items_per_block_y == 1) {
-        // 1D dispatch
-        grid.width = (total_items + items_per_block_x - 1) / items_per_block_x;
-        grid.height = 1;
-    } else {
-        // 2D dispatch
-        grid.width = items_per_block_x;
-        grid.height = (total_items + items_per_block_y - 1) / items_per_block_y;
-    }
-    grid.depth = 1;
-
-    return grid;
-}
-
 void MetalDispatcher::setup_input_arrays(
     mx::metal::CommandEncoder& encoder,
     const std::vector<mx::array>& inputs,

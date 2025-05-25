@@ -4,7 +4,6 @@
 // Copyright 2024 The Proxy Company. All Rights Reserved.
 
 #include "pal_core/kernel_utils/memory_layout.hpp"
-#include "shaders/paged_attention_types.h"
 #include <spdlog/spdlog.h>
 
 // Define half type for memory calculations (matching Metal's half type)

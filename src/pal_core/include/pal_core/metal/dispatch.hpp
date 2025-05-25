@@ -45,13 +45,6 @@ public:
         size_t target_threads = 64
     );
 
-    // Calculate 2D dispatch grid for workload distribution
-    static DispatchGrid calculate_2d_dispatch(
-        size_t total_items,
-        size_t items_per_block_x,
-        size_t items_per_block_y = 1
-    );
-
     // Setup common input arrays for a compute encoder
     static void setup_input_arrays(
         mx::metal::CommandEncoder& encoder,

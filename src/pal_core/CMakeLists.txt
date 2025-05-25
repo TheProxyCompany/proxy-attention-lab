@@ -189,7 +189,7 @@ target_link_libraries(
 
 file(
     GLOB_RECURSE METAL_SOURCES
-    "${CMAKE_CURRENT_SOURCE_DIR}/kernels/*.metal"
+    "${CMAKE_CURRENT_SOURCE_DIR}/kernels/paged_attention/*.metal"
 )
 message(STATUS "Configuring Metal library build for PAL with sources: ${METAL_SOURCES}")
 mlx_build_metallib(
@@ -202,7 +202,7 @@ mlx_build_metallib(
         ${MLX_INCLUDE_DIRS}
     OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     OUTPUT_FILENAME ${PAL_METALLIB_FILENAME}
-    DEBUG ON
+    # DEBUG ON
 )
 
 set(PAL_METALLIB_PATH ${CMAKE_CURRENT_BINARY_DIR}/${PAL_METALLIB_FILENAME} CACHE INTERNAL "Path to built pal.metallib")

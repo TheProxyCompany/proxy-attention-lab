@@ -23,7 +23,7 @@
 #include "mlx/backend/common/utils.h"
 #include "mlx/utils.h"
 
-#include "pal_core/metal_loader.hpp"
+#include "pal_core/metal/metal_loader.hpp"
 #include "pal_core/paged_attention_primitive.hpp"
 
 #include <spdlog/spdlog.h>

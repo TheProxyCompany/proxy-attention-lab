@@ -51,28 +51,28 @@ using namespace metal;
     uint3       tg_dim                              [[threads_per_threadgroup]],
     uint        local_idx_in_tg                     [[thread_index_in_threadgroup]]
 ) {
-    // Early exit for degenerate case
-    if (params.head_dim == 0) {
-        return;
-    }
+    // // Early exit for degenerate case
+    // if (params.head_dim == 0) {
+    //     return;
+    // }
 
-    // Constants
-    constexpr uint PREFILL_PASS1_Q_HEAD_BLOCK_SIZE_CONST = 8;
-    constexpr float kEpsilonForZeroGuard = 1e-12f;
-    constexpr uintptr_t kAlignmentBytes = 64;
-    constexpr uintptr_t kAlignmentMask = kAlignmentBytes - 1;
+    // // Constants
+    // constexpr uint PREFILL_PASS1_Q_HEAD_BLOCK_SIZE_CONST = 8;
+    // constexpr float kEpsilonForZeroGuard = 1e-12f;
+    // constexpr uintptr_t kAlignmentBytes = 64;
+    // constexpr uintptr_t kAlignmentMask = kAlignmentBytes - 1;
 
-    // Calculate block start indices for 2D blocking
-    uint token_block_start_idx = tg_pos_in_grid.x * params.pass2_token_block_size;
-    uint q_head_block_start_idx = tg_pos_in_grid.y * params.pass2_qhead_block_size;
+    // // Calculate block start indices for 2D blocking
+    // uint token_block_start_idx = tg_pos_in_grid.x * params.pass2_token_block_size;
+    // uint q_head_block_start_idx = tg_pos_in_grid.y * params.pass2_qhead_block_size;
 
-    // Early return if block is completely out of bounds
-    if (token_block_start_idx >= params.query_token_count_total ||
-        q_head_block_start_idx >= params.num_q_heads) {
-        return;
-    }
+    // // Early return if block is completely out of bounds
+    // if (token_block_start_idx >= params.query_token_count_total ||
+    //     q_head_block_start_idx >= params.num_q_heads) {
+    //     return;
+    // }
 
-    uint local_thread_idx = local_idx_in_tg;
+    // uint local_thread_idx = local_idx_in_tg;
 
     // // Process each (token, q_head) pair in the assigned 2D block
     // for (uint t_offset = 0; t_offset < params.pass2_token_block_size; ++t_offset) {

@@ -32,7 +32,7 @@ namespace paged_attention {
     constexpr uint32_t HEAD_DIM_VECTORIZATION = 4;
 }
 
-// Future kernels can add their namespaces here
+// Future kernels add their namespaces here
 // namespace future_kernel {
 //     constexpr uint32_t SOME_CONSTANT = 42;
 // }

@@ -20,14 +20,13 @@
 #include "pal_core/paged_attention_primitive.hpp"
 
 // PAL utilities
-#include "pal_core/types.hpp"
-#include "pal_core/kernel_constants.hpp"
+#include "pal_core/kernel_utils/kernel_constants.hpp"
 #include "pal_core/kernel_utils/memory_layout.hpp"
 #include "pal_core/kernel_utils/validation.hpp"
 #include "pal_core/kernel_utils/tiling.hpp"
 #include "pal_core/metal/dispatch.hpp"
 #include "pal_core/debug/kernel_debug.hpp"
-#include "pal_core/param_builder.hpp"
+#include "pal_core/kernel_utils/param_builder.hpp"
 
 // Standard library
 #include <cmath>
@@ -57,15 +56,6 @@ using half = short;
 namespace mx = mlx::core;
 
 namespace pal::cpp {
-
-// Forward declare the calculate_attention_memory_layout function
-namespace kernel_utils {
-    AttentionMemoryLayout calculate_attention_memory_layout(
-        const PagedAttentionParams& params,
-        size_t threads_per_group,
-        size_t actual_simd_lanes_per_group
-    );
-}
 
 // Paged attention specific validator
 class PagedAttentionValidator : public kernel_utils::KernelValidator {
@@ -261,7 +251,6 @@ private:
     }
 
     size_t calculate_bytes_per_token(const PagedAttentionParams& params) {
-        uint32_t padded_head_dim = params.head_dim;
 
         if (is_prefill_) {
             // For prefill Pass 1: Calculate unique KV heads for a Q-head block
@@ -273,12 +262,12 @@ private:
             );
 
             size_t bytes_for_kv_tiles = params.tokens_per_page * max_unique_kv_heads_per_block *
-                                       padded_head_dim * sizeof(half) * 2; // K and V
+                                       params.head_dim * sizeof(half) * 2; // K and V
 
             return bytes_for_kv_tiles / params.tokens_per_page;
         } else {
             // For decode: one K/V pair per token
-            return 2 * padded_head_dim * sizeof(half);
+            return 2 * params.head_dim * sizeof(half);
         }
     }
 };
@@ -305,12 +294,16 @@ void PagedAttentionPrimitive::dispatch_prefill_pass2(
     auto& encoder = d.get_command_encoder(s.index);
     encoder.set_compute_pipeline_state(kernel_state);
 
-    // Calculate dispatch grid
-    metal::DispatchGrid grid = metal::MetalDispatcher::calculate_2d_dispatch(
-        core_dims.query_token_count * core_dims.num_q_heads,
-        (core_dims.query_token_count + PREFILL_PASS2_TOKEN_BLOCK_SIZE - 1) / PREFILL_PASS2_TOKEN_BLOCK_SIZE,
-        (core_dims.num_q_heads + PREFILL_PASS2_QHEAD_BLOCK_SIZE - 1) / PREFILL_PASS2_QHEAD_BLOCK_SIZE
-    );
+    size_t pass2_grid_width = (core_dims.query_token_count + PREFILL_PASS2_TOKEN_BLOCK_SIZE - 1) / PREFILL_PASS2_TOKEN_BLOCK_SIZE;
+    size_t pass2_grid_height = (core_dims.num_q_heads + PREFILL_PASS2_QHEAD_BLOCK_SIZE - 1) / PREFILL_PASS2_QHEAD_BLOCK_SIZE;
+
+    spdlog::info("[PAL Primitive] Pass 2 grid width: {}, height: {}", pass2_grid_width, pass2_grid_height);
+    spdlog::info("[PAL Primitive] Pass 2's query token count: {}, num q heads: {}", core_dims.query_token_count, core_dims.num_q_heads);
+
+    metal::DispatchGrid grid;
+    grid.width = pass2_grid_width;
+    grid.height = pass2_grid_height;
+    grid.depth = 1;
 
     // Calculate thread configuration
     auto thread_config = metal::MetalDispatcher::calculate_optimal_threads(
@@ -328,8 +321,6 @@ void PagedAttentionPrimitive::dispatch_prefill_pass2(
 
     debug::KernelDebugger::log_dispatch("PAL Prefill Pass 2", grid, thread_config);
     metal::MetalDispatcher::dispatch_kernel(encoder, grid, thread_config, pass2_tg_mem_bytes);
-
-    debug::KernelDebugger::log_kernel_end("PAL Prefill Pass 2");
 }
 
 PagedAttentionPrimitive::PagedAttentionPrimitive(
@@ -394,7 +385,10 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx:
 
     // Calculate memory layout
     auto memory_layout = kernel_utils::calculate_attention_memory_layout(
-        params, thread_config.threads_per_group, thread_config.execution_width);
+        params,
+        thread_config.threads_per_group,
+        thread_config.execution_width
+    );
 
     debug::KernelDebugger::log_memory_layout("PAL Primitive", memory_layout);
 

@@ -31,8 +31,14 @@ namespace mx = mlx::core;
 
 namespace pal::cpp {
 
-// Forward declaration
-struct CoreDims;
+struct CoreDims {
+    uint32_t head_dim{0};
+    uint32_t num_q_heads{0};
+    uint32_t tokens_per_page{0};
+    uint32_t num_kv_heads{0};
+    size_t num_items_to_process{0};
+    size_t query_token_count{0};
+};
 
 /**
  * @brief Custom primitive implementation for paged attention operations.

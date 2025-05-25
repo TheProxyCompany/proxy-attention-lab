@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include "shaders/paged_attention_types.h"
 
 namespace pal::cpp::kernel_utils {
 
@@ -43,5 +44,11 @@ struct AttentionMemoryLayout : ThreadgroupMemoryLayout {
 inline uint32_t calculate_simd_groups(size_t threads_per_group, size_t simd_lanes_per_group) {
     return (threads_per_group + simd_lanes_per_group - 1) / simd_lanes_per_group;
 }
+
+AttentionMemoryLayout calculate_attention_memory_layout(
+    const PagedAttentionParams& params,
+    size_t threads_per_group,
+    size_t actual_simd_lanes_per_group
+);
 
 } // namespace pal::cpp::kernel_utils
