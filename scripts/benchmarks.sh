@@ -134,13 +134,6 @@ update_and_rebuild_project() {
     # Update dependencies
     "${UV_EXECUTABLE_PATH}" pip install --upgrade --no-deps "git+https://github.com/TheProxyCompany/mlx.git" "nanobind>=2.5.0"
 
-    # Configure build parallelism
-    if [ -n "${CMAKE_BUILD_PARALLEL_LEVEL:-}" ]; then
-        log "Using CMAKE_BUILD_PARALLEL_LEVEL=${CMAKE_BUILD_PARALLEL_LEVEL}"
-    else
-        log "CMAKE_BUILD_PARALLEL_LEVEL not set, CMake will use its default parallelism."
-    fi
-
     # Install the project
     "${UV_EXECUTABLE_PATH}" pip install . --force-reinstall --no-build-isolation --no-cache-dir
     log "Project rebuilt successfully."

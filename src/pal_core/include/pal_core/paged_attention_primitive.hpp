@@ -31,6 +31,9 @@ namespace mx = mlx::core;
 
 namespace pal::cpp {
 
+// Forward declaration
+struct CoreDims;
+
 /**
  * @brief Custom primitive implementation for paged attention operations.
  *
@@ -93,7 +96,21 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
    * @param other The other primitive to compare with
    * @return true if primitives are equivalent, false otherwise
    */
-  bool is_equivalent(const mx::Primitive& other) const override;
+  bool is_equivalent(const mx::Primitive& other) const override {
+    // Check if the other primitive is the same type
+    if (typeid(*this) != typeid(other)) {
+      return false;
+    }
+
+    // Cast and compare stored parameters
+    const PagedAttentionPrimitive& other_pa =
+        static_cast<const PagedAttentionPrimitive&>(other);
+    return (this->num_q_heads_ == other_pa.num_q_heads_ &&
+            this->num_kv_heads_ == other_pa.num_kv_heads_ &&
+            this->head_dim_ == other_pa.head_dim_ &&
+            this->tokens_per_page_ == other_pa.tokens_per_page_ &&
+            this->is_prefill_ == other_pa.is_prefill_);
+  }
 
   /**
    * @brief Calculates output shapes based on input shapes.
@@ -148,6 +165,12 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
       const std::vector<mx::array>& inputs,
       const std::vector<int>& axes) override;
 
+  // Helper function for dispatching prefill pass 2
+  static void dispatch_prefill_pass2(
+      mlx::core::metal::Device& d,
+      const mx::Stream& s,
+      const CoreDims& core_dims,
+      mx::array& out);
 };
 
 }  // namespace pal::cpp

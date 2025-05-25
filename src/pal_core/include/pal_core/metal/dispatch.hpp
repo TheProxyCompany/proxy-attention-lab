@@ -1,0 +1,77 @@
+#pragma once
+// dispatch.hpp
+// Metal dispatch utilities for kernel execution
+//
+// Copyright 2024 The Proxy Company. All Rights Reserved.
+
+#include <mlx/array.h>
+#include <mlx/backend/metal/device.h>
+#include <mlx/backend/metal/metal.h>
+#include <Metal/Metal.hpp>
+#include <vector>
+#include <string>
+
+namespace mx = mlx::core;
+
+namespace pal::cpp::metal {
+
+// Thread configuration for kernel dispatch
+struct ThreadConfig {
+    size_t threads_per_group;
+    size_t execution_width;
+    size_t max_threads_device;
+};
+
+// Dispatch grid configuration
+struct DispatchGrid {
+    size_t width;
+    size_t height;
+    size_t depth;
+
+    DispatchGrid(size_t w = 1, size_t h = 1, size_t d = 1)
+        : width(w), height(h), depth(d) {}
+
+    MTL::Size to_mtl_size() const {
+        return MTL::Size(width, height, depth);
+    }
+};
+
+// Helper class for Metal kernel dispatch
+class MetalDispatcher {
+public:
+    // Calculate optimal thread configuration for a kernel
+    static ThreadConfig calculate_optimal_threads(
+        MTL::ComputePipelineState* kernel_state,
+        size_t target_threads = 64
+    );
+
+    // Calculate 2D dispatch grid for workload distribution
+    static DispatchGrid calculate_2d_dispatch(
+        size_t total_items,
+        size_t items_per_block_x,
+        size_t items_per_block_y = 1
+    );
+
+    // Setup common input arrays for a compute encoder
+    static void setup_input_arrays(
+        mx::metal::CommandEncoder& encoder,
+        const std::vector<mx::array>& inputs,
+        size_t starting_index = 0
+    );
+
+    // Validate all input arrays have valid data pointers
+    static void validate_input_pointers(
+        const std::vector<mx::array>& inputs,
+        const std::string& kernel_name
+    );
+
+    // Helper to dispatch a kernel with common setup
+    static void dispatch_kernel(
+        mx::metal::CommandEncoder& encoder,
+        const DispatchGrid& grid,
+        const ThreadConfig& threads,
+        size_t threadgroup_memory_bytes = 0
+    );
+};
+
+} // namespace pal::cpp::metal
