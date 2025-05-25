@@ -48,9 +48,9 @@ namespace mx = mlx::core;
 namespace pal::cpp {
 
 constexpr static float kLogFp16DenormMinVal = -88.0f;
+constexpr static uint32_t PREFILL_PASS2_TOKEN_BLOCK_SIZE = 64;
+constexpr static uint32_t PREFILL_PASS2_QHEAD_BLOCK_SIZE = 8;
 
-constexpr static uint32_t PREFILL_TOKENS_PER_TG_KNOB = 1;
-constexpr static uint32_t PREFILL_HEADS_PER_TG_KNOB = 32; // Process all heads for one token
 constexpr static uint32_t DEFAULT_THREADS_PER_GROUP = 64; // 64 is the default
 
 // New Pass 1 parameters for page-centric prefill architecture
@@ -218,6 +218,10 @@ static ThreadgroupMemoryLayout calculate_final_params_and_memory_layout(
         params.inv_sqrt_head_dim = 1.0f;  // Default fallback
     }
 
+    // Pre-calculate strides for fetch_kv_pointer optimization
+    params.per_token_stride_in_cache = params.num_kv_heads * params.head_dim;
+    params.per_page_stride_in_cache = params.tokens_per_page * params.per_token_stride_in_cache;
+
     // Calculate the memory layout with a zero tile size
     // So we know how much memory we have to tile with
     constexpr size_t kFinalTgMemoryPaddingGuardBytes = 32;
@@ -250,7 +254,7 @@ static ThreadgroupMemoryLayout calculate_final_params_and_memory_layout(
 
     // 3. Compute "bytes per history token" for dynamic tiles (K_tile + V_tile)
     uint32_t padded_head_dim_for_tile_calc = params.head_dim;
-    
+
     // For Pass 1 with spatial KV tiling, we need memory for PAGE_SUB_TILE_TOKEN_COUNT tokens
     // across all unique KV heads required by a Q-head block
     size_t bytes_per_token_in_tile;
@@ -262,14 +266,14 @@ static ThreadgroupMemoryLayout calculate_final_params_and_memory_layout(
             PREFILL_PASS1_Q_HEAD_BLOCK_SIZE,
             (PREFILL_PASS1_Q_HEAD_BLOCK_SIZE + q_heads_per_kv_head - 1) / q_heads_per_kv_head
         );
-        
+
         // PAGE_SUB_TILE_TOKEN_COUNT is 12 (from the kernel)
         constexpr uint32_t PAGE_SUB_TILE_TOKEN_COUNT = 12;
-        
+
         // Total bytes for spatial KV tiles
-        size_t bytes_for_kv_tiles = PAGE_SUB_TILE_TOKEN_COUNT * max_unique_kv_heads_per_block * 
+        size_t bytes_for_kv_tiles = PAGE_SUB_TILE_TOKEN_COUNT * max_unique_kv_heads_per_block *
                                    padded_head_dim_for_tile_calc * sizeof(half) * 2; // K and V
-        
+
         // Calculate effective bytes per token to fit the spatial tiling
         bytes_per_token_in_tile = bytes_for_kv_tiles / PAGE_SUB_TILE_TOKEN_COUNT;
     } else {
@@ -719,7 +723,7 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
   mx::array m_locals_pass1(&dummy_float, {0}, mx::float32);
   mx::array s_locals_pass1(&dummy_float, {0}, mx::float32);
   mx::array o_partials_pass1(&dummy_half, {0}, mx::float16);
-  
+
   // Set Pass 1 relevant query map arrays (only for prefill)
   if (is_prefill_) {
       compute_encoder.set_input_array(relevant_query_indices, 9);  // Flat query indices
@@ -733,13 +737,18 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
       // - m_locals_pass1: [TotalQueryTokens][NumTotalQHeads][NumActivePages]
       // - s_locals_pass1: [TotalQueryTokens][NumTotalQHeads][NumActivePages]
       // - o_partials_pass1: [TotalQueryTokens][NumTotalQHeads][NumActivePages][HeadDim]
-      
+
       size_t num_active_pages = active_pages.size();
       size_t total_query_tokens = core_dims.query_token_count;
       size_t total_q_heads = core_dims.num_q_heads;
-      
+
       // Store num_active_pages in params for Pass 2
       params_struct.num_active_pages_in_batch = static_cast<uint32_t>(num_active_pages);
+
+      // Store Pass 2 block sizes and total query token count
+      params_struct.pass2_token_block_size = PREFILL_PASS2_TOKEN_BLOCK_SIZE;
+      params_struct.pass2_qhead_block_size = PREFILL_PASS2_QHEAD_BLOCK_SIZE;
+      params_struct.query_token_count_total = static_cast<uint32_t>(total_query_tokens);
 
       // Allocate m_locals_pass1: Shape [TotalQueryTokens][NumTotalQHeads][NumActivePages]
       // Initialize with zeros using vector
@@ -795,62 +804,67 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs,
   // Set the threadgroup memory length and dispatch the kernel
   compute_encoder.set_threadgroup_memory_length(memory_layout.total_bytes, 0);
   compute_encoder.dispatch_threadgroups(threadgroups_per_grid, threads_per_threadgroup);
-  
+
   // Step 4: Launch Pass 2 kernel for prefill
   if (is_prefill_) {
       spdlog::debug("[PAL Primitive Dispatch] Launching Pass 2 finalization kernel");
-      
+
       // Get Pass 2 kernel
       const std::string pass2_kernel_name = "paged_attn_prefill_pass2_kernel";
       auto pass2_kernel_state = d.get_kernel(pass2_kernel_name, library_name_for_mlx);
       if (!pass2_kernel_state) {
           throw std::runtime_error("[PAL Primitive] Failed to load Pass 2 kernel: " + pass2_kernel_name);
       }
-      
+
       // Create new encoder for Pass 2
       auto& pass2_compute_encoder = d.get_command_encoder(s.index);
       pass2_compute_encoder.set_compute_pipeline_state(pass2_kernel_state);
-      
-      // Calculate Pass 2 dispatch grid
-      size_t dispatch_grid_width_pass2 = core_dims.query_token_count;   // 1 TG per query token
-      size_t dispatch_grid_height_pass2 = core_dims.num_q_heads;        // 1 TG per Q-head
-      
-      spdlog::debug("[PAL Primitive Dispatch] Pass 2 grid dimensions: {} x {} (query_tokens x q_heads)",
+
+      // Calculate Pass 2 dispatch grid using 2D blocking
+      size_t dispatch_grid_width_pass2 = (core_dims.query_token_count + PREFILL_PASS2_TOKEN_BLOCK_SIZE - 1) / PREFILL_PASS2_TOKEN_BLOCK_SIZE;
+      size_t dispatch_grid_height_pass2 = (core_dims.num_q_heads + PREFILL_PASS2_QHEAD_BLOCK_SIZE - 1) / PREFILL_PASS2_QHEAD_BLOCK_SIZE;
+
+      spdlog::debug("[PAL Primitive Dispatch] Pass 2 grid dimensions: {} x {} (token_blocks x q_head_blocks)",
                     dispatch_grid_width_pass2, dispatch_grid_height_pass2);
-      
+      spdlog::debug("[PAL Primitive Dispatch] Pass 2 block sizes: {} tokens x {} q_heads per block",
+                    PREFILL_PASS2_TOKEN_BLOCK_SIZE, PREFILL_PASS2_QHEAD_BLOCK_SIZE);
+      spdlog::debug("[PAL Primitive Dispatch] Pass 2 total threadgroups: {} (reduced from {})",
+                    dispatch_grid_width_pass2 * dispatch_grid_height_pass2,
+                    core_dims.query_token_count * core_dims.num_q_heads);
+
       // Set Pass 1 outputs as Pass 2 inputs
       pass2_compute_encoder.set_input_array(m_locals_pass1, 17);    // Pass 1 max scores
       pass2_compute_encoder.set_input_array(s_locals_pass1, 18);    // Pass 1 sum exponentials
       pass2_compute_encoder.set_input_array(o_partials_pass1, 19);  // Pass 1 partial outputs
-      
+
       // Set parameters for Pass 2
       pass2_compute_encoder.set_bytes(&params_struct, sizeof(PagedAttentionParams), 7);
-      
+
       // Set final output buffer
       pass2_compute_encoder.set_output_array(out, 8);
-      
+
       // Calculate Pass 2 threadgroup memory requirements
       // Pass 2 needs much less memory - just for reductions
       size_t pass2_threads_per_group = std::min(static_cast<size_t>(256), max_threads_device);
       pass2_threads_per_group = ((pass2_threads_per_group + execution_width - 1) / execution_width) * execution_width;
-      
+
       // Calculate memory for Pass 2 (simplified - just reduction scratch space)
       size_t pass2_tg_mem_bytes = 0;
       pass2_tg_mem_bytes += pass2_threads_per_group * sizeof(float);        // Thread max scratch
-      pass2_tg_mem_bytes += pass2_threads_per_group * sizeof(float);        // Thread sum scratch  
+      pass2_tg_mem_bytes += pass2_threads_per_group * sizeof(float);        // Thread sum scratch
       pass2_tg_mem_bytes += 2 * sizeof(float);                              // Global stats (M, S)
       pass2_tg_mem_bytes += pass2_threads_per_group * core_dims.head_dim * sizeof(float); // Thread O accumulators
       pass2_tg_mem_bytes += core_dims.head_dim * sizeof(float);             // Final O accumulator
       pass2_tg_mem_bytes += 64;                                              // Alignment padding
       pass2_tg_mem_bytes = (pass2_tg_mem_bytes + 63) & ~63;                 // Align to 64 bytes
-      
+
       // Configure Pass 2 dispatch
       MTL::Size pass2_threadgroups_per_grid = MTL::Size(dispatch_grid_width_pass2, dispatch_grid_height_pass2, 1);
       MTL::Size pass2_threads_per_threadgroup = MTL::Size(pass2_threads_per_group, 1, 1);
-      
+
       spdlog::debug("[PAL Primitive Dispatch] Pass 2 using {} threads per group, {} bytes TG memory",
                     pass2_threads_per_group, pass2_tg_mem_bytes);
-      
+
       // Dispatch Pass 2
       pass2_compute_encoder.set_threadgroup_memory_length(pass2_tg_mem_bytes, 0);
       pass2_compute_encoder.dispatch_threadgroups(pass2_threadgroups_per_grid, pass2_threads_per_threadgroup);

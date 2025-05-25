@@ -177,111 +177,93 @@ static constant uint PAGE_SUB_TILE_TOKEN_COUNT = 12;
         }
     }
 
-    // Set up simplified page table for fetch_kv_pointer
-    // Since we're processing a single page, create a minimal page table
-    if (local_thread_idx == 0) {
-        for (uint i = 0; i < params.max_logical_blocks_per_seq; ++i) {
-            // For the tokens on our assigned page, set the physical page ID
-            // For simplicity, assume our page covers logical blocks starting from 0
-            tg_page_table_slice[i] = (i == 0) ? assigned_global_kv_page_id : 0;
-        }
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-
     // Calculate number of sub-tiles needed to process the entire page
     uint num_sub_tiles_in_page = (params.tokens_per_page + PAGE_SUB_TILE_TOKEN_COUNT - 1) / PAGE_SUB_TILE_TOKEN_COUNT;
 
-    // --- Loop 1: Iterate through relevant query tokens for this Page-TG's assigned page ---
-    for (uint relevance_idx = relevance_start_idx; relevance_idx < relevance_end_idx; ++relevance_idx) {
-        uint query_token_global_idx = relevant_query_indices[relevance_idx];
-        uint history_start_on_page = relevant_history_starts[relevance_idx];
-        uint history_count_on_page = relevant_history_counts[relevance_idx];
+    // --- RESTRUCTURED: Sub-tile loop is now outermost ---
+    for (uint sub_tile_iter = 0; sub_tile_iter < num_sub_tiles_in_page; ++sub_tile_iter) {
+        // Calculate token range for current sub-tile
+        uint current_sub_tile_start_token_offset_in_page = sub_tile_iter * PAGE_SUB_TILE_TOKEN_COUNT;
+        uint current_sub_tile_actual_len = min(PAGE_SUB_TILE_TOKEN_COUNT,
+                                               params.tokens_per_page - current_sub_tile_start_token_offset_in_page);
 
-        // Calculate history range for this query on this page
-        uint history_end_on_page = history_start_on_page + history_count_on_page; // Exclusive
+        // --- Spatial K/V Tile Loading (moved here, outside query loops) ---
+        // Load K and V data for all unique KV heads for this sub-tile
 
-        // --- Loop 2: Iterate through Q-heads in this TG's assigned block ---
-        for (uint q_head_offset_in_block = 0; q_head_offset_in_block < num_q_heads_for_this_block; ++q_head_offset_in_block) {
-            uint current_global_q_head_idx = q_head_start_index_in_model + q_head_offset_in_block;
+        // Calculate tile stride for indexing into K_tile/V_tile
+        // Layout: [unique_kv_head_idx][token_in_sub_tile][dim]
+        const uint tile_stride_per_kv_head = PAGE_SUB_TILE_TOKEN_COUNT * params.head_dim;
+        const uint chunks_per_row = params.head_dim / 4;  // Vectorized loading
 
-            // --- Initialize Page-Level Accumulators ---
-            // These will aggregate results across all sub-tiles for this (query, Q-head) pair
-            float m_page_level = -INFINITY;
-            float s_page_level = 0.0f;
-            float s_page_level_kahan_comp = 0.0f;
-            float o_page_level[kMaxHeadDimMetal];
-            for (uint d = 0; d < params.head_dim; ++d) {
-                o_page_level[d] = 0.0f;
+        // We need to determine which logical block this page represents
+        // This will be the same for all queries, so we can do it once
+        // For now, we'll determine it per sequence when we load page tables
+
+        // First, collect unique sequence indices from relevant queries
+        // We'll process queries in groups by sequence to minimize page table loads
+        const uint MAX_SEQUENCES_PER_PAGE = 32;  // Reasonable limit for on-chip tracking
+        int unique_sequences[MAX_SEQUENCES_PER_PAGE];
+        uint num_unique_sequences = 0;
+
+        // Scan relevant queries to find unique sequences
+        for (uint relevance_idx = relevance_start_idx; relevance_idx < relevance_end_idx; ++relevance_idx) {
+            uint query_token_global_idx = relevant_query_indices[relevance_idx];
+            uint history_start_on_page = relevant_history_starts[relevance_idx];
+            uint history_count_on_page = relevant_history_counts[relevance_idx];
+            uint history_end_on_page = history_start_on_page + history_count_on_page;
+
+            // Check if this query's history overlaps with current sub-tile
+            uint sub_tile_start = current_sub_tile_start_token_offset_in_page;
+            uint sub_tile_end = sub_tile_start + current_sub_tile_actual_len;
+
+            if (history_end_on_page <= sub_tile_start || history_start_on_page >= sub_tile_end) {
+                continue;  // No overlap with this sub-tile
             }
 
-            // Load Q vector for this query token and Q head (once, before sub-tile loop)
-            device const half* q_vector_ptr;
-            if (params.num_q_heads > 1) {
-                // 3D queries: [num_tokens, num_q_heads, head_dim]
-                ulong q_offset = (ulong)query_token_global_idx * params.num_q_heads * params.head_dim +
-                                 (ulong)current_global_q_head_idx * params.head_dim;
-                q_vector_ptr = queries_in + q_offset;
-            } else {
-                // 2D queries: [num_tokens, head_dim]
-                q_vector_ptr = queries_in + (query_token_global_idx * params.head_dim);
-            }
+            int original_sequence_idx = query_to_seq_map_in[query_token_global_idx];
 
-            // Load Q vector into shared memory with scaling
-            threadgroup float4* q_vec_f4 = reinterpret_cast<threadgroup float4*>(q_shmem);
-            for (uint chunk = local_thread_idx; chunk < params.head_dim / 4; chunk += tg_dim.x) {
-                uint base_offset = chunk * 4;
-                half qh0 = q_vector_ptr[base_offset + 0];
-                half qh1 = q_vector_ptr[base_offset + 1];
-                half qh2 = q_vector_ptr[base_offset + 2];
-                half qh3 = q_vector_ptr[base_offset + 3];
-
-                float4 q_float_chunk = float4(qh0, qh1, qh2, qh3) * params.inv_sqrt_head_dim;
-                q_vec_f4[chunk] = q_float_chunk;
-            }
-            threadgroup_barrier(mem_flags::mem_threadgroup);
-
-            // Determine which KV head this Q head maps to
-            uint target_kv_head_idx = map_q_to_kv_head(current_global_q_head_idx,
-                                                       params.num_q_heads,
-                                                       params.num_kv_heads);
-
-            // Find which unique KV head index this maps to in our loaded data
-            uint unique_kv_idx = 0;
-            for (uint i = 0; i < num_unique_kv_heads; ++i) {
-                if (unique_kv_heads[i] == target_kv_head_idx) {
-                    unique_kv_idx = i;
+            // Check if we already have this sequence
+            bool found = false;
+            for (uint i = 0; i < num_unique_sequences; ++i) {
+                if (unique_sequences[i] == original_sequence_idx) {
+                    found = true;
                     break;
                 }
             }
 
-            // --- Loop 3: Iterate through sub-tiles of the Page-TG's assigned page ---
-            for (uint sub_tile_iter = 0; sub_tile_iter < num_sub_tiles_in_page; ++sub_tile_iter) {
-                // Calculate token range for current sub-tile
-                uint current_sub_tile_start_token_offset_in_page = sub_tile_iter * PAGE_SUB_TILE_TOKEN_COUNT;
-                uint current_sub_tile_actual_len = min(PAGE_SUB_TILE_TOKEN_COUNT,
-                                                       params.tokens_per_page - current_sub_tile_start_token_offset_in_page);
+            if (!found && num_unique_sequences < MAX_SEQUENCES_PER_PAGE) {
+                unique_sequences[num_unique_sequences++] = original_sequence_idx;
+            }
+        }
 
-                // Check if this query's history overlaps with current sub-tile
-                uint sub_tile_start = current_sub_tile_start_token_offset_in_page;
-                uint sub_tile_end = sub_tile_start + current_sub_tile_actual_len; // Exclusive
+        // Now iterate through unique sequences
+        for (uint seq_iter = 0; seq_iter < num_unique_sequences; ++seq_iter) {
+            int current_sequence_idx = unique_sequences[seq_iter];
 
-                // Skip if no overlap
-                if (history_end_on_page <= sub_tile_start || history_start_on_page >= sub_tile_end) {
-                    continue;
+            // Load the page table for this sequence ONCE
+            for (uint blk = local_thread_idx; blk < params.max_logical_blocks_per_seq; blk += tg_dim.x) {
+                uint flat_idx_in_global_pt = current_sequence_idx * params.max_logical_blocks_per_seq + blk;
+                tg_page_table_slice[blk] = page_table_in[flat_idx_in_global_pt];
+            }
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+
+            // Find which logical block our assigned page corresponds to
+            uint logical_block_for_page = 0;
+            bool found_logical_block = false;
+            for (uint blk = 0; blk < params.max_logical_blocks_per_seq; ++blk) {
+                if (tg_page_table_slice[blk] == assigned_global_kv_page_id) {
+                    logical_block_for_page = blk;
+                    found_logical_block = true;
+                    break;
                 }
+            }
 
-                // Calculate actual overlap range
-                uint overlap_start = max(history_start_on_page, sub_tile_start);
-                uint overlap_end = min(history_end_on_page, sub_tile_end);
+            // Calculate the base token position in the sequence for tokens on this page
+            uint page_base_token_in_seq = logical_block_for_page * params.tokens_per_page;
 
-                // --- Spatial K/V Tile Loading ---
-                // Load K and V data for all unique KV heads for this sub-tile
-
-                // Calculate tile stride for indexing into K_tile/V_tile
-                // Layout: [unique_kv_head_idx][token_in_sub_tile][dim]
-                const uint tile_stride_per_kv_head = PAGE_SUB_TILE_TOKEN_COUNT * params.head_dim;
-                const uint chunks_per_row = params.head_dim / 4;  // Vectorized loading
-
+            // Load K/V vectors for this sub-tile if not already loaded
+            // We only need to load once per sub-tile, not per sequence
+            if (seq_iter == 0) {
                 // Load K vectors for all unique KV heads
                 for (uint unique_kv_idx_load = 0; unique_kv_idx_load < num_unique_kv_heads; ++unique_kv_idx_load) {
                     uint kv_head_idx = unique_kv_heads[unique_kv_idx_load];
@@ -291,10 +273,13 @@ static constant uint PAGE_SUB_TILE_TOKEN_COUNT = 12;
                         // Calculate absolute token position on the page
                         uint token_pos_on_page = current_sub_tile_start_token_offset_in_page + tok_idx;
 
+                        // Convert to absolute position in the sequence
+                        uint token_pos_in_seq = page_base_token_in_seq + token_pos_on_page;
+
                         // Get K vector pointer
-                        device const half* k_vec_ptr = fetch_kv_pointer(
+                        device const half* k_vec_ptr = fetch_kv_pointer_optimized(
                             true,  // is_k_vector
-                            token_pos_on_page,
+                            token_pos_in_seq,
                             kv_head_idx,
                             k_cache_pool_in,
                             v_cache_pool_in,
@@ -334,10 +319,13 @@ static constant uint PAGE_SUB_TILE_TOKEN_COUNT = 12;
                         // Calculate absolute token position on the page
                         uint token_pos_on_page = current_sub_tile_start_token_offset_in_page + tok_idx;
 
+                        // Convert to absolute position in the sequence
+                        uint token_pos_in_seq = page_base_token_in_seq + token_pos_on_page;
+
                         // Get V vector pointer
-                        device const half* v_vec_ptr = fetch_kv_pointer(
+                        device const half* v_vec_ptr = fetch_kv_pointer_optimized(
                             false,  // is_k_vector = false for V
-                            token_pos_on_page,
+                            token_pos_in_seq,
                             kv_head_idx,
                             k_cache_pool_in,
                             v_cache_pool_in,
@@ -367,131 +355,164 @@ static constant uint PAGE_SUB_TILE_TOKEN_COUNT = 12;
 
                 // Ensure all K/V data is loaded before processing
                 threadgroup_barrier(mem_flags::mem_threadgroup);
-
-                // --- Initialize Sub-Tile Accumulators ---
-                float m_sub_tile = -INFINITY;
-                float s_sub_tile = 0.0f;
-                float o_partial_sub_tile[kMaxHeadDimMetal];
-                for (uint d = 0; d < params.head_dim; ++d) {
-                    o_partial_sub_tile[d] = 0.0f;
-                }
-
-                // --- Loop 4: Innermost History Loop ---
-                for (uint hist_idx_in_sub_tile = 0; hist_idx_in_sub_tile < current_sub_tile_actual_len; ++hist_idx_in_sub_tile) {
-                    uint actual_hist_token_pos_on_page = current_sub_tile_start_token_offset_in_page + hist_idx_in_sub_tile;
-
-                    // Check if this history position is within the valid range for this query
-                    if (actual_hist_token_pos_on_page < overlap_start || actual_hist_token_pos_on_page >= overlap_end) {
-                        continue;
-                    }
-
-                    // Get K vector from K_tile
-                    threadgroup const half* k_vector_ptr = K_tile +
-                        (unique_kv_idx * tile_stride_per_kv_head + hist_idx_in_sub_tile * params.head_dim);
-
-                    // Compute QK^T dot product
-                    float score = dot_product_qk(q_shmem, k_vector_ptr, params);
-
-                    // Update running max
-                    if (score > m_sub_tile) {
-                        float scale_factor = precise::exp(m_sub_tile - score);
-                        s_sub_tile *= scale_factor;
-
-                        // Rescale partial output accumulator
-                        for (uint d = 0; d < params.head_dim; ++d) {
-                            o_partial_sub_tile[d] *= scale_factor;
-                        }
-
-                        m_sub_tile = score;
-                    }
-
-                    // Compute exp(score - m_sub_tile) and accumulate
-                    float exp_score = precise::exp(max(score - m_sub_tile, params.log_exp_min_clamp));
-                    s_sub_tile += exp_score;
-
-                    // Get V vector from V_tile and accumulate weighted V
-                    threadgroup const half* v_vector_ptr = V_tile +
-                        (unique_kv_idx * tile_stride_per_kv_head + hist_idx_in_sub_tile * params.head_dim);
-
-                    for (uint d = 0; d < params.head_dim; d += 4) {
-                        float4 v_chunk = float4(*((threadgroup const half4*)(v_vector_ptr + d)));
-                        float4 weighted_v = v_chunk * exp_score;
-
-                        o_partial_sub_tile[d] += weighted_v.x;
-                        if (d + 1 < params.head_dim) o_partial_sub_tile[d + 1] += weighted_v.y;
-                        if (d + 2 < params.head_dim) o_partial_sub_tile[d + 2] += weighted_v.z;
-                        if (d + 3 < params.head_dim) o_partial_sub_tile[d + 3] += weighted_v.w;
-                    }
-                }
-
-                // --- Aggregate Sub-Tile Results into Page-Level Accumulators ---
-                // Combine the sub-tile statistics using log-sum-exp methodology
-                float m_new_page_level;
-                float s_new_page_level_uncompensated;
-                float c_s_new_page_level = s_page_level_kahan_comp;
-                float scale_o_page_level = 1.0f;
-                float scale_s_sub_tile_term = 1.0f;
-
-                if (m_sub_tile > m_page_level) {
-                    // Sub-tile has new maximum
-                    m_new_page_level = m_sub_tile;
-                    scale_o_page_level = precise::exp(max(m_page_level - m_new_page_level, params.log_exp_min_clamp));
-                    s_new_page_level_uncompensated = s_page_level * scale_o_page_level;
-                    c_s_new_page_level = s_page_level_kahan_comp * scale_o_page_level;
-                    scale_s_sub_tile_term = 1.0f; // s_sub_tile is already normalized to m_sub_tile
-                } else {
-                    // Page level maintains maximum
-                    m_new_page_level = m_page_level;
-                    s_new_page_level_uncompensated = s_page_level;
-                    scale_s_sub_tile_term = precise::exp(max(m_sub_tile - m_new_page_level, params.log_exp_min_clamp));
-                }
-
-                // Rescale o_page_level accumulator if m_page_level was updated
-                if (scale_o_page_level != 1.0f) {
-                    for (uint d = 0; d < params.head_dim; ++d) {
-                        o_page_level[d] *= scale_o_page_level;
-                    }
-                }
-
-                // Combine s_sub_tile into s_page_level using Kahan summation
-                float term_to_add_to_s = s_sub_tile * scale_s_sub_tile_term;
-                float y_kahan = term_to_add_to_s - c_s_new_page_level;
-                float t_kahan = s_new_page_level_uncompensated + y_kahan;
-                c_s_new_page_level = (t_kahan - s_new_page_level_uncompensated) - y_kahan;
-                s_page_level = t_kahan;
-
-                // Combine o_partial_sub_tile into o_page_level
-                for (uint d = 0; d < params.head_dim; ++d) {
-                    o_page_level[d] += o_partial_sub_tile[d] * scale_s_sub_tile_term;
-                }
-
-                // Update running page-level max and Kahan compensation
-                m_page_level = m_new_page_level;
-                s_page_level_kahan_comp = c_s_new_page_level;
-
-            } // End Loop 3 (Sub-Tiles)
-
-            // --- Write Final Page-Level Aggregated Stats to Global Memory ---
-            // After all sub-tiles for the current query_token & q_head are processed
-            // Calculate output index based on C++ allocation pattern
-            uint num_q_head_blocks_total = (params.num_q_heads + PREFILL_PASS1_Q_HEAD_BLOCK_SIZE_CONST - 1) / PREFILL_PASS1_Q_HEAD_BLOCK_SIZE_CONST;
-            uint output_idx_for_m_s = assigned_page_index * num_q_head_blocks_total * PREFILL_PASS1_Q_HEAD_BLOCK_SIZE_CONST +
-                                      q_head_block_idx * PREFILL_PASS1_Q_HEAD_BLOCK_SIZE_CONST +
-                                      q_head_offset_in_block;
-            uint output_idx_for_o_base = output_idx_for_m_s * params.head_dim;
-
-            // Write final aggregated statistics
-            if (local_thread_idx == 0) {
-                m_locals_pass1_out[output_idx_for_m_s] = m_page_level;
-                s_locals_pass1_out[output_idx_for_m_s] = s_page_level;
-
-                // Write partial output vector
-                for (uint d = 0; d < params.head_dim; ++d) {
-                    o_partials_pass1_out[output_idx_for_o_base + d] = (half)o_page_level[d];
-                }
             }
 
-        } // End Loop 2 (Q-Heads in Block)
-    } // End Loop 1 (Relevant Query Tokens)
+            // Now process all queries that belong to this sequence
+            for (uint relevance_idx = relevance_start_idx; relevance_idx < relevance_end_idx; ++relevance_idx) {
+                uint query_token_global_idx = relevant_query_indices[relevance_idx];
+                int query_sequence_idx = query_to_seq_map_in[query_token_global_idx];
+
+                // Skip if not for current sequence
+                if (query_sequence_idx != current_sequence_idx) {
+                    continue;
+                }
+
+                uint history_start_on_page = relevant_history_starts[relevance_idx];
+                uint history_count_on_page = relevant_history_counts[relevance_idx];
+                uint history_end_on_page = history_start_on_page + history_count_on_page;
+
+                // Check if this query's history overlaps with current sub-tile
+                uint sub_tile_start = current_sub_tile_start_token_offset_in_page;
+                uint sub_tile_end = sub_tile_start + current_sub_tile_actual_len;
+
+                if (history_end_on_page <= sub_tile_start || history_start_on_page >= sub_tile_end) {
+                    continue;  // No overlap with this sub-tile
+                }
+
+                // Calculate actual overlap range
+                uint overlap_start = max(history_start_on_page, sub_tile_start);
+                uint overlap_end = min(history_end_on_page, sub_tile_end);
+
+                // --- Loop over Q-heads in this TG's assigned block ---
+                for (uint q_head_offset_in_block = 0; q_head_offset_in_block < num_q_heads_for_this_block; ++q_head_offset_in_block) {
+                    uint current_global_q_head_idx = q_head_start_index_in_model + q_head_offset_in_block;
+
+                    // --- Initialize Sub-Tile Accumulators ---
+                    float m_sub_tile = -INFINITY;
+                    float s_sub_tile = 0.0f;
+                    float o_partial_sub_tile[kMaxHeadDimMetal];
+                    for (uint d = 0; d < params.head_dim; ++d) {
+                        o_partial_sub_tile[d] = 0.0f;
+                    }
+
+                    // Load Q vector for this query token and Q head
+                    device const half* q_vector_ptr;
+                    if (params.num_q_heads > 1) {
+                        // 3D queries: [num_tokens, num_q_heads, head_dim]
+                        ulong q_offset = (ulong)query_token_global_idx * params.num_q_heads * params.head_dim +
+                                         (ulong)current_global_q_head_idx * params.head_dim;
+                        q_vector_ptr = queries_in + q_offset;
+                    } else {
+                        // 2D queries: [num_tokens, head_dim]
+                        q_vector_ptr = queries_in + (query_token_global_idx * params.head_dim);
+                    }
+
+                    // Load Q vector into shared memory with scaling
+                    threadgroup float4* q_vec_f4 = reinterpret_cast<threadgroup float4*>(q_shmem);
+                    for (uint chunk = local_thread_idx; chunk < params.head_dim / 4; chunk += tg_dim.x) {
+                        uint base_offset = chunk * 4;
+                        half qh0 = q_vector_ptr[base_offset + 0];
+                        half qh1 = q_vector_ptr[base_offset + 1];
+                        half qh2 = q_vector_ptr[base_offset + 2];
+                        half qh3 = q_vector_ptr[base_offset + 3];
+
+                        float4 q_float_chunk = float4(qh0, qh1, qh2, qh3) * params.inv_sqrt_head_dim;
+                        q_vec_f4[chunk] = q_float_chunk;
+                    }
+                    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+                    // Determine which KV head this Q head maps to
+                    uint target_kv_head_idx = map_q_to_kv_head(current_global_q_head_idx,
+                                                               params.num_q_heads,
+                                                               params.num_kv_heads);
+
+                    // Find which unique KV head index this maps to in our loaded data
+                    uint unique_kv_idx = 0;
+                    for (uint i = 0; i < num_unique_kv_heads; ++i) {
+                        if (unique_kv_heads[i] == target_kv_head_idx) {
+                            unique_kv_idx = i;
+                            break;
+                        }
+                    }
+
+                    // --- Innermost History Loop ---
+                    for (uint hist_idx_in_sub_tile = 0; hist_idx_in_sub_tile < current_sub_tile_actual_len; ++hist_idx_in_sub_tile) {
+                        uint actual_hist_token_pos_on_page = current_sub_tile_start_token_offset_in_page + hist_idx_in_sub_tile;
+
+                        // Check if this history position is within the valid range for this query
+                        if (actual_hist_token_pos_on_page < overlap_start || actual_hist_token_pos_on_page >= overlap_end) {
+                            continue;
+                        }
+
+                        // Get K vector from K_tile
+                        threadgroup const half* k_vector_ptr = K_tile +
+                            (unique_kv_idx * tile_stride_per_kv_head + hist_idx_in_sub_tile * params.head_dim);
+
+                        // Compute QK^T dot product
+                        float score = dot_product_qk(q_shmem, k_vector_ptr, params);
+
+                        // Update running max
+                        if (score > m_sub_tile) {
+                            float scale_factor = precise::exp(m_sub_tile - score);
+                            s_sub_tile *= scale_factor;
+
+                            // Rescale partial output accumulator
+                            for (uint d = 0; d < params.head_dim; ++d) {
+                                o_partial_sub_tile[d] *= scale_factor;
+                            }
+
+                            m_sub_tile = score;
+                        }
+
+                        // Compute exp(score - m_sub_tile) and accumulate
+                        float exp_score = precise::exp(max(score - m_sub_tile, params.log_exp_min_clamp));
+                        s_sub_tile += exp_score;
+
+                        // Get V vector from V_tile and accumulate weighted V
+                        threadgroup const half* v_vector_ptr = V_tile +
+                            (unique_kv_idx * tile_stride_per_kv_head + hist_idx_in_sub_tile * params.head_dim);
+
+                        for (uint d = 0; d < params.head_dim; d += 4) {
+                            float4 v_chunk = float4(*((threadgroup const half4*)(v_vector_ptr + d)));
+                            float4 weighted_v = v_chunk * exp_score;
+
+                            o_partial_sub_tile[d] += weighted_v.x;
+                            if (d + 1 < params.head_dim) o_partial_sub_tile[d + 1] += weighted_v.y;
+                            if (d + 2 < params.head_dim) o_partial_sub_tile[d + 2] += weighted_v.z;
+                            if (d + 3 < params.head_dim) o_partial_sub_tile[d + 3] += weighted_v.w;
+                        }
+                    }
+
+                    // --- Write Sub-Tile Results to Global Memory ---
+                    // Since we restructured to process sub-tiles first, we write results per sub-tile
+                    // Calculate output index based on C++ allocation pattern: [TotalQueryTokens][NumTotalQHeads][NumActivePages]
+                    uint output_idx_for_m_s = query_token_global_idx * params.num_q_heads * params.num_active_pages_in_batch +
+                                              current_global_q_head_idx * params.num_active_pages_in_batch +
+                                              assigned_page_index;
+                    uint output_idx_for_o_base = output_idx_for_m_s * params.head_dim;
+
+                    // Write sub-tile results
+                    // Note: With the restructured loops, we're accumulating across sub-tiles differently
+                    // For now, write the sub-tile results directly (Pass 2 will handle aggregation)
+                    if (local_thread_idx == 0) {
+                        // Use atomic max for m_locals to handle multiple sub-tiles
+                        atomic_store_explicit((device atomic<float>*)&m_locals_pass1_out[output_idx_for_m_s],
+                                            m_sub_tile, memory_order_relaxed);
+
+                        // For s_locals and o_partials, we need atomic add since multiple sub-tiles contribute
+                        atomic_fetch_add_explicit((device atomic<float>*)&s_locals_pass1_out[output_idx_for_m_s],
+                                                s_sub_tile, memory_order_relaxed);
+
+                        // Write partial output vector with atomic add
+                        for (uint d = 0; d < params.head_dim; ++d) {
+                            atomic_fetch_add_explicit((device atomic<float>*)&o_partials_pass1_out[output_idx_for_o_base + d],
+                                                    o_partial_sub_tile[d], memory_order_relaxed);
+                        }
+                    }
+
+                } // End Q-head loop
+            } // End query loop for this sequence
+        } // End sequence loop
+    } // End sub-tile loop
 
 } // End of kernel

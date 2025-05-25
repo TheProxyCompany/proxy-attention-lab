@@ -62,178 +62,200 @@ using namespace metal;
     constexpr uintptr_t kAlignmentBytes = 64;
     constexpr uintptr_t kAlignmentMask = kAlignmentBytes - 1;
 
-    // Identify target output vector this TG is responsible for
-    uint target_q_token_idx = tg_pos_in_grid.x;
-    uint target_q_head_idx = tg_pos_in_grid.y;
+    // Calculate block start indices for 2D blocking
+    uint token_block_start_idx = tg_pos_in_grid.x * params.pass2_token_block_size;
+    uint q_head_block_start_idx = tg_pos_in_grid.y * params.pass2_qhead_block_size;
 
-    // Check bounds
-    if (target_q_token_idx >= params.num_sequences_in_batch || 
-        target_q_head_idx >= params.num_q_heads) {
+    // Early return if block is completely out of bounds
+    if (token_block_start_idx >= params.query_token_count_total ||
+        q_head_block_start_idx >= params.num_q_heads) {
         return;
     }
 
     uint local_thread_idx = local_idx_in_tg;
 
-    // --- Threadgroup Memory Layout ---
-    // We need space for:
-    // 1. Thread-local max values for Pass 2a reduction
-    // 2. Thread-local sum values for Pass 2b reduction  
-    // 3. Thread-local partial output accumulation [threads][head_dim]
-    // 4. Global statistics (M_global, S_global)
-    // 5. Final output accumulator
+    // Process each (token, q_head) pair in the assigned 2D block
+    for (uint t_offset = 0; t_offset < params.pass2_token_block_size; ++t_offset) {
+        uint target_q_token_idx = token_block_start_idx + t_offset;
 
-    threadgroup float* tg_thread_max_scratch = tg_mem;
-    
-    uintptr_t current_offset = (uintptr_t)(tg_thread_max_scratch + tg_dim.x);
-    current_offset = (current_offset + kAlignmentMask) & ~kAlignmentMask;
-    threadgroup float* tg_thread_sum_scratch = (threadgroup float*)current_offset;
-    
-    current_offset = (uintptr_t)(tg_thread_sum_scratch + tg_dim.x);
-    current_offset = (current_offset + kAlignmentMask) & ~kAlignmentMask;
-    threadgroup float* tg_global_stats = (threadgroup float*)current_offset; // [0] = M_global, [1] = S_global
-    
-    current_offset = (uintptr_t)(tg_global_stats + 2);
-    current_offset = (current_offset + kAlignmentMask) & ~kAlignmentMask;
-    threadgroup float* tg_thread_o_accumulator = (threadgroup float*)current_offset; // [threads][head_dim]
-    
-    current_offset = (uintptr_t)(tg_thread_o_accumulator + tg_dim.x * params.head_dim);
-    current_offset = (current_offset + kAlignmentMask) & ~kAlignmentMask;
-    threadgroup float* tg_final_o_accumulator = (threadgroup float*)current_offset; // [head_dim]
-
-    // Initialize thread-local accumulators
-    float thread_local_max = -INFINITY;
-    float thread_local_sum = 0.0f;
-    float thread_local_sum_kahan_comp = 0.0f;
-    float thread_local_o_accum[kMaxHeadDimMetal];
-    for (uint d = 0; d < params.head_dim; ++d) {
-        thread_local_o_accum[d] = 0.0f;
-    }
-
-    // For now, assume all active pages contributed to this query
-    // In a more sophisticated version, we'd use the Relevant Query Map
-    // TODO: This should be passed from C++ - for now use a placeholder
-    uint num_contributing_pages = 1; // Will be updated when C++ passes this value
-
-    // Calculate strides for Pass 1 output indexing
-    // Assuming layout: [num_active_pages][num_q_head_blocks][q_heads_per_block][optional_head_dim]
-    uint num_q_head_blocks_total = (params.num_q_heads + PREFILL_PASS1_Q_HEAD_BLOCK_SIZE_CONST - 1) / 
-                                   PREFILL_PASS1_Q_HEAD_BLOCK_SIZE_CONST;
-    uint q_head_block_idx = target_q_head_idx / PREFILL_PASS1_Q_HEAD_BLOCK_SIZE_CONST;
-    uint q_head_offset_in_block = target_q_head_idx % PREFILL_PASS1_Q_HEAD_BLOCK_SIZE_CONST;
-
-    // --- Pass 2a: Find Global Max (M_global) ---
-    // Each thread processes a subset of pages
-    for (uint page_iter = local_thread_idx; page_iter < num_contributing_pages; page_iter += tg_dim.x) {
-        // Calculate index into Pass 1 m_locals output
-        uint m_index = page_iter * num_q_head_blocks_total * PREFILL_PASS1_Q_HEAD_BLOCK_SIZE_CONST +
-                       q_head_block_idx * PREFILL_PASS1_Q_HEAD_BLOCK_SIZE_CONST +
-                       q_head_offset_in_block;
-        
-        float m_local = m_pass1_results[m_index];
-        thread_local_max = max(thread_local_max, m_local);
-    }
-
-    // Store thread-local max for reduction
-    tg_thread_max_scratch[local_thread_idx] = thread_local_max;
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-
-    // Threadgroup reduction to find global max
-    // Simple tree reduction
-    for (uint stride = tg_dim.x / 2; stride > 0; stride >>= 1) {
-        if (local_thread_idx < stride) {
-            tg_thread_max_scratch[local_thread_idx] = max(tg_thread_max_scratch[local_thread_idx],
-                                                          tg_thread_max_scratch[local_thread_idx + stride]);
+        // Check token bounds
+        if (target_q_token_idx >= params.query_token_count_total) {
+            continue;
         }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-    }
 
-    // Thread 0 writes final M_global
-    if (local_thread_idx == 0) {
-        tg_global_stats[0] = tg_thread_max_scratch[0];
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint h_offset = 0; h_offset < params.pass2_qhead_block_size; ++h_offset) {
+            uint target_q_head_idx = q_head_block_start_idx + h_offset;
 
-    // All threads read M_global
-    float M_global = tg_global_stats[0];
+            // Check q_head bounds
+            if (target_q_head_idx >= params.num_q_heads) {
+                continue;
+            }
 
-    // --- Pass 2b: Compute Global Sum (S_global) and Accumulate Scaled Partial Outputs ---
-    // Each thread processes a subset of pages
-    for (uint page_iter = local_thread_idx; page_iter < num_contributing_pages; page_iter += tg_dim.x) {
-        // Calculate indices into Pass 1 outputs
-        uint ms_index = page_iter * num_q_head_blocks_total * PREFILL_PASS1_Q_HEAD_BLOCK_SIZE_CONST +
-                        q_head_block_idx * PREFILL_PASS1_Q_HEAD_BLOCK_SIZE_CONST +
-                        q_head_offset_in_block;
-        
-        uint o_base_index = ms_index * params.head_dim;
+            // --- Threadgroup Memory Layout (per token/head pair) ---
+            // We need space for:
+            // 1. Thread-local max values for Pass 2a reduction
+            // 2. Thread-local sum values for Pass 2b reduction
+            // 3. Thread-local partial output accumulation [threads][head_dim]
+            // 4. Global statistics (M_global, S_global)
+            // 5. Final output accumulator
 
-        // Read Pass 1 outputs for this page
-        float m_local = m_pass1_results[ms_index];
-        float s_local = s_pass1_results[ms_index];
-        
-        // Calculate scaling factor
-        float scale_factor = precise::exp(max(m_local - M_global, params.log_exp_min_clamp));
-        
-        // Update thread-local sum with Kahan summation
-        float term_to_add = s_local * scale_factor;
-        float y_kahan = term_to_add - thread_local_sum_kahan_comp;
-        float t_kahan = thread_local_sum + y_kahan;
-        thread_local_sum_kahan_comp = (t_kahan - thread_local_sum) - y_kahan;
-        thread_local_sum = t_kahan;
-        
-        // Accumulate scaled partial output
-        for (uint d = 0; d < params.head_dim; ++d) {
-            thread_local_o_accum[d] += float(o_pass1_results[o_base_index + d]) * scale_factor;
-        }
-    }
+            threadgroup float* tg_thread_max_scratch = tg_mem;
 
-    // Store thread-local sum for reduction
-    tg_thread_sum_scratch[local_thread_idx] = thread_local_sum;
-    threadgroup_barrier(mem_flags::mem_threadgroup);
+            uintptr_t current_offset = (uintptr_t)(tg_thread_max_scratch + tg_dim.x);
+            current_offset = (current_offset + kAlignmentMask) & ~kAlignmentMask;
+            threadgroup float* tg_thread_sum_scratch = (threadgroup float*)current_offset;
 
-    // Threadgroup reduction for global sum
-    for (uint stride = tg_dim.x / 2; stride > 0; stride >>= 1) {
-        if (local_thread_idx < stride) {
-            tg_thread_sum_scratch[local_thread_idx] += tg_thread_sum_scratch[local_thread_idx + stride];
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-    }
+            current_offset = (uintptr_t)(tg_thread_sum_scratch + tg_dim.x);
+            current_offset = (current_offset + kAlignmentMask) & ~kAlignmentMask;
+            threadgroup float* tg_global_stats = (threadgroup float*)current_offset; // [0] = M_global, [1] = S_global
 
-    // Thread 0 writes final S_global
-    if (local_thread_idx == 0) {
-        tg_global_stats[1] = tg_thread_sum_scratch[0];
-    }
+            current_offset = (uintptr_t)(tg_global_stats + 2);
+            current_offset = (current_offset + kAlignmentMask) & ~kAlignmentMask;
+            threadgroup float* tg_thread_o_accumulator = (threadgroup float*)current_offset; // [threads][head_dim]
 
-    // Store each thread's local output accumulator in threadgroup memory
-    threadgroup float* my_o_accum = tg_thread_o_accumulator + local_thread_idx * params.head_dim;
-    for (uint d = 0; d < params.head_dim; ++d) {
-        my_o_accum[d] = thread_local_o_accum[d];
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
+            current_offset = (uintptr_t)(tg_thread_o_accumulator + tg_dim.x * params.head_dim);
+            current_offset = (current_offset + kAlignmentMask) & ~kAlignmentMask;
+            threadgroup float* tg_final_o_accumulator = (threadgroup float*)current_offset; // [head_dim]
 
-    // Reduce output accumulators across all threads
-    // Each thread sums one or more dimensions
-    for (uint d = local_thread_idx; d < params.head_dim; d += tg_dim.x) {
-        float sum = 0.0f;
-        // Sum contributions from all threads for this dimension
-        for (uint t = 0; t < tg_dim.x; ++t) {
-            sum += tg_thread_o_accumulator[t * params.head_dim + d];
-        }
-        tg_final_o_accumulator[d] = sum;
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
+            // Initialize thread-local accumulators
+            float thread_local_max = -INFINITY;
+            float thread_local_sum = 0.0f;
+            float thread_local_sum_kahan_comp = 0.0f;
+            float thread_local_o_accum[kMaxHeadDimMetal];
+            for (uint d = 0; d < params.head_dim; ++d) {
+                thread_local_o_accum[d] = 0.0f;
+            }
 
-    // --- Final Normalization & Write Output ---
-    float S_global = tg_global_stats[1];
-    float inv_S_global = (S_global > kEpsilonForZeroGuard) ? (1.0f / S_global) : 0.0f;
+            // All active pages are potential contributors to this query
+            uint num_contributing_pages = params.num_active_pages_in_batch;
 
-    // Calculate output index in final buffer
-    // Assuming output layout: [num_tokens][num_q_heads][head_dim]
-    uint output_base_idx = target_q_token_idx * params.num_q_heads * params.head_dim +
-                          target_q_head_idx * params.head_dim;
+            // Pass 1 output layout matches C++ allocation: [TotalQueryTokens][NumTotalQHeads][NumActivePages]
 
-    // Cooperatively write final normalized output
-    for (uint d = local_thread_idx; d < params.head_dim; d += tg_dim.x) {
-        final_output_buffer[output_base_idx + d] = (half)(tg_final_o_accumulator[d] * inv_S_global);
-    }
+            // --- Pass 2a: Find Global Max (M_global) ---
+            // Each thread processes a subset of pages
+            for (uint page_iter = local_thread_idx; page_iter < num_contributing_pages; page_iter += tg_dim.x) {
+                // Calculate index into Pass 1 m_locals output: [TotalQueryTokens][NumTotalQHeads][NumActivePages]
+                uint m_index = target_q_token_idx * params.num_q_heads * params.num_active_pages_in_batch +
+                               target_q_head_idx * params.num_active_pages_in_batch +
+                               page_iter;
+
+                float m_local = m_pass1_results[m_index];
+                thread_local_max = max(thread_local_max, m_local);
+            }
+
+            // Store thread-local max for reduction
+            tg_thread_max_scratch[local_thread_idx] = thread_local_max;
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+
+            // Threadgroup reduction to find global max
+            // Tree reduction that handles non-power-of-2 thread counts
+            for (uint stride = tg_dim.x / 2; stride > 0; stride >>= 1) {
+                threadgroup_barrier(mem_flags::mem_threadgroup); // Barrier before reads
+                if (local_thread_idx < stride) {
+                    // Ensure the other element is within bounds for non-power-of-2
+                    if (local_thread_idx + stride < tg_dim.x) {
+                        tg_thread_max_scratch[local_thread_idx] = max(tg_thread_max_scratch[local_thread_idx],
+                                                                      tg_thread_max_scratch[local_thread_idx + stride]);
+                    }
+                }
+            }
+            threadgroup_barrier(mem_flags::mem_threadgroup); // Final barrier
+
+            // Thread 0 writes final M_global
+            if (local_thread_idx == 0) {
+                tg_global_stats[0] = tg_thread_max_scratch[0];
+            }
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+
+            // All threads read M_global
+            float M_global = tg_global_stats[0];
+
+            // --- Pass 2b: Compute Global Sum (S_global) and Accumulate Scaled Partial Outputs ---
+            // Each thread processes a subset of pages
+            for (uint page_iter = local_thread_idx; page_iter < num_contributing_pages; page_iter += tg_dim.x) {
+                // Calculate indices into Pass 1 outputs: [TotalQueryTokens][NumTotalQHeads][NumActivePages]
+                uint ms_index = target_q_token_idx * params.num_q_heads * params.num_active_pages_in_batch +
+                                target_q_head_idx * params.num_active_pages_in_batch +
+                                page_iter;
+
+                uint o_base_index = ms_index * params.head_dim;
+
+                // Read Pass 1 outputs for this page
+                float m_local = m_pass1_results[ms_index];
+                float s_local = s_pass1_results[ms_index];
+
+                // Calculate scaling factor
+                float scale_factor = precise::exp(max(m_local - M_global, params.log_exp_min_clamp));
+
+                // Update thread-local sum with Kahan summation
+                float term_to_add = s_local * scale_factor;
+                float y_kahan = term_to_add - thread_local_sum_kahan_comp;
+                float t_kahan = thread_local_sum + y_kahan;
+                thread_local_sum_kahan_comp = (t_kahan - thread_local_sum) - y_kahan;
+                thread_local_sum = t_kahan;
+
+                // Accumulate scaled partial output
+                for (uint d = 0; d < params.head_dim; ++d) {
+                    thread_local_o_accum[d] += float(o_pass1_results[o_base_index + d]) * scale_factor;
+                }
+            }
+
+            // Store thread-local sum for reduction
+            tg_thread_sum_scratch[local_thread_idx] = thread_local_sum;
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+
+            // Threadgroup reduction for global sum
+            // Tree reduction that handles non-power-of-2 thread counts
+            for (uint stride = tg_dim.x / 2; stride > 0; stride >>= 1) {
+                threadgroup_barrier(mem_flags::mem_threadgroup); // Barrier before reads
+                if (local_thread_idx < stride) {
+                    // Ensure the other element is within bounds for non-power-of-2
+                    if (local_thread_idx + stride < tg_dim.x) {
+                        tg_thread_sum_scratch[local_thread_idx] += tg_thread_sum_scratch[local_thread_idx + stride];
+                    }
+                }
+            }
+            threadgroup_barrier(mem_flags::mem_threadgroup); // Final barrier
+
+            // Thread 0 writes final S_global
+            if (local_thread_idx == 0) {
+                tg_global_stats[1] = tg_thread_sum_scratch[0];
+            }
+
+            // Store each thread's local output accumulator in threadgroup memory
+            threadgroup float* my_o_accum = tg_thread_o_accumulator + local_thread_idx * params.head_dim;
+            for (uint d = 0; d < params.head_dim; ++d) {
+                my_o_accum[d] = thread_local_o_accum[d];
+            }
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+
+            // Reduce output accumulators across all threads
+            // Each thread sums one or more dimensions
+            for (uint d = local_thread_idx; d < params.head_dim; d += tg_dim.x) {
+                float sum = 0.0f;
+                // Sum contributions from all threads for this dimension
+                for (uint t = 0; t < tg_dim.x; ++t) {
+                    sum += tg_thread_o_accumulator[t * params.head_dim + d];
+                }
+                tg_final_o_accumulator[d] = sum;
+            }
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+
+            // --- Final Normalization & Write Output ---
+            float S_global = tg_global_stats[1];
+            float inv_S_global = (S_global > kEpsilonForZeroGuard) ? (1.0f / S_global) : 0.0f;
+
+            // Calculate output index in final buffer
+            // Assuming output layout: [num_tokens][num_q_heads][head_dim]
+            uint output_base_idx = target_q_token_idx * params.num_q_heads * params.head_dim +
+                                  target_q_head_idx * params.head_dim;
+
+            // Cooperatively write final normalized output
+            for (uint d = local_thread_idx; d < params.head_dim; d += tg_dim.x) {
+                final_output_buffer[output_base_idx + d] = (half)(tg_final_o_accumulator[d] * inv_S_global);
+            }
+
+        } // End of inner loop (q_head)
+    } // End of outer loop (token)
 
 } // End of kernel

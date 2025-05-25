@@ -46,7 +46,11 @@ struct alignas(16) PagedAttentionParams {
   uint32_t num_sequences_in_batch;        // Number of sequences in batch
   uint32_t tile_size_T_runtime;           // Runtime tile size T for history processing
   uint32_t num_active_pages_in_batch;     // Number of active pages (for Pass 2)
-  uint32_t _padding;                      // Explicit padding to maintain alignment
+  uint32_t per_token_stride_in_cache;     // Pre-calculated: num_kv_heads * head_dim
+  uint32_t per_page_stride_in_cache;      // Pre-calculated: tokens_per_page * per_token_stride
+  uint32_t pass2_token_block_size;        // Token block size for Pass 2 2D dispatch
+  uint32_t pass2_qhead_block_size;        // Q-head block size for Pass 2 2D dispatch
+  uint32_t query_token_count_total;       // Total number of query tokens in batch
   float    log_exp_min_clamp;             // Minimum value for exponent in exp function
   float    inv_sqrt_head_dim;             // 1/sqrt(head_dim) precomputed on host
 };
@@ -58,12 +62,12 @@ static_assert(std::is_standard_layout_v<PagedAttentionParams>,
               "PagedAttentionParams must be a standard-layout type.");
 static_assert(alignof(PagedAttentionParams) == 16,
               "PagedAttentionParams must have 16-byte alignment.");
-// 10 uint32_t (40 bytes) + 2 float (8 bytes) = 48 data bytes.
-// alignas(16) means total size is 48, as it's already a multiple of 16.
-static_assert(sizeof(PagedAttentionParams) == 48,
-              "C++ sizeof(PagedAttentionParams) expected to be 48 bytes.");
+// 14 uint32_t (56 bytes) + 2 float (8 bytes) = 64 data bytes.
+// alignas(16) means total size is 64 bytes (already a multiple of 16).
+static_assert(sizeof(PagedAttentionParams) == 64,
+              "C++ sizeof(PagedAttentionParams) expected to be 64 bytes.");
 
 #else // __METAL_VERSION__ (Metal side)
-static_assert(sizeof(PagedAttentionParams) == 48,
-              "Metal sizeof(PagedAttentionParams) expected to be 48 bytes.");
+static_assert(sizeof(PagedAttentionParams) == 64,
+              "Metal sizeof(PagedAttentionParams) expected to be 64 bytes.");
 #endif
