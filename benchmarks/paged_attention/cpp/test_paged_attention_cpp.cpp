@@ -36,7 +36,7 @@ namespace mx = mlx::core;
 struct BenchmarkSpdlogInitializer {
     BenchmarkSpdlogInitializer() {
         // Set default log level for benchmarks to debug to see GPU copy logs
-        spdlog::set_level(spdlog::level::debug);
+        spdlog::set_level(spdlog::level::warn);
         spdlog::info("PAL C++ Benchmarks: spdlog level set to 'debug' for debugging GPU copies.");
     }
 };
@@ -421,8 +421,8 @@ static void BM_MLX_SDPA_DecodeLatencyVsHistoryLen(benchmark::State& state) {
     }
 }
 
-const int REPETITIONS = 3;
-const int ITERATIONS = 3;
+const int REPETITIONS = 10;
+const int ITERATIONS = 5;
 
 BENCHMARK(BM_PAL_LatencyVsSeqLen)
    ->Arg(64)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)->Setup(BM_PAL_LatencyVsSeqLen_Setup)

@@ -66,17 +66,17 @@ def add_complexity_guide(ax, plot_type: str = "prefill") -> None:
     else:  # decode
         text = "Log-log: Slope ≈ 1 (linear); lower = better scaling."
 
-    # Get current title and reposition it higher with padding
+    # # Get current title and reposition it higher with padding
     current_title = ax.get_title()
-    ax.set_title(current_title, fontsize=14, fontweight="bold", pad=30, y=1.03)
+    ax.set_title(current_title, fontsize=14, fontweight="bold", y=1.06)
 
     # Add guide text below the title
     ax.text(
         0.5,
-        1.04,
+        1.025,
         text,
         transform=ax.transAxes,
-        fontsize=12,
+        fontsize=8,
         verticalalignment="bottom",
         horizontalalignment="center",
         color="gray",
@@ -219,14 +219,21 @@ def plot(df: pd.DataFrame, output_dir: Path, styles: dict[str, str | float] | No
                 logger.info(f"Prefill {label}: slope = {slope:.2f} (O(n^{slope:.1f}))")
 
                 ax_prefill.text(
-                    x_data[-1],
-                    y_data[-1],
+                    x_data[-2] * 0.92,
+                    y_data[-2] * 1.05,
                     f"Slope ≈ {slope:.1f}",
                     color="red",
-                    fontsize=12,
+                    fontsize=10,
                     fontweight="bold",
                     horizontalalignment="right",
                     verticalalignment="bottom",
+                    bbox=dict(
+                        boxstyle="round,pad=0.5",
+                        facecolor=source_style["color"],
+                        edgecolor=source_style["outline_color"],
+                        alpha=0.5,
+                        linewidth=1.0,
+                    ),
                 )
 
         # Set prefill plot aesthetics
@@ -241,6 +248,7 @@ def plot(df: pd.DataFrame, output_dir: Path, styles: dict[str, str | float] | No
             y_scale="log",
             include_legend=True,
         )
+        plt.subplots_adjust(top=0.9)
         add_complexity_guide(ax_prefill, "prefill")
 
     # Process decode data
@@ -311,14 +319,21 @@ def plot(df: pd.DataFrame, output_dir: Path, styles: dict[str, str | float] | No
                 logger.info(f"Decode {label}: slope = {slope:.2f} (O(n^{slope:.1f}))")
 
                 ax_decode.text(
-                    x_data[-1],
-                    y_data[-1],
+                    x_data[-2] * 0.92,
+                    y_data[-2] * 1.05,
                     f"Slope ≈ {slope:.1f}",
                     color="red",
-                    fontsize=12,
+                    fontsize=10,
                     fontweight="bold",
                     horizontalalignment="right",
                     verticalalignment="bottom",
+                    bbox=dict(
+                        boxstyle="round,pad=0.5",
+                        facecolor=source_style["color"],
+                        edgecolor=source_style["outline_color"],
+                        alpha=0.5,
+                        linewidth=1.0,
+                    ),
                 )
 
         # Set decode plot aesthetics
