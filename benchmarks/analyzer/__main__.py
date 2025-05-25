@@ -43,22 +43,18 @@ def process_cpp_file(file_data: dict) -> pd.DataFrame:
     # First, extract stddev data from aggregate runs
     if "aggregate_name" in results_df.columns:
         # Get stddev values for each param
-        stddev_df = results_df[
-            (results_df["run_type"] == "aggregate") & (results_df["aggregate_name"] == "stddev")
-        ][["param", "group", "real_time", "time_unit"]].copy()
+        stddev_df = results_df[(results_df["run_type"] == "aggregate") & (results_df["aggregate_name"] == "stddev")][
+            ["param", "group", "real_time", "time_unit"]
+        ].copy()
         stddev_df = stddev_df.rename(columns={"real_time": "std_latency"})
-        
+
         # Get median values
         median_df = results_df[
             (results_df["run_type"] == "aggregate") & (results_df["aggregate_name"] == "median")
         ].copy()
-        
+
         # Merge stddev data with median data
-        results_df = median_df.merge(
-            stddev_df[["param", "group", "std_latency"]], 
-            on=["param", "group"], 
-            how="left"
-        )
+        results_df = median_df.merge(stddev_df[["param", "group", "std_latency"]], on=["param", "group"], how="left")
     else:
         results_df["std_latency"] = 0
 
@@ -78,7 +74,7 @@ def process_cpp_file(file_data: dict) -> pd.DataFrame:
                 pass
 
     results_df["sequence_length"] = results_df["param"].astype(float)
-    
+
     # Add iterations info
     if "iterations" in results_df.columns:
         results_df["iterations"] = results_df["iterations"]
@@ -106,7 +102,7 @@ def process_python_file(file_data: dict) -> pd.DataFrame:
     results_df["sequence_length"] = results_df["param"].astype(float)
     results_df["mean_latency"] = results_df["stats"].apply(lambda x: x["mean"] * 1000)  # convert to milliseconds
     results_df["mean_latency"] = results_df["mean_latency"].astype(float)
-    
+
     # Extract standard deviation if available
     if "stats" in results_df.columns:
         results_df["std_latency"] = results_df["stats"].apply(
