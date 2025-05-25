@@ -310,7 +310,7 @@ def setup_sdpa_decode_inputs(params):
     return queries, keys, values, scale, causal_mask
 
 
-@pytest.mark.parametrize("history_len_val", [1024, 2048, 4096, 8192, 16384, 32768])
+@pytest.mark.parametrize("history_len_val", [1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072])
 def test_pal_decode_latency_vs_history_len(benchmark, history_len_val):
     """
     Benchmark paged_attention decode operation performance across different history lengths.
@@ -365,7 +365,7 @@ def test_pal_decode_latency_vs_history_len(benchmark, history_len_val):
     assert mx.isfinite(result).all()
 
 
-@pytest.mark.parametrize("history_len_val", [1024, 2048, 4096, 8192, 16384, 32768])
+@pytest.mark.parametrize("history_len_val", [1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072])
 def test_mlx_decode_latency_vs_history_len(benchmark, history_len_val):
     """
     Benchmark MLX scaled_dot_product_attention decode operation performance across different history lengths.

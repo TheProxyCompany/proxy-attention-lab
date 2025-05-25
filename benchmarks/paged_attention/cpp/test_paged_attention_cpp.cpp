@@ -28,7 +28,7 @@
 #include <spdlog/spdlog.h>
 
 #include "pal_core/ops.hpp"
-#include "pal_core/metal_loader.hpp"
+#include "pal_core/metal/metal_loader.hpp"
 
 namespace mx = mlx::core;
 
@@ -36,7 +36,7 @@ namespace mx = mlx::core;
 struct BenchmarkSpdlogInitializer {
     BenchmarkSpdlogInitializer() {
         // Set default log level for benchmarks to debug to see GPU copy logs
-        spdlog::set_level(spdlog::level::warn);
+        spdlog::set_level(spdlog::level::debug);
         spdlog::info("PAL C++ Benchmarks: spdlog level set to 'debug' for debugging GPU copies.");
     }
 };
@@ -164,6 +164,14 @@ static void BM_PAL_LatencyVsSeqLen(benchmark::State& state) {
     // Create query token offsets: [num_tokens]
     mx::array query_token_offset = create_query_token_offset(batch_size, seq_len);
 
+    k_cache_pool.eval();
+    v_cache_pool.eval();
+    queries.eval();
+    page_table.eval();
+    sequence_lengths.eval();
+    query_to_seq_map.eval();
+    query_token_offset.eval();
+
     // Main benchmark loop
     for (auto _ : state) {
         mx::array out = pal::cpp::paged_attention(
@@ -290,11 +298,19 @@ void BM_PAL_LatencyVsSeqLen_Setup(const ::benchmark::State& state) {
         queries, k_cache_pool, v_cache_pool,
         page_table, sequence_lengths,
         query_to_seq_map, query_token_offset,
-        true); // use prefill mode
+        true
+    ); // use prefill mode
     warm.eval();                  // wait for GPU
+
+    mx::array warm_decode = pal::cpp::paged_attention(
+        queries, k_cache_pool, v_cache_pool,
+        page_table, sequence_lengths,
+        query_to_seq_map, query_token_offset,
+        false
+    ); // use decode mode
+    warm_decode.eval();                  // wait for GPU
 }
 
-// Register the benchmarks with all sequence lengths from Python benchmark
 // C++ PAL Decode benchmark function
 static void BM_PAL_DecodeLatencyVsHistoryLen(benchmark::State& state) {
     // Create test parameters from baseline with specified history length
@@ -347,6 +363,14 @@ static void BM_PAL_DecodeLatencyVsHistoryLen(benchmark::State& state) {
         offset_data[i] = history_len + 1; // Position after history
     }
     mx::array query_token_offset = mx::array(offset_data.data(), {batch_size}, mx::int32);
+
+    k_cache_pool.eval();
+    v_cache_pool.eval();
+    queries.eval();
+    page_table.eval();
+    sequence_lengths.eval();
+    query_to_seq_map.eval();
+    query_token_offset.eval();
 
     // Main benchmark loop
     for (auto _ : state) {
@@ -425,7 +449,7 @@ const int REPETITIONS = 10;
 const int ITERATIONS = 5;
 
 BENCHMARK(BM_PAL_LatencyVsSeqLen)
-   ->Arg(64)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)->Setup(BM_PAL_LatencyVsSeqLen_Setup)
+   ->Arg(64)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
    ->Arg(256)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
    ->Arg(512)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
    ->Arg(1024)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
