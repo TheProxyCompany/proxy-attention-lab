@@ -36,7 +36,7 @@ namespace mx = mlx::core;
 struct BenchmarkSpdlogInitializer {
     BenchmarkSpdlogInitializer() {
         // Set default log level for benchmarks to debug to see GPU copy logs
-        spdlog::set_level(spdlog::level::warn);
+        spdlog::set_level(spdlog::level::debug);
         spdlog::info("PAL C++ Benchmarks: spdlog level set to 'debug' for debugging GPU copies.");
     }
 };
@@ -422,26 +422,38 @@ static void BM_MLX_SDPA_DecodeLatencyVsHistoryLen(benchmark::State& state) {
 }
 
 const int REPETITIONS = 3;
-const int ITERATIONS = 1;
+const int ITERATIONS = 3;
 
 BENCHMARK(BM_PAL_LatencyVsSeqLen)
    ->Arg(64)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)->Setup(BM_PAL_LatencyVsSeqLen_Setup)
+   ->Arg(256)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
    ->Arg(512)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-    ->Arg(1024)->Iterations(ITERATIONS)->Repetitions(REPETITIONS);
+   ->Arg(1024)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+   ->Arg(2048)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+   ->Arg(4096)->Iterations(ITERATIONS)->Repetitions(REPETITIONS);
 
 BENCHMARK(BM_MLX_SDPA_LatencyVsSeqLen)
    ->Arg(64)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+   ->Arg(256)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
    ->Arg(512)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-    ->Arg(1024)->Iterations(ITERATIONS)->Repetitions(REPETITIONS);
-
-BENCHMARK(BM_PAL_DecodeLatencyVsHistoryLen)
    ->Arg(1024)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
    ->Arg(2048)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
    ->Arg(4096)->Iterations(ITERATIONS)->Repetitions(REPETITIONS);
 
-BENCHMARK(BM_MLX_SDPA_DecodeLatencyVsHistoryLen)
-   ->Arg(1024)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-   ->Arg(2048)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-   ->Arg(4096)->Iterations(ITERATIONS)->Repetitions(REPETITIONS);
+// BENCHMARK(BM_PAL_DecodeLatencyVsHistoryLen)
+//    ->Arg(64)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+//    ->Arg(128)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+//    ->Arg(256)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+//    ->Arg(1024)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+//    ->Arg(2048)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+//    ->Arg(4096)->Iterations(ITERATIONS)->Repetitions(REPETITIONS);
+
+// BENCHMARK(BM_MLX_SDPA_DecodeLatencyVsHistoryLen)
+//    ->Arg(64)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+//    ->Arg(128)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+//    ->Arg(256)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+//    ->Arg(1024)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+//    ->Arg(2048)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+//    ->Arg(4096)->Iterations(ITERATIONS)->Repetitions(REPETITIONS);
 
 BENCHMARK_MAIN();
