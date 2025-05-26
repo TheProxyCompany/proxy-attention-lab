@@ -56,11 +56,11 @@ void MetalDispatcher::validate_input_pointers(
 void MetalDispatcher::dispatch_kernel(
     mx::metal::CommandEncoder& encoder,
     const DispatchGrid& grid,
-    const ThreadConfig& threads,
+    size_t threads_per_group,
     size_t threadgroup_memory_bytes
 ) {
     MTL::Size threadgroups_per_grid = grid.to_mtl_size();
-    MTL::Size threads_per_threadgroup = MTL::Size(threads.threads_per_group, 1, 1);
+    MTL::Size threads_per_threadgroup = MTL::Size(threads_per_group, 1, 1);
 
     if (threadgroup_memory_bytes > 0) {
         encoder.set_threadgroup_memory_length(threadgroup_memory_bytes, 0);

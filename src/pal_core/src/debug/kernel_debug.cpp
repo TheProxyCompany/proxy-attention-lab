@@ -10,19 +10,6 @@
 
 namespace pal::cpp::debug {
 
-void KernelDebugger::log_dispatch(
-    const std::string& kernel_name,
-    const metal::DispatchGrid& grid,
-    const metal::ThreadConfig& threads
-) {
-    spdlog::debug("[{} Dispatch] Grid: {}x{}x{}, Threads: {} (width: {}, max: {})",
-                  kernel_name,
-                  grid.width, grid.height, grid.depth,
-                  threads.threads_per_group,
-                  threads.execution_width,
-                  threads.max_threads_device);
-}
-
 void KernelDebugger::log_memory_usage(
     const std::string& kernel_name,
     size_t total_bytes,

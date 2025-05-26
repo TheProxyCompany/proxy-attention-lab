@@ -383,8 +383,8 @@ void PagedAttentionPrimitive::dispatch_prefill_pass2(
     size_t pass2_grid_width = (params.query_token_count_total + params.pass2_token_block_size - 1) / params.pass2_token_block_size;
     size_t pass2_grid_height = (params.num_q_heads + params.pass2_qhead_block_size - 1) / params.pass2_qhead_block_size;
 
-    spdlog::info("[PAL Primitive] Pass 2 grid width: {}, height: {}", pass2_grid_width, pass2_grid_height);
-    spdlog::info("[PAL Primitive] Pass 2's query token count: {}, num q heads: {}", core_dims.query_token_count, core_dims.num_q_heads);
+    spdlog::debug("[PAL Primitive] Pass 2 grid width: {}, height: {}", pass2_grid_width, pass2_grid_height);
+    spdlog::debug("[PAL Primitive] Pass 2's query token count: {}, num q heads: {}", core_dims.query_token_count, core_dims.num_q_heads);
 
     metal::DispatchGrid grid;
     grid.width = pass2_grid_width;
@@ -424,8 +424,7 @@ void PagedAttentionPrimitive::dispatch_prefill_pass2(
     encoder.set_bytes(&params, sizeof(PagedAttentionParams), 7);
     encoder.set_output_array(final_out, 8);
 
-    debug::KernelDebugger::log_dispatch("PAL Prefill Pass 2", grid, thread_config);
-    metal::MetalDispatcher::dispatch_kernel(encoder, grid, thread_config, pass2_tg_mem_bytes);
+    metal::MetalDispatcher::dispatch_kernel(encoder, grid, thread_config.threads_per_group, pass2_tg_mem_bytes);
 }
 
 PagedAttentionPrimitive::PagedAttentionPrimitive(
@@ -527,9 +526,10 @@ void PagedAttentionPrimitive::_eval_gpu_decode(const std::vector<mx::array>& inp
     compute_encoder.set_output_array(out, 8);
 
     // Dispatch kernel
-    debug::KernelDebugger::log_dispatch("PAL Decode", grid, thread_config);
-    metal::MetalDispatcher::dispatch_kernel(compute_encoder, grid, thread_config,
-                                          memory_layout.total_bytes);
+    metal::MetalDispatcher::dispatch_kernel(
+        compute_encoder, grid,
+        thread_config.threads_per_group,
+        memory_layout.total_bytes);
 
     debug::KernelDebugger::log_kernel_end("PAL Decode");
 }
@@ -563,15 +563,28 @@ void PagedAttentionPrimitive::_eval_gpu_prefill(const std::vector<mx::array>& in
     auto* device_ptr = d.mtl_device();
     PagedAttentionParams params = param_builder.build(device_ptr);
 
-    // Calculate thread configuration
-    auto thread_config = metal::MetalDispatcher::calculate_optimal_threads(
-        kernel_state, kernels::DEFAULT_THREADS_PER_GROUP);
+    // Calculate thread configuration for prefill based on model parameters
+    uint32_t actual_simd_width = kernel_state->threadExecutionWidth();
+
+    // Calculate N_q_per_kv (GQA factor)
+    uint32_t N_q_per_kv = 1;
+    if (params.num_kv_heads > 0 && params.num_q_heads >= params.num_kv_heads) { // GQA or MHA
+        N_q_per_kv = params.num_q_heads / params.num_kv_heads;
+    } else if (params.num_kv_heads > 0 && params.num_q_heads < params.num_kv_heads) { // Typically MQA if num_kv_heads=1
+        N_q_per_kv = std::max(1u, params.num_q_heads / params.num_kv_heads);
+    }
+
+    uint32_t desired_threads_per_tg = actual_simd_width * N_q_per_kv;
+    uint32_t max_threads_device = kernel_state->maxTotalThreadsPerThreadgroup();
+    uint32_t final_threads_per_tg = std::min(desired_threads_per_tg, max_threads_device);
+    final_threads_per_tg = ((final_threads_per_tg + actual_simd_width - 1) / actual_simd_width) * actual_simd_width;
+    spdlog::debug("[PAL Prefill Debug] final_threads_per_tg = {}", final_threads_per_tg);
 
     // Calculate memory layout
     auto memory_layout = kernel_utils::calculate_attention_memory_layout(
         params,
-        thread_config.threads_per_group,
-        thread_config.execution_width
+        final_threads_per_tg,
+        actual_simd_width
     );
 
     debug::KernelDebugger::log_memory_layout("PAL Prefill", memory_layout);
@@ -667,9 +680,12 @@ void PagedAttentionPrimitive::_eval_gpu_prefill(const std::vector<mx::array>& in
     compute_encoder.set_output_array(o_partials_pass1_out_arr, 11);
 
     // Dispatch kernel
-    debug::KernelDebugger::log_dispatch("PAL Prefill Pass 1", grid, thread_config);
-    metal::MetalDispatcher::dispatch_kernel(compute_encoder, grid, thread_config,
-                                          memory_layout.total_bytes);
+    spdlog::debug("[PAL Prefill Debug] Dispatching Pass 1kernel with threads_per_group = {}", final_threads_per_tg);
+    metal::MetalDispatcher::dispatch_kernel(
+        compute_encoder, grid,
+        final_threads_per_tg,
+        memory_layout.total_bytes
+    );
 
     // Launch Pass 2 for prefill
     dispatch_prefill_pass2(

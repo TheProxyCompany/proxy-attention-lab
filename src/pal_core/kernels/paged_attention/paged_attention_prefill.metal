@@ -52,53 +52,99 @@ using namespace metal;
     uint        simd_lane_id                        [[thread_index_in_simdgroup]],
     uint        simd_group_id                       [[simdgroup_index_in_threadgroup]]
 ) {
-    uint flat_work_item_idx = tg_pos_in_grid.x; // This is the index for the (batch_item, logical_page) pair
+    // A. TGMem Carving for K_tile and V_tile
+    threadgroup uchar* tg_mem_base_byte_ptr = (threadgroup uchar*)tg_mem;
+    uintptr_t current_offset = 0;
 
-    // Safety check: ensure this threadgroup is within the actual number of work items
+    // K_tile allocation with alignment
+    current_offset = (current_offset + kAlignmentMask) & ~kAlignmentMask;
+    threadgroup half* K_tile = (threadgroup half*)(tg_mem_base_byte_ptr + current_offset);
+    current_offset += params.tokens_per_page * params.head_dim * sizeof(half);
+
+    // V_tile allocation with alignment
+    current_offset = (current_offset + kAlignmentMask) & ~kAlignmentMask;
+    threadgroup half* V_tile = (threadgroup half*)(tg_mem_base_byte_ptr + current_offset);
+    current_offset += params.tokens_per_page * params.head_dim * sizeof(half);
+
+    // B. Role Identification
+    uint flat_work_item_idx = tg_pos_in_grid.x;
+
+    // Safety check for work item bounds
     if (flat_work_item_idx >= params.num_active_batch_logical_pages) {
         return;
     }
 
-    // For simplicity in this dummy test, let only KV_Head 0 do the writing.
-    // In the real kernel, all KV_Heads would participate.
+    // Extract work item pair
+    uint2 work_item_pair = active_work_item_pairs[flat_work_item_idx];
+    uint assigned_batch_item_idx = work_item_pair.x;
+    uint assigned_logical_page_idx_in_sequence = work_item_pair.y;
     uint assigned_global_kv_head_idx = tg_pos_in_grid.y;
-    if (assigned_global_kv_head_idx != 0) {
+
+    // C. Physical Page ID Lookup
+    uint page_table_flat_idx = assigned_batch_item_idx * params.max_logical_blocks_per_seq + assigned_logical_page_idx_in_sequence;
+    uint physical_page_id = page_table_in[page_table_flat_idx];
+
+    // Safety check for physical page bounds
+    if (physical_page_id >= params.num_physical_pages_in_pool) {
         return;
     }
 
-    // Let only one thread in the Threadgroup (TG) perform the write for this dummy test.
-    if (local_idx_in_tg == 0) {
-        // We'll write dummy data for a fixed query_idx = 0 and q_head_idx = 0.
-        // In a real scenario, these would be iterated or derived.
-        uint DUMMY_QUERY_TOKEN_IDX = 0;
-        uint DUMMY_Q_HEAD_IDX = 0;
+    // D. Cooperative K/V Loading into TGMem
 
-        // Calculate the flat index for m_locals_pass1_out and s_locals_pass1_out.
-        // Shape: [query_token_count_total][num_q_heads][num_active_batch_logical_pages]
-        uint stride_query_dim = params.num_q_heads * params.num_active_batch_logical_pages;
-        uint stride_q_head_dim = params.num_active_batch_logical_pages;
+    // Calculate constants for cooperative loading
+    const uint threads_per_tg = tg_dim.x;
+    const uint chunks_per_row = params.head_dim / 4; // Assume head_dim is multiple of 4
 
-        uint write_idx_ms = DUMMY_QUERY_TOKEN_IDX * stride_query_dim +
-                            DUMMY_Q_HEAD_IDX * stride_q_head_dim +
-                            flat_work_item_idx; // The page-dimension
+    // Load K-tile cooperatively
+    for (uint token_idx_on_page = 0; token_idx_on_page < params.tokens_per_page; token_idx_on_page++) {
+        // Calculate global memory offset for K-vector
+        ulong k_global_offset = (ulong)physical_page_id * (ulong)params.tokens_per_page * (ulong)params.num_kv_heads * (ulong)params.head_dim +
+                                (ulong)token_idx_on_page * (ulong)params.num_kv_heads * (ulong)params.head_dim +
+                                (ulong)assigned_global_kv_head_idx * (ulong)params.head_dim;
 
-        // Basic bounds check for safety, though DUMMY indices should be valid for test setup
-        if (DUMMY_QUERY_TOKEN_IDX < params.query_token_count_total &&
-            DUMMY_Q_HEAD_IDX < params.num_q_heads &&
-            flat_work_item_idx < params.num_active_batch_logical_pages) {
+        device const half* k_src_ptr = k_cache_pool_in + k_global_offset;
+        threadgroup half* k_dst_ptr = K_tile + token_idx_on_page * params.head_dim;
 
-            m_locals_pass1_out[write_idx_ms] = (float)(flat_work_item_idx) + 1.0f; // e.g., 1.0, 2.0, 3.0...
-            s_locals_pass1_out[write_idx_ms] = (float)(flat_work_item_idx) + 1.0f * 100.0f; // e.g., 100.0, 200.0...
-        }
+        // Corrected cooperative loading for one K-vector
+        threadgroup half4* dst_k_vector_h4_ptr = (threadgroup half4*)(k_dst_ptr);
+        device const half4* src_k_vector_h4_ptr = (device const half4*)(k_src_ptr);
 
-        // Write a dummy value to o_partials_pass1_out as well.
-        // Shape: [query_token_count_total][num_q_heads][num_active_batch_logical_pages][head_dim]
-        if (params.head_dim > 0) {
-            uint write_idx_o_base = write_idx_ms * params.head_dim;
-             // Basic bounds check
-            if (write_idx_o_base < (params.query_token_count_total * params.num_q_heads * params.num_active_batch_logical_pages * params.head_dim)) {
-                o_partials_pass1_out[write_idx_o_base + 0] = ((float)flat_work_item_idx + 0.5f); // Write to first element of head_dim
-            }
+        // All threads_per_tg (tg_dim.x) participate in loading this *one* K-vector.
+        // chunks_per_row is params.head_dim / 4.
+        // local_idx_in_tg is the thread's index within the entire threadgroup.
+        for (uint chunk_idx_in_k_vector = local_idx_in_tg;
+             chunk_idx_in_k_vector < chunks_per_row;
+             chunk_idx_in_k_vector += threads_per_tg) {
+            dst_k_vector_h4_ptr[chunk_idx_in_k_vector] = src_k_vector_h4_ptr[chunk_idx_in_k_vector];
         }
     }
+
+    // Synchronize after K-tile loading
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Load V-tile cooperatively
+    for (uint token_idx_on_page = 0; token_idx_on_page < params.tokens_per_page; token_idx_on_page++) {
+        // Calculate global memory offset for V-vector
+        ulong v_global_offset = (ulong)physical_page_id * (ulong)params.tokens_per_page * (ulong)params.num_kv_heads * (ulong)params.head_dim +
+                                (ulong)token_idx_on_page * (ulong)params.num_kv_heads * (ulong)params.head_dim +
+                                (ulong)assigned_global_kv_head_idx * (ulong)params.head_dim;
+
+        device const half* v_src_ptr = v_cache_pool_in + v_global_offset;
+        threadgroup half* v_dst_ptr = V_tile + token_idx_on_page * params.head_dim;
+
+        // Corrected cooperative loading for one V-vector
+        threadgroup half4* dst_v_vector_h4_ptr = (threadgroup half4*)(v_dst_ptr);
+        device const half4* src_v_vector_h4_ptr = (device const half4*)(v_src_ptr);
+
+        // All threads_per_tg (tg_dim.x) participate in loading this *one* V-vector.
+        for (uint chunk_idx_in_v_vector = local_idx_in_tg;
+             chunk_idx_in_v_vector < chunks_per_row;
+             chunk_idx_in_v_vector += threads_per_tg) {
+            dst_v_vector_h4_ptr[chunk_idx_in_v_vector] = src_v_vector_h4_ptr[chunk_idx_in_v_vector];
+        }
+    }
+
+    // Synchronize after V-tile loading
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
 } // End of kernel

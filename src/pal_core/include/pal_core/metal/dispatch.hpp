@@ -62,7 +62,7 @@ public:
     static void dispatch_kernel(
         mx::metal::CommandEncoder& encoder,
         const DispatchGrid& grid,
-        const ThreadConfig& threads,
+        size_t threads_per_group,
         size_t threadgroup_memory_bytes = 0
     );
 };
