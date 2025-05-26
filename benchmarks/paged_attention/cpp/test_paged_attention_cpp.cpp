@@ -51,7 +51,7 @@ struct BaselineConfig {
     int num_q_heads = 32;
     int num_kv_heads = 16;
     int head_dim = 128; // bottleneck dim
-    int tokens_per_page = 64;
+    int tokens_per_page = 58;
     mx::Dtype dtype = mx::float16;
 };
 
@@ -445,7 +445,7 @@ static void BM_MLX_SDPA_DecodeLatencyVsHistoryLen(benchmark::State& state) {
     }
 }
 
-const int REPETITIONS = 10;
+const int REPETITIONS = 20;
 const int ITERATIONS = 5;
 
 BENCHMARK(BM_PAL_LatencyVsSeqLen)

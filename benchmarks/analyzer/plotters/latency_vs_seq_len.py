@@ -135,6 +135,9 @@ def plot(df: pd.DataFrame, output_dir: Path, styles: dict[str, str | float] | No
         },
     }
 
+    if "name" not in df.columns:
+        raise ValueError("'name' column not found in DataFrame")
+
     # Split data into prefill and decode benchmarks
     prefill_df = df[~df["name"].str.contains("decode", case=False)]
     decode_df = df[df["name"].str.contains("decode", case=False)]

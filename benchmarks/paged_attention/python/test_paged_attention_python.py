@@ -30,7 +30,7 @@ BASELINE_CONFIG = {
     "num_q_heads": 32,
     "num_kv_heads": 16,
     "head_dim": 128,
-    "tokens_per_page": 64,
+    "tokens_per_page": 58,
     "dtype": mx.float16,
 }
 

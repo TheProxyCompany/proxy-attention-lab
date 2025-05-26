@@ -140,15 +140,19 @@ def main() -> None:
 
     logger.info("Found %d JSON files to analyze", len(json_files))
     for json_file in json_files:
-        with open(json_file) as f:
-            file_data = json.load(f)
-            if "python" in json_file.name:
-                # assume any file with "python" in the name is a python benchmark file
-                benchmarks_data = process_python_file(file_data)
-            else:
-                # assume any file without "python" in the name is a c++ benchmark file
-                benchmarks_data = process_cpp_file(file_data)
-            results_df = pd.concat([results_df, benchmarks_data])
+        try:
+            with open(json_file) as f:
+                file_data = json.load(f)
+                if "python" in json_file.name:
+                    # assume any file with "python" in the name is a python benchmark file
+                    benchmarks_data = process_python_file(file_data)
+                else:
+                    # assume any file without "python" in the name is a c++ benchmark file
+                    benchmarks_data = process_cpp_file(file_data)
+                results_df = pd.concat([results_df, benchmarks_data])
+        except Exception as e:
+            logger.error(f"Error processing {json_file}: {e}")
+            continue
 
     # Get styles for plotting
     styles = plot_utils.get_plot_styles()
@@ -159,7 +163,11 @@ def main() -> None:
 
     # Plot latency vs sequence length
     logger.info("Generating latency vs sequence length plot...")
-    seq_len_plot = latency_vs_seq_len.plot(df=results_df, output_dir=args.output_dir, styles=styles)
+    try:
+        seq_len_plot = latency_vs_seq_len.plot(df=results_df, output_dir=args.output_dir, styles=styles)
+    except ValueError as e:
+        logger.error(f"Error generating latency vs sequence length plot: {e}")
+        return
 
     if seq_len_plot:
         plot_filenames["latency_vs_seq_len"] = seq_len_plot

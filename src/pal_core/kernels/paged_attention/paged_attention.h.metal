@@ -114,54 +114,58 @@ static inline device const half* fetch_kv_pointer(
     return is_k_vector ? (k_cache_pool_in_param + total_offset) : (v_cache_pool_in_param + total_offset);
 }
 
-/**
- * Optimized version of fetch_kv_pointer that uses pre-calculated strides.
- * This version avoids redundant multiplication inside the function.
- *
- * @param is_k_vector True for K pointer, false for V pointer
- * @param actual_hist_token_pos History token position to fetch
- * @param target_kv_head_idx Already mapped KV head index
- * @param k_cache_pool_in_param Key cache base pointer
- * @param v_cache_pool_in_param Value-cache base pointer
- * @param page_table_slice Prefetched page-table slice for current sequence
- * @param kernel_params Kernel parameters struct
- * @return Pointer to the K/V vector, or nullptr if invalid
- */
-static inline device const half* fetch_kv_pointer_optimized(
-    bool is_k_vector, // true for K, false for V
-    uint actual_hist_token_pos,
-    uint target_kv_head_idx, // Already mapped
-    device const half* k_cache_pool_in_param,
-    device const half* v_cache_pool_in_param,
-    threadgroup const uint* page_table_slice,
-    constant const PagedAttentionParams& kernel_params
-) {
-    if ((is_k_vector && k_cache_pool_in_param == nullptr) ||
-        (!is_k_vector && v_cache_pool_in_param == nullptr) ||
-        page_table_slice == nullptr) {
-        return nullptr;
-    }
+// DEPRECATED
+// /**
+//  * Optimized version of fetch_kv_pointer that uses pre-calculated strides.
+//  * This version avoids redundant multiplication inside the function.
+//  *
+//  * @param is_k_vector True for K pointer, false for V pointer
+//  * @param actual_hist_token_pos History token position to fetch
+//  * @param target_kv_head_idx Already mapped KV head index
+//  * @param k_cache_pool_in_param Key cache base pointer
+//  * @param v_cache_pool_in_param Value-cache base pointer
+//  * @param page_table_slice Prefetched page-table slice for current sequence
+//  * @param kernel_params Kernel parameters struct
+//  * @return Pointer to the K/V vector, or nullptr if invalid
+//  */
+// static inline device const half* fetch_kv_pointer_optimized(
+//     bool is_k_vector, // true for K, false for V
+//     uint actual_hist_token_pos,
+//     uint target_kv_head_idx, // Already mapped
+//     device const half* k_cache_pool_in_param,
+//     device const half* v_cache_pool_in_param,
+//     threadgroup const uint* page_table_slice,
+//     constant const PagedAttentionParams& kernel_params
+// ) {
+//     if ((is_k_vector && k_cache_pool_in_param == nullptr) ||
+//         (!is_k_vector && v_cache_pool_in_param == nullptr) ||
+//         page_table_slice == nullptr) {
+//         return nullptr;
+//     }
 
-    // Calculate indices for page table lookup
-    uint logical_block_idx = actual_hist_token_pos / kernel_params.tokens_per_page;
-    if (logical_block_idx >= kernel_params.max_logical_blocks_per_seq) {
-        return nullptr;  // Invalid block index
-    }
+//     // Calculate indices for page table lookup
+//     uint logical_block_idx = actual_hist_token_pos / kernel_params.tokens_per_page;
+//     if (logical_block_idx >= kernel_params.max_logical_blocks_per_seq) {
+//         return nullptr;  // Invalid block index
+//     }
 
-    uint token_slot_in_page = actual_hist_token_pos % kernel_params.tokens_per_page;
-    uint physical_page_id = page_table_slice[logical_block_idx];
-    if (physical_page_id >= kernel_params.num_physical_pages_in_pool) {
-        return nullptr;  // Invalid page
-    }
+//     uint token_slot_in_page = actual_hist_token_pos % kernel_params.tokens_per_page;
+//     uint physical_page_id = page_table_slice[logical_block_idx];
+//     if (physical_page_id >= kernel_params.num_physical_pages_in_pool) {
+//         return nullptr;  // Invalid page
+//     }
 
-    // Use pre-calculated strides
-    ulong total_offset = (ulong)physical_page_id * (ulong)kernel_params.per_page_stride_in_cache +
-                         (ulong)token_slot_in_page * (ulong)kernel_params.per_token_stride_in_cache +
-                         (ulong)target_kv_head_idx * (ulong)kernel_params.head_dim;
+//     // Calculate strides
+//     ulong per_token_stride = (ulong)kernel_params.num_kv_heads * (ulong)kernel_params.head_dim;
+//     ulong per_page_stride = (ulong)kernel_params.tokens_per_page * per_token_stride;
 
-    // Return the appropriate pointer
-    return is_k_vector ? (k_cache_pool_in_param + total_offset) : (v_cache_pool_in_param + total_offset);
-}
+//     ulong total_offset = (ulong)physical_page_id * per_page_stride +
+//                          (ulong)token_slot_in_page * per_token_stride +
+//                          (ulong)target_kv_head_idx * (ulong)kernel_params.head_dim;
+
+//     // Return the appropriate pointer
+//     return is_k_vector ? (k_cache_pool_in_param + total_offset) : (v_cache_pool_in_param + total_offset);
+// }
 
 /**
  * Updates the shared softmax statistics using Kahan summation for numerical stability.

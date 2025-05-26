@@ -176,7 +176,16 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
       mlx::core::metal::Device& d,
       const mx::Stream& s,
       const CoreDims& core_dims,
-      mx::array& out);
+      const PagedAttentionParams& params,
+      const mx::array& m_locals_in,
+      const mx::array& s_locals_in,
+      const mx::array& o_partials_in,
+      const mx::array& work_items_buffer,
+      mx::array& final_out);
+
+  // Helper methods for decode and prefill paths
+  void _eval_gpu_decode(const std::vector<mx::array>& inputs, mx::array& out);
+  void _eval_gpu_prefill(const std::vector<mx::array>& inputs, mx::array& out);
 };
 
 }  // namespace pal::cpp
