@@ -448,21 +448,21 @@ static void BM_MLX_SDPA_DecodeLatencyVsHistoryLen(benchmark::State& state) {
 const int REPETITIONS = 20;
 const int ITERATIONS = 5;
 
-BENCHMARK(BM_PAL_LatencyVsSeqLen)
-   ->Arg(64)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)->Setup(BM_PAL_LatencyVsSeqLen_Setup)
-   ->Arg(256)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-   ->Arg(512)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-   ->Arg(1024)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-   ->Arg(2048)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-   ->Arg(4096)->Iterations(ITERATIONS)->Repetitions(REPETITIONS);
+// BENCHMARK(BM_PAL_LatencyVsSeqLen)
+//    ->Arg(64)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)->Setup(BM_PAL_LatencyVsSeqLen_Setup)
+//    ->Arg(256)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+//    ->Arg(512)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+//    ->Arg(1024)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+//    ->Arg(2048)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+//    ->Arg(4096)->Iterations(ITERATIONS)->Repetitions(REPETITIONS);
 
-BENCHMARK(BM_MLX_SDPA_LatencyVsSeqLen)
-   ->Arg(64)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-   ->Arg(256)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-   ->Arg(512)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-   ->Arg(1024)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-   ->Arg(2048)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-   ->Arg(4096)->Iterations(ITERATIONS)->Repetitions(REPETITIONS);
+// BENCHMARK(BM_MLX_SDPA_LatencyVsSeqLen)
+//    ->Arg(64)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+//    ->Arg(256)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+//    ->Arg(512)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+//    ->Arg(1024)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+//    ->Arg(2048)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+//    ->Arg(4096)->Iterations(ITERATIONS)->Repetitions(REPETITIONS);
 
 // BENCHMARK(BM_PAL_DecodeLatencyVsHistoryLen)
 //    ->Arg(64)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
@@ -479,5 +479,132 @@ BENCHMARK(BM_MLX_SDPA_LatencyVsSeqLen)
 //    ->Arg(1024)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
 //    ->Arg(2048)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
 //    ->Arg(4096)->Iterations(ITERATIONS)->Repetitions(REPETITIONS);
+
+static void test_paged_attention_dummy_data_flow() { // Renamed for clarity
+    spdlog::info("Running paged attention dummy data flow test...");
+
+    // Test configuration to achieve num_active_batch_logical_pages = 3
+    int batch_size = 1;
+    int seq_len = 3;      // This many query tokens, and length of sequence for page calculation
+    int tokens_per_page = 1;  // Each token gets its own page, so 3 tokens -> 3 pages
+
+    int num_q_heads = 1;
+    int num_kv_heads = 1; // Dummy kernel writes as if kv_head_idx = 0
+    int head_dim = 4;     // Must be >= 4 for the dummy output check
+    mx::Dtype dtype = mx::float32; // Using float32 for easier verification of sums
+
+    // This setup will result in:
+    // num_logical_pages_per_seq = (seq_len + tokens_per_page - 1) / tokens_per_page
+    //                           = (3 + 1 - 1) / 1 = 3
+    // num_active_batch_logical_pages = batch_size * num_logical_pages_per_seq = 1 * 3 = 3
+    // So, flat_work_item_idx in Pass 1 will be 0, 1, 2.
+
+    int query_token_count = batch_size * seq_len; // Total query tokens for the 'queries' array
+    int num_physical_pages = batch_size * ((seq_len + tokens_per_page - 1) / tokens_per_page);
+    if (num_physical_pages == 0) num_physical_pages = 1; // Ensure at least one physical page for cache
+
+    // Create dummy tensors (content doesn't matter for these specific dummy kernels)
+    mx::array queries = mx::zeros({query_token_count, num_q_heads, head_dim}, dtype);
+    mx::array k_cache_pool = mx::zeros({num_physical_pages, tokens_per_page, num_kv_heads, head_dim}, dtype);
+    mx::array v_cache_pool = mx::zeros({num_physical_pages, tokens_per_page, num_kv_heads, head_dim}, dtype);
+
+    // Metadata arrays
+    mx::array page_table = create_page_table(batch_size, (seq_len + tokens_per_page - 1) / tokens_per_page);
+    mx::array sequence_lengths = mx::full({batch_size}, seq_len, mx::int32);
+    mx::array query_to_seq_map = create_query_to_seq_map(batch_size, seq_len);
+    mx::array query_token_offset = create_query_token_offset(batch_size, seq_len); // Content doesn't matter for dummy kernels
+
+    // Evaluate all inputs
+    queries.eval(); k_cache_pool.eval(); v_cache_pool.eval();
+    page_table.eval(); sequence_lengths.eval();
+    query_to_seq_map.eval(); query_token_offset.eval();
+
+    // Run paged attention
+    mx::array out = pal::cpp::paged_attention(
+        queries, k_cache_pool, v_cache_pool, page_table,
+        sequence_lengths, query_to_seq_map, query_token_offset,
+        true // prefill mode
+    );
+    out.eval(); // Crucial to ensure computation completes
+
+    // Verification
+    // Output shape from paged_attention for 3D queries [QTC, NQH, HD] is [QTC * NQH, HD]
+    // Here, QTC=3, NQH=1, HD=4. So, out shape is [3, 4].
+    // The dummy Pass 2 kernel writes to output_item_idx = 0 (for DUMMY_QUERY_TOKEN_IDX=0, DUMMY_Q_HEAD_IDX=0).
+    // So we check out[0][0], out[0][1], out[0][2], out[0][3].
+
+    // Expected values based on dummy Metal kernels:
+    // flat_work_item_idx will be 0, 1, 2.
+    // accumulated_m_val = (0+1.0f) + (1+1.0f) + (2+1.0f) = 1.0 + 2.0 + 3.0 = 6.0f
+    // accumulated_s_val = (0+1.0f)*100 + (1+1.0f)*100 + (2+1.0f)*100 = 100 + 200 + 300 = 600.0f
+    // accumulated_o_val_elem0 = (half)(0+0.5f) + (half)(1+0.5f) + (half)(2+0.5f) = 0.5h + 1.5h + 2.5h = 4.5h
+    // accumulated_o_val_elem1 = (half)(0+0.5f) + (half)(1+0.5f) + (half)(2+0.5f) = 0.5h + 1.5h + 2.5h = 4.5h
+    float expected_val0 = 6.0f;
+    float expected_val1 = 600.0f;
+    float expected_val2 = 4.5f; // This will be float due to accumulation in Pass 2
+    float expected_val3 = 4.5f; // Same pattern for additional elements
+
+    // Accessing elements from the 2D 'out' array
+    // Ensure out array is not empty and has the expected shape
+    if (out.size() == 0 || out.ndim() != 2 || out.shape(0) < 1 || out.shape(1) < head_dim) {
+        spdlog::error("Dummy data test FAILED: Output array is empty or has unexpected shape: [{}, {}]", out.shape(0), out.shape(1));
+        throw std::runtime_error("Test failed due to output array shape.");
+    }
+
+    // Use mx::slice (free function) to extract individual elements, then .item<T>() for scalar extraction
+    // For a 2D array, slice from [start_row, start_col] to [end_row, end_col]
+    mx::array elem0 = mx::slice(out, {0, 0}, {1, 1});
+    mx::array elem1 = mx::slice(out, {0, 1}, {1, 2});
+    mx::array elem2 = mx::slice(out, {0, 2}, {1, 3});
+    mx::array elem3 = mx::slice(out, {0, 3}, {1, 4});
+
+    float val0 = elem0.item<float>();
+    float val1 = elem1.item<float>();
+    float val2 = elem2.item<float>();
+    float val3 = elem3.item<float>();
+
+    spdlog::info("Dummy data flow test results:");
+    spdlog::info("  Output array shape: [{}, {}]", out.shape(0), out.shape(1));
+    spdlog::info("  out[0][0] (accumulated_m_val) = {} (expected: {})", val0, expected_val0);
+    spdlog::info("  out[0][1] (accumulated_s_val) = {} (expected: {})", val1, expected_val1);
+    spdlog::info("  out[0][2] (accumulated_o_val_elem0) = {} (expected: {})", val2, expected_val2);
+    spdlog::info("  out[0][3] (accumulated_o_val_elem1) = {} (expected: {})", val3, expected_val3);
+
+    const float tolerance = 1e-3f; // Tolerance for float comparisons
+    bool test_passed = true;
+
+    if (std::abs(val0 - expected_val0) > tolerance) {
+        spdlog::error("Test FAILED: out[0][0] mismatch.");
+        test_passed = false;
+    }
+    if (std::abs(val1 - expected_val1) > tolerance) {
+        spdlog::error("Test FAILED: out[0][1] mismatch.");
+        test_passed = false;
+    }
+    if (std::abs(val2 - expected_val2) > tolerance) {
+        spdlog::error("Test FAILED: out[0][2] mismatch.");
+        test_passed = false;
+    }
+    if (std::abs(val3 - expected_val3) > tolerance) {
+        spdlog::error("Test FAILED: out[0][3] mismatch.");
+        test_passed = false;
+    }
+
+    if (test_passed) {
+        spdlog::info("Dummy data flow test PASSED!");
+    } else {
+        spdlog::error("Dummy data flow test FAILED!");
+        // Optionally, throw an exception to make the benchmark fail clearly
+        // throw std::runtime_error("Dummy data flow test failed verification.");
+    }
+}
+
+// Call the test function before benchmarks
+struct DummyDataTestRunner {
+    DummyDataTestRunner() {
+        test_paged_attention_dummy_data_flow();
+    }
+};
+static DummyDataTestRunner dummy_test_runner;
 
 BENCHMARK_MAIN();

@@ -635,7 +635,7 @@ void PagedAttentionPrimitive::_eval_gpu_prefill(const std::vector<mx::array>& in
         static_cast<int32_t>(params.num_active_batch_logical_pages),
         static_cast<int32_t>(params.head_dim)
     };
-    mx::array o_partials_pass1_out_arr = mx::zeros(o_shape, out.dtype(), s);
+    mx::array o_partials_pass1_out_arr = mx::zeros(o_shape, mx::float16, s);
     size_t o_partials_pass1_out_arr_bytes = o_partials_pass1_out_arr.nbytes();
     o_partials_pass1_out_arr.set_data(mx::allocator::malloc(o_partials_pass1_out_arr_bytes));
 
