@@ -398,12 +398,13 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx:
     // Calculate dispatch grid
     metal::DispatchGrid grid;
     if (is_prefill_) {
-        grid.width = core_dims.num_items_to_process / params.tile_size_T_runtime;
+        grid.width = params.num_physical_pages_in_pool;
+        grid.height = params.num_kv_heads;
     } else {
         grid.width = core_dims.num_items_to_process;
+        grid.height = 1;
     }
-    grid.height = 1;
-    grid.depth = 1;
+    grid.depth = params.num_sequences_in_batch;
 
     // Setup compute encoder
     auto& compute_encoder = d.get_command_encoder(s.index);
