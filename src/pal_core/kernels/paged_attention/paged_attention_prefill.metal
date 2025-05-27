@@ -56,12 +56,19 @@ using namespace metal;
     threadgroup uchar* tg_mem_base_byte_ptr = (threadgroup uchar*)tg_mem;
     uintptr_t current_offset = 0;
 
-    // K_tile allocation with alignment
+    // Q_shmem needs to hold N_q_per_kv Q-vectors, each of head_dim floats.
+    // Example: N_q_per_kv=2, head_dim=128, sizeof(float)=4 => 2 * 128 * 4 = 1024 bytes for Q_shmem.
+    const uint N_q_per_kv = (params.num_q_heads + params.num_kv_heads - 1) / params.num_kv_heads; // GQA Factor
+    current_offset = (current_offset + kAlignmentMask) & ~kAlignmentMask;
+    threadgroup float* Q_shmem_base = (threadgroup float*)(tg_mem_base_byte_ptr + current_offset);
+    current_offset += N_q_per_kv * params.head_dim * sizeof(float);
+
+    // K_tile allocation with alignment and padding
     current_offset = (current_offset + kAlignmentMask) & ~kAlignmentMask;
     threadgroup half* K_tile = (threadgroup half*)(tg_mem_base_byte_ptr + current_offset);
     current_offset += params.tokens_per_page * params.head_dim * sizeof(half);
 
-    // V_tile allocation with alignment
+    // V_tile allocation with alignment and padding
     current_offset = (current_offset + kAlignmentMask) & ~kAlignmentMask;
     threadgroup half* V_tile = (threadgroup half*)(tg_mem_base_byte_ptr + current_offset);
     current_offset += params.tokens_per_page * params.head_dim * sizeof(half);
@@ -90,15 +97,18 @@ using namespace metal;
     }
 
     // D. Cooperative K/V Loading into TGMem
-
-    // Calculate constants for cooperative loading
+    // Constants for vectorized loading
     const uint threads_per_tg = tg_dim.x;
-    const uint chunks_per_row = params.head_dim / 4; // Assume head_dim is multiple of 4
-
+    const uint chunks_per_row = params.head_dim / 4; // Assuming head_dim is multiple of 4
+    // Pre-compute page base offset
+    const ulong page_base_offset = (ulong)physical_page_id *
+                                   (ulong)params.tokens_per_page *
+                                   (ulong)params.num_kv_heads *
+                                   (ulong)params.head_dim;
     // Load K-tile cooperatively
     for (uint token_idx_on_page = 0; token_idx_on_page < params.tokens_per_page; token_idx_on_page++) {
         // Calculate global memory offset for K-vector
-        ulong k_global_offset = (ulong)physical_page_id * (ulong)params.tokens_per_page * (ulong)params.num_kv_heads * (ulong)params.head_dim +
+        ulong k_global_offset = page_base_offset +
                                 (ulong)token_idx_on_page * (ulong)params.num_kv_heads * (ulong)params.head_dim +
                                 (ulong)assigned_global_kv_head_idx * (ulong)params.head_dim;
 
@@ -125,7 +135,7 @@ using namespace metal;
     // Load V-tile cooperatively
     for (uint token_idx_on_page = 0; token_idx_on_page < params.tokens_per_page; token_idx_on_page++) {
         // Calculate global memory offset for V-vector
-        ulong v_global_offset = (ulong)physical_page_id * (ulong)params.tokens_per_page * (ulong)params.num_kv_heads * (ulong)params.head_dim +
+        ulong v_global_offset = page_base_offset +
                                 (ulong)token_idx_on_page * (ulong)params.num_kv_heads * (ulong)params.head_dim +
                                 (ulong)assigned_global_kv_head_idx * (ulong)params.head_dim;
 
@@ -147,4 +157,34 @@ using namespace metal;
     // Synchronize after V-tile loading
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
+    // E. Query Iteration Loop
+    // Iterate through ALL query tokens provided in the input `queries_in`
+    for (uint master_query_idx = 0; master_query_idx < params.query_token_count_total; ++master_query_idx) {
+        // E1. Check if this query token belongs to the batch item this TG is processing
+        if (query_to_seq_map_in[master_query_idx] != (int)assigned_batch_item_idx) {
+            continue; // Skip this query, it's for a different batch item
+        }
+        // This query token belongs to our assigned batch item.
+        uint current_q_logical_pos = (uint)query_token_offset_in[master_query_idx];
+
+        // // E2. Intra-threadgroup parallelization of multiple Q heads
+        // takes our scaling rate from 0.2 to 0.9 ☹️
+        // if (simd_group_id < N_q_per_kv) {
+        //     // Each SIMD group processes one Q head
+        //     uint target_q_head_local_offset = simd_group_id;
+        //     uint target_global_q_head_idx = (assigned_global_kv_head_idx * N_q_per_kv) + target_q_head_local_offset;
+        //     threadgroup float* q_vec_tgmem_for_this_simd_group = Q_shmem_base + (simd_group_id * params.head_dim);
+
+        //      // Load Q-vector for (master_query_idx, target_global_q_head_idx)
+        //     device const half* q_src_ptr = queries_in + (master_query_idx * params.num_q_heads * params.head_dim) + (target_global_q_head_idx * params.head_dim);
+        //     uint chunks_per_q_vector = params.head_dim / 4;
+        //     for (uint c_idx = simd_lane_id; c_idx < chunks_per_q_vector; c_idx += actual_simd_width) {
+        //         ((threadgroup float4*)q_vec_tgmem_for_this_simd_group)[c_idx] =
+        //             float4(((device const half4*)q_src_ptr)[c_idx]) * params.inv_sqrt_head_dim;
+        //     }
+        //     simdgroup_barrier(mem_flags::mem_threadgroup); // Q for this SIMD group is ready
+
+        // } // end of simd_group_id < N_q_per_kv
+
+    } // end of query token loop
 } // End of kernel

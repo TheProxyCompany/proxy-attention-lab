@@ -50,8 +50,8 @@ struct BaselineConfig {
     int seq_len = 2048;  // tokens
     int num_q_heads = 32;
     int num_kv_heads = 16;
-    int head_dim = 128; // bottleneck dim
-    int tokens_per_page = 58;
+    int head_dim = 128;
+    int tokens_per_page = 56;
     mx::Dtype dtype = mx::float16;
 };
 
@@ -299,24 +299,23 @@ static void BM_MLX_SDPA_DecodeLatencyVsHistoryLen(benchmark::State& state) {
     }
 }
 
-const int REPETITIONS = 20;
-const int ITERATIONS = 20;
+const int REPETITIONS = 5;
 
 BENCHMARK(BM_PAL_LatencyVsSeqLen)
-   ->Arg(64)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-   ->Arg(256)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-   ->Arg(512)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-   ->Arg(1024)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-   ->Arg(2048)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-   ->Arg(4096)->Iterations(ITERATIONS)->Repetitions(REPETITIONS);
+   ->Arg(64)->Repetitions(REPETITIONS)
+   ->Arg(256)->Repetitions(REPETITIONS)
+   ->Arg(512)->Repetitions(REPETITIONS)
+   ->Arg(1024)->Repetitions(REPETITIONS)
+   ->Arg(2048)->Repetitions(REPETITIONS)
+   ->Arg(4096)->Repetitions(REPETITIONS);
 
 BENCHMARK(BM_MLX_SDPA_LatencyVsSeqLen)
-   ->Arg(64)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-   ->Arg(256)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-   ->Arg(512)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-   ->Arg(1024)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-   ->Arg(2048)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-   ->Arg(4096)->Iterations(ITERATIONS)->Repetitions(REPETITIONS);
+   ->Arg(64)->Repetitions(REPETITIONS)
+   ->Arg(256)->Repetitions(REPETITIONS)
+   ->Arg(512)->Repetitions(REPETITIONS)
+   ->Arg(1024)->Repetitions(REPETITIONS)
+   ->Arg(2048)->Repetitions(REPETITIONS)
+   ->Arg(4096)->Repetitions(REPETITIONS);
 
 // BENCHMARK(BM_PAL_DecodeLatencyVsHistoryLen)
 //    ->Arg(64)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
