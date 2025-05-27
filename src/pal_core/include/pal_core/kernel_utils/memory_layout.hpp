@@ -48,7 +48,8 @@ inline uint32_t calculate_simd_groups(size_t threads_per_group, size_t simd_lane
 AttentionMemoryLayout calculate_attention_memory_layout(
     const PagedAttentionParams& params,
     size_t threads_per_group,
-    size_t actual_simd_lanes_per_group
+    size_t actual_simd_lanes_per_group,
+    bool is_prefill = false
 );
 
 } // namespace pal::cpp::kernel_utils

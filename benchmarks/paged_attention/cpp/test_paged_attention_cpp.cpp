@@ -15,6 +15,7 @@
 //
 // Google Benchmark for PAL C++ Operations
 
+#include "pal_core/paged_attention_primitive.hpp"
 #include <benchmark/benchmark.h>
 #include <cmath>
 #include <vector>
@@ -36,7 +37,7 @@ namespace mx = mlx::core;
 struct BenchmarkSpdlogInitializer {
     BenchmarkSpdlogInitializer() {
         // Set default log level for benchmarks to debug to see GPU copy logs
-        spdlog::set_level(spdlog::level::off);
+        spdlog::set_level(spdlog::level::debug);
         spdlog::info("PAL C++ Benchmarks: spdlog level set to 'debug' for debugging GPU copies.");
     }
 };
@@ -57,6 +58,9 @@ struct BaselineConfig {
 
 // Decode-specific batch size
 const int DECODE_BATCH_SIZE = 1;
+
+const int SIMD_WIDTH = 32;
+const int MAX_THREADGROUP_MEMORY_LENGTH = 32768;
 
 // Helper function to create causal mask (for SDPA)
 mx::array create_causal_mask(int seq_len, mx::Dtype dtype) {
@@ -128,8 +132,27 @@ static void BM_PAL_LatencyVsSeqLen(benchmark::State& state) {
     int num_q_heads = params.num_q_heads;
     int num_kv_heads = params.num_kv_heads;
     int head_dim = params.head_dim;
-    int tokens_per_page = params.tokens_per_page;
     mx::Dtype dtype = params.dtype;
+
+    uint32_t N_q_per_kv = std::max(1, num_q_heads / num_kv_heads);
+    const int threads_per_tg_for_scratch_calc = SIMD_WIDTH * N_q_per_kv;
+
+    size_t per_gqa_group_compute_scratch = pal::cpp::calculate_per_gqa_group_compute_scratch(
+        head_dim,
+        N_q_per_kv,
+        threads_per_tg_for_scratch_calc
+    );
+
+    uint32_t D_s = pal::cpp::calculate_symmetric_tile_depth(
+        head_dim,
+        num_q_heads,
+        num_kv_heads,
+        MAX_THREADGROUP_MEMORY_LENGTH,
+        per_gqa_group_compute_scratch
+    );
+
+    params.tokens_per_page = D_s;
+    int tokens_per_page = params.tokens_per_page;
 
     // Setup input tensors
     int num_tokens = batch_size * seq_len;
@@ -299,23 +322,24 @@ static void BM_MLX_SDPA_DecodeLatencyVsHistoryLen(benchmark::State& state) {
     }
 }
 
-const int REPETITIONS = 5;
+const int REPETITIONS = 20;
+const int ITERATIONS = 20;
 
 BENCHMARK(BM_PAL_LatencyVsSeqLen)
-   ->Arg(64)->Repetitions(REPETITIONS)
-   ->Arg(256)->Repetitions(REPETITIONS)
-   ->Arg(512)->Repetitions(REPETITIONS)
-   ->Arg(1024)->Repetitions(REPETITIONS)
-   ->Arg(2048)->Repetitions(REPETITIONS)
-   ->Arg(4096)->Repetitions(REPETITIONS);
+   ->Arg(64)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
+   ->Arg(256)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
+   ->Arg(512)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
+   ->Arg(1024)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
+   ->Arg(2048)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
+   ->Arg(4096)->Repetitions(REPETITIONS)->Iterations(ITERATIONS);
 
 BENCHMARK(BM_MLX_SDPA_LatencyVsSeqLen)
-   ->Arg(64)->Repetitions(REPETITIONS)
-   ->Arg(256)->Repetitions(REPETITIONS)
-   ->Arg(512)->Repetitions(REPETITIONS)
-   ->Arg(1024)->Repetitions(REPETITIONS)
-   ->Arg(2048)->Repetitions(REPETITIONS)
-   ->Arg(4096)->Repetitions(REPETITIONS);
+   ->Arg(64)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
+   ->Arg(256)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
+   ->Arg(512)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
+   ->Arg(1024)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
+   ->Arg(2048)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
+   ->Arg(4096)->Repetitions(REPETITIONS)->Iterations(ITERATIONS);
 
 // BENCHMARK(BM_PAL_DecodeLatencyVsHistoryLen)
 //    ->Arg(64)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)

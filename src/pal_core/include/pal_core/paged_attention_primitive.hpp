@@ -188,4 +188,19 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
   void _eval_gpu_prefill(const std::vector<mx::array>& inputs, mx::array& out);
 };
 
+uint32_t calculate_symmetric_tile_depth(
+    uint32_t head_dimension,
+    uint32_t num_query_heads,
+    uint32_t num_kv_heads,
+    size_t max_threadgroup_memory_bytes,
+    size_t per_gqa_group_compute_scratch_bytes
+);
+
+size_t calculate_per_gqa_group_compute_scratch(
+    uint32_t head_dimension,
+    uint32_t number_of_query_heads_per_kv_group,
+    uint32_t final_threads_per_tg
+);
+
+
 }  // namespace pal::cpp
