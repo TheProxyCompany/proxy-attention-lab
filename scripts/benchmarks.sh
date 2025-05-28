@@ -339,7 +339,6 @@ run_cpp_benchmarks() {
             if SPDLOG_LEVEL=debug "${benchmark_exe}" \
                 --benchmark_format=json \
                 --benchmark_out="${cpp_json_output}" \
-                --benchmark_repetitions=1 \
                 ${filter_option}; then
                 log "C++ benchmarks from ${benchmark_exe} completed. Results saved to ${cpp_json_output}"
             else

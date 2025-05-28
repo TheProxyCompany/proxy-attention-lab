@@ -112,6 +112,29 @@ static std::tuple<mx::array, size_t> create_work_items_buffer(const PagedAttenti
     return std::make_tuple(work_items_buffer, active_work_items.size());
 }
 
+static mx::array create_query_starts_buffer(
+    uint32_t num_sequences_in_batch,
+    const mx::array& sequence_lengths_arr,
+    mx::StreamOrDevice s
+) {
+    if (num_sequences_in_batch == 0) {
+        return mx::array({}, mx::uint32);
+    }
+
+    std::vector<uint32_t> query_starts_cpu(num_sequences_in_batch);
+    uint32_t current_offset = 0;
+    const int32_t* sequence_lengths_ptr = sequence_lengths_arr.data<int32_t>();
+
+    for (uint32_t b_idx = 0; b_idx < num_sequences_in_batch; ++b_idx) {
+        query_starts_cpu[b_idx] = current_offset;
+        if (b_idx < sequence_lengths_arr.size()) { // Safety check
+             current_offset += static_cast<uint32_t>(std::max(0, sequence_lengths_ptr[b_idx]));
+        }
+    }
+
+    return mx::array(query_starts_cpu.data(), {static_cast<int>(num_sequences_in_batch)}, mx::uint32);
+}
+
 // Paged attention specific validator
 class PagedAttentionValidator : public kernel_utils::KernelValidator {
 public:
@@ -526,7 +549,8 @@ void PagedAttentionPrimitive::_eval_gpu_prefill(const std::vector<mx::array>& in
         N_q_per_kv = std::max(1u, core_dims.num_q_heads / core_dims.num_kv_heads);
     }
 
-    uint32_t desired_threads_per_tg = actual_simd_width * N_q_per_kv;
+    constexpr uint32_t K_FACTOR = 8; // hand tuned; 4-8 seems to be the sweet spot
+    uint32_t desired_threads_per_tg = actual_simd_width * N_q_per_kv * K_FACTOR;
     uint32_t max_threads_device = kernel_state->maxTotalThreadsPerThreadgroup();
     uint32_t final_threads_per_tg = std::min(desired_threads_per_tg, max_threads_device);
     final_threads_per_tg = ((final_threads_per_tg + actual_simd_width - 1) / actual_simd_width) * actual_simd_width;
@@ -591,6 +615,13 @@ void PagedAttentionPrimitive::_eval_gpu_prefill(const std::vector<mx::array>& in
         return; // Exit _eval_gpu_prefill early
     }
 
+    mx::array query_starts_buffer = create_query_starts_buffer(
+        params.num_sequences_in_batch,
+        inputs[4],
+        s
+    );
+    spdlog::debug("[PAL Prefill Debug] query_starts_buffer created. Shape: [{}]", query_starts_buffer.shape(0));
+
     // Before allocating intermediate arrays
     spdlog::debug("[PAL Prefill Debug] Allocating intermediate arrays with: query_token_count_total={}, num_q_heads={}, num_active_batch_logical_pages={}",
                   params.query_token_count_total, params.num_q_heads, params.num_active_batch_logical_pages);
@@ -644,10 +675,11 @@ void PagedAttentionPrimitive::_eval_gpu_prefill(const std::vector<mx::array>& in
     compute_encoder.set_bytes(&params, sizeof(PagedAttentionParams), 7);
     // Set active work items buffer
     compute_encoder.set_input_array(work_items_buffer, 8);
+    compute_encoder.set_input_array(query_starts_buffer, 9);
     // Set intermediate outputs for prefill Pass 1
-    compute_encoder.set_output_array(m_locals_pass1_out_arr, 9);
-    compute_encoder.set_output_array(s_locals_pass1_out_arr, 10);
-    compute_encoder.set_output_array(o_partials_pass1_out_arr, 11);
+    compute_encoder.set_output_array(m_locals_pass1_out_arr, 10);
+    compute_encoder.set_output_array(s_locals_pass1_out_arr, 11);
+    compute_encoder.set_output_array(o_partials_pass1_out_arr, 12);
 
     // Dispatch kernel
     spdlog::debug("[PAL Prefill Debug] Dispatching Pass 1kernel with threads_per_group = {}", final_threads_per_tg);
