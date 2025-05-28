@@ -549,7 +549,7 @@ void PagedAttentionPrimitive::_eval_gpu_prefill(const std::vector<mx::array>& in
         N_q_per_kv = std::max(1u, core_dims.num_q_heads / core_dims.num_kv_heads);
     }
 
-    constexpr uint32_t K_FACTOR = 8; // hand tuned; 4-8 seems to be the sweet spot
+    constexpr uint32_t K_FACTOR = 6; // hand tuned; 4-8 seems to be the sweet spot
     uint32_t desired_threads_per_tg = actual_simd_width * N_q_per_kv * K_FACTOR;
     uint32_t max_threads_device = kernel_state->maxTotalThreadsPerThreadgroup();
     uint32_t final_threads_per_tg = std::min(desired_threads_per_tg, max_threads_device);
