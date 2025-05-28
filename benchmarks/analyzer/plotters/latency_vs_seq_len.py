@@ -219,12 +219,12 @@ def plot(df: pd.DataFrame, output_dir: Path, styles: dict[str, str | float] | No
             if result is not None:
                 slope, intercept = result
                 label = source_style["label"].replace(r"$\mathbf{", "").replace(r"}$", "").replace("\\", "")
-                logger.info(f"Prefill {label}: slope = {slope:.2f} (O(n^{slope:.1f}))")
+                logger.info(f"Prefill {label}: slope = {slope:.2f} (O(n^{slope:.2f}))")
 
                 ax_prefill.text(
                     x_data[-1] * 0.97,
                     y_data[-1] * 1.03,
-                    f"Slope ≈ {slope:.1f}",
+                    f"Slope ≈ {slope:.2f}",
                     color="red",
                     fontsize=10,
                     fontweight="bold",
@@ -319,12 +319,12 @@ def plot(df: pd.DataFrame, output_dir: Path, styles: dict[str, str | float] | No
             if result is not None:
                 slope, intercept = result
                 label = source_style["label"].replace(r"$\mathbf{", "").replace(r"}$", "").replace("\\", "")
-                logger.info(f"Decode {label}: slope = {slope:.2f} (O(n^{slope:.1f}))")
+                logger.info(f"Decode {label}: slope = {slope:.2f} (O(n^{slope:.2f}))")
 
                 ax_decode.text(
                     x_data[-2] * 0.92,
                     y_data[-2] * 1.05,
-                    f"Slope ≈ {slope:.1f}",
+                    f"Slope ≈ {slope:.2f}",
                     color="red",
                     fontsize=10,
                     fontweight="bold",
