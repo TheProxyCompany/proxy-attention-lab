@@ -222,8 +222,8 @@ def plot(df: pd.DataFrame, output_dir: Path, styles: dict[str, str | float] | No
                 logger.info(f"Prefill {label}: slope = {slope:.2f} (O(n^{slope:.1f}))")
 
                 ax_prefill.text(
-                    x_data[-2] * 0.92,
-                    y_data[-2] * 1.05,
+                    x_data[-1] * 0.97,
+                    y_data[-1] * 1.03,
                     f"Slope ≈ {slope:.1f}",
                     color="red",
                     fontsize=10,

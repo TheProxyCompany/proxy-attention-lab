@@ -266,10 +266,11 @@ static inline float dot_product_qk(
 ) {
     float score = 0.0f;
     // The helper assumes it's always called for a full head_dim that's a multiple of 4.
-    for(uint d = 0; d < kernel_params.head_dim; d += 4) {
-        float4 qv = *((threadgroup const float4*)(q_vec_shmem_param + d));
+    // for(uint d = 0; d < kernel_params.head_dim; d += 4) {
+    if (kernel_params.head_dim > 0) {
+        float4 qv = *((threadgroup const float4*)(q_vec_shmem_param + 0));
         // Convert from half4 to float4 on-the-fly
-        float4 kv = float4(*((threadgroup const half4*)(k_vec_tile_entry_param + d)));
+        float4 kv = float4(*((threadgroup const half4*)(k_vec_tile_entry_param + 0)));
         score += dot(qv, kv);
     }
     return score;
