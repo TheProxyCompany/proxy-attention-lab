@@ -199,7 +199,7 @@ uint32_t calculate_symmetric_tile_depth(
 size_t calculate_per_gqa_group_compute_scratch(
     uint32_t head_dimension,
     uint32_t number_of_query_heads_per_kv_group,
-    uint32_t final_threads_per_tg
+    uint32_t threads_per_group
 );
 
 

@@ -757,10 +757,12 @@ void PagedAttentionPrimitive::print(std::ostream& os) {
        << ", is_prefill=" << (is_prefill_ ? "true" : "false") << ")";
 }
 
+constexpr uint32_t K_FACTOR = 6; // hand tuned; 4-8 seems to be the sweet spot
+
 size_t calculate_per_gqa_group_compute_scratch(
     uint32_t head_dimension,
     uint32_t number_of_query_heads_per_kv_group,
-    uint32_t final_threads_per_tg
+    uint32_t threads_per_group
 ) {
     size_t per_gqa_group_compute_scratch = 0;
 
@@ -773,7 +775,7 @@ size_t calculate_per_gqa_group_compute_scratch(
     per_gqa_group_compute_scratch = kernel_utils::AttentionMemoryLayout::align_size(per_gqa_group_compute_scratch);
 
     // Component 3: General TG-wide reduction scratch
-    per_gqa_group_compute_scratch += final_threads_per_tg * sizeof(float);
+    per_gqa_group_compute_scratch += threads_per_group * sizeof(float);
     per_gqa_group_compute_scratch = kernel_utils::AttentionMemoryLayout::align_size(per_gqa_group_compute_scratch);
 
     // Component 4: Small constant safety/alignment buffer

@@ -135,12 +135,15 @@ static void BM_PAL_LatencyVsSeqLen(benchmark::State& state) {
     mx::Dtype dtype = params.dtype;
 
     uint32_t N_q_per_kv = std::max(1, num_q_heads / num_kv_heads);
-    const int threads_per_tg_for_scratch_calc = SIMD_WIDTH * N_q_per_kv;
+    constexpr uint32_t K_FACTOR = 6; // hand tuned; 4-8 seems to be the sweet spot
+    uint32_t threads_per_group = SIMD_WIDTH * N_q_per_kv * K_FACTOR;
+    uint32_t final_threads_per_tg = std::min(threads_per_group, static_cast<uint32_t>(1024));
+    final_threads_per_tg = ((final_threads_per_tg + SIMD_WIDTH - 1) / SIMD_WIDTH) * SIMD_WIDTH;
 
     size_t per_gqa_group_compute_scratch = pal::cpp::calculate_per_gqa_group_compute_scratch(
         head_dim,
         N_q_per_kv,
-        threads_per_tg_for_scratch_calc
+        final_threads_per_tg
     );
 
     uint32_t D_s = pal::cpp::calculate_symmetric_tile_depth(
