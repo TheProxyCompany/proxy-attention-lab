@@ -378,8 +378,7 @@ void PagedAttentionPrimitive::dispatch_prefill_pass2(
     grid.depth = 1;
 
     // Calculate thread configuration
-    auto thread_config = metal::MetalDispatcher::calculate_optimal_threads(
-        kernel_state, 64);
+    auto thread_config = metal::MetalDispatcher::calculate_optimal_threads(kernel_state, 64);
 
     // Calculate Pass 2 memory requirements
     size_t pass2_tg_mem_bytes = 0;

@@ -263,7 +263,9 @@ using namespace metal;
                 // q_vec_ptr is for the current Q this SIMD group is processing.
                 // k_vec_hist_ptr is for the current K from K_tile.
                 // params contains inv_sqrt_head_dim (Q was already scaled during load) and head_dim.
-                float score = dot_product_qk(q_vec_ptr, k_vec_hist_ptr, params);
+
+                // float score = dot_product_qk(q_vec_ptr, k_vec_hist_ptr, params);
+                float score = 1.0f; // for pass 2 development
 
                 // F.3.d. Online Softmax Update
                 float old_page_max_score_val = page_max_score;
@@ -476,4 +478,40 @@ using namespace metal;
 // This iterative approach (implement, benchmark, verify correctness, then optimize) is key.
 // The current high latency and S^1.70 scaling are understood in context of the work being done
 // and the current data flow for Qs.
+// =================================================================================================
+
+//
+// VI. ADDENDUM (2025-05-29): Impact of QK^T Compute on Performance
+//    - Experiment: To isolate the cost of the F.3.c `dot_product_qk` calls, an experiment
+//      was run where the actual dot product was commented out and `score` was set to a
+//      constant `1.0f`
+//      All other logic (online softmax F.3.d, V-aggregation F.3.e, writes F.4) remained.
+//
+//    - Benchmark Results (`score = 1.0f` vs. full `dot_product_qk`):
+//        - Full `dot_product_qk` (4096 tokens): ~830 ms, Log-log slope ~1.70
+//        - `score = 1.0f` (4096 tokens): ~87 ms, Log-log slope ~1.26
+//
+//    - Key Insights from this Experiment:
+//        1. Absolute Latency: The `dot_product_qk` computation (iterated D_s times per Q
+//           processed by a SIMD group) is a very significant contributor to the kernel's
+//           absolute latency ("y-intercept" of the performance curve).
+//        2. Scaling Slope: The heavy compute of `dot_product_qk` also negatively impacted
+//           the overall latency scaling with sequence length, pushing it from ~S^1.26
+//           (when compute is minimal) towards ~S^1.70. This suggests that while the
+//           underlying S^2 global Q-read traffic is likely responsible for the > S^1.0
+//           scaling, the intense per-QK compute was exacerbating this, possibly by
+//           saturating other hardware resources more quickly.
+//        3. Path for Optimization: Optimizing the QK^T score computation (i.e., the
+//           interaction of one Q-vector with the D_s K-vectors in K_tile by its
+//           assigned SIMD group) is a critical path for improving Pass 1 performance.
+//           Techniques like K-micro-tiling will be explored after end-to-end correctness
+//           with Pass 2 is established.
+//
+//    - Current State for Pass 2 Development:
+//        - For initial development and debugging of Pass 2, Pass 1 will be used with the
+//          `score = 1.0f` (and correct masking) modification to ensure faster iteration
+//          cycles and simpler intermediate values.
+//        - The full `dot_product_qk` will be reinstated in Pass 1 for final numerical
+//          correctness testing of the complete two-pass system and subsequent performance
+//          tuning of Pass 1 compute.
 // =================================================================================================
