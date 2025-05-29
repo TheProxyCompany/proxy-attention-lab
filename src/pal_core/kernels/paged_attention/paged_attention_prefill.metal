@@ -294,12 +294,19 @@ using namespace metal;
                     float rescale_exp_arg = max(old_page_max_score_val - page_max_score, params.log_exp_min_clamp);
                     float actual_scale_factor = precise::exp(rescale_exp_arg);
 
-                    page_sum_exp_norm_by_page_max *= actual_scale_factor;
-                    kahan_c_for_sum_exp *= actual_scale_factor; // Rescale Kahan compensation term
+                    // check if we need to rescale
+                    if (fabs(actual_scale_factor - 1.0f) > 1e-6f) {
+                        page_sum_exp_norm_by_page_max *= actual_scale_factor;
+                        kahan_c_for_sum_exp *= actual_scale_factor; // Rescale Kahan compensation term
 
-                    // Rescale the existing sum and its Kahan compensator.
-                    for (uint h_rescale_idx = 0; h_rescale_idx < params.head_dim; h_rescale_idx += 4) {
-                        *((threadgroup float4*)(v_sum_accumulator_ptr + h_rescale_idx)) *= actual_scale_factor;
+                        // Rescale the existing sum and its Kahan compensator.
+                        for (uint h_rescale_idx = simd_lane_id;
+                            h_rescale_idx < params.head_dim / 4;
+                            h_rescale_idx += actual_simd_width)
+                        {
+                            uint d = h_rescale_idx * 4;
+                            *((threadgroup float4*)(v_sum_accumulator_ptr + d)) *= actual_scale_factor;
+                        }
                     }
                 }
 
@@ -351,31 +358,32 @@ using namespace metal;
             } // end of k_idx_in_tile loop
 
             // F.4. Write results for this (master_query_idx, target_global_q_head_idx, flat_work_item_idx)
-            if (simd_lane_id == 0) {
+             if (simd_lane_id == 0) { // Only lane 0 writes the scalar M and S values
                 ulong ms_base_offset = (ulong)master_query_idx * params.num_q_heads * params.num_active_batch_logical_pages +
                                        (ulong)target_global_q_head_idx * params.num_active_batch_logical_pages;
                 ulong ms_flat_output_idx = ms_base_offset + flat_work_item_idx;
 
                 m_locals_pass1_out[ms_flat_output_idx] = page_max_score;
                 s_locals_pass1_out[ms_flat_output_idx] = page_sum_exp_norm_by_page_max;
-
-                ulong o_base_offset = (ulong)master_query_idx * params.num_q_heads * params.num_active_batch_logical_pages * params.head_dim +
-                                      (ulong)target_global_q_head_idx * params.num_active_batch_logical_pages * params.head_dim +
-                                      (ulong)flat_work_item_idx * params.head_dim;
-
-                device half* o_dest_ptr = o_partials_pass1_out + o_base_offset;
-
-                // Each lane handles a float4 chunk
-                for (uint h_chunk_idx = simd_lane_id;
-                    h_chunk_idx < (params.head_dim / 4);
-                    h_chunk_idx += actual_simd_width) {
-
-                    uint h_dim_offset = h_chunk_idx * 4;
-                    float4 val_f4 = *((threadgroup float4*)(v_sum_accumulator_ptr + h_dim_offset));
-                    *((device half4*)(o_dest_ptr + h_dim_offset)) = half4(val_f4);
-                }
             }
-        }
+
+            ulong o_base_offset = (ulong)master_query_idx * params.num_q_heads * params.num_active_batch_logical_pages * params.head_dim +
+                                    (ulong)target_global_q_head_idx * params.num_active_batch_logical_pages * params.head_dim +
+                                    (ulong)flat_work_item_idx * params.head_dim;
+
+            device half* o_dest_ptr = o_partials_pass1_out + o_base_offset;
+
+            // Each lane handles a float4 chunk
+            for (uint h_chunk_idx = simd_lane_id;
+                h_chunk_idx < (params.head_dim / 4);
+                h_chunk_idx += actual_simd_width) {
+
+                uint h_dim_offset = h_chunk_idx * 4;
+                float4 val_f4 = *((threadgroup float4*)(v_sum_accumulator_ptr + h_dim_offset));
+                *((device half4*)(o_dest_ptr + h_dim_offset)) = half4(val_f4);
+            }
+            // all lanes finished their chunk
+        } // end of k_idx_in_tile loop
     } // end of q_block_start_local_idx loop
 } // End of kernel
 
