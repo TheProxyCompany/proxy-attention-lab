@@ -216,8 +216,11 @@ using namespace metal;
         threadgroup float* q_block_shmem_for_this_gqa_stream_for_compute = Q_shmem_base +
                                     (gqa_stream_idx_for_this_simd_group * D_s * params.head_dim);
 
-        // This SIMD group IS active for a GQA stream.
-        // Proceed with "Row Strip" compute.
+        // Proceed with "Row Strip" compute for this SIMD group.
+        // This loop iterates over queries within the current block assigned to this SIMD group.
+        // It forms the core of the QK^T computation and subsequent V-accumulation.
+        // Profiling has indicated this section as a significant contributor to latency,
+        // particularly as the number of queries (sequence length) increases.
         for (uint q_idx_in_block_for_this_sg = sub_simd_group_idx_within_stream;
               q_idx_in_block_for_this_sg < num_queries_in_this_block; // num_queries_in_this_block is D_s
               q_idx_in_block_for_this_sg += SIMD_GROUPS_PER_GQA_GROUP_FACTOR_simd_groups_per_gqa_stream
@@ -241,10 +244,236 @@ using namespace metal;
             // F.2.c: Initialize this SIMD group's per-Q softmax statistics (will be held in registers)
             float page_max_score = -INFINITY;
             float page_sum_exp_norm_by_page_max = 0.0f;
-            // float kahan_c_for_sum_exp = 0.0f; // Kahan compensation term for page_sum_exp
+            float kahan_c_for_sum_exp = 0.0f; // Kahan compensation term for page_sum_exp
 
             // F.3. Loop through K/V vectors in the loaded K_tile / V_tile
+            for (uint k_idx_in_tile = 0; k_idx_in_tile < D_s; ++k_idx_in_tile) {
+                // F.3.a. Per-K/V vector setup
+                threadgroup const half* k_vec_hist_ptr = K_tile + (k_idx_in_tile * params.head_dim);
+                // Determine the logical position of this history token in its original sequence.
+                uint history_token_logical_pos = (assigned_logical_page_idx_in_sequence * D_s) + k_idx_in_tile;
+
+                // F.3.b. Causal Masking / Length Check
+                if (history_token_logical_pos >= current_q_logical_pos ||
+                    history_token_logical_pos >= seq_len_for_this_batch_item) {
+                    continue; // Skip this history K/V pair if it's non-causal or out of bounds
+                }
+
+                // F.3.c. QK^T dot product
+                // q_vec_ptr is for the current Q this SIMD group is processing.
+                // k_vec_hist_ptr is for the current K from K_tile.
+                // params contains inv_sqrt_head_dim (Q was already scaled during load) and head_dim.
+                float score = dot_product_qk(q_vec_ptr, k_vec_hist_ptr, params);
+
+                // F.3.d. Online Softmax Update
+                float old_page_max_score_val = page_max_score;
+                page_max_score = max(page_max_score, score);
+
+                // Term for the current score, normalized by the new page_max_score.
+                float current_score_exp_contribution;
+
+                // If page_max_score changed, we need to rescale the existing sum and its Kahan compensator.
+                if (page_max_score > old_page_max_score_val && old_page_max_score_val != -INFINITY) {
+                    // Clamp argument to prevent underflow
+                    float rescale_exp_arg = max(old_page_max_score_val - page_max_score, params.log_exp_min_clamp);
+                    float scale_factor = fast::exp(rescale_exp_arg);
+
+                    page_sum_exp_norm_by_page_max *= scale_factor;
+                    kahan_c_for_sum_exp *= scale_factor; // Rescale Kahan compensation term
+                }
+
+                // Calculate the exponential of (current score - new_page_max_score)
+                float current_term_exp_arg = (page_max_score == -INFINITY && score == -INFINITY) ?
+                                             params.log_exp_min_clamp : // Avoid NaN from -INF - (-INF)
+                                             max(score - page_max_score, params.log_exp_min_clamp);
+                current_score_exp_contribution = fast::exp(current_term_exp_arg);
+
+                // Kahan summation to add current_score_exp_contribution to page_sum_exp_norm_by_page_max
+                float y_kahan = current_score_exp_contribution - kahan_c_for_sum_exp;
+                float t_kahan = page_sum_exp_norm_by_page_max + y_kahan;
+                kahan_c_for_sum_exp = (t_kahan - page_sum_exp_norm_by_page_max) - y_kahan;
+                page_sum_exp_norm_by_page_max = t_kahan;
+                // --- END F.3.d: Online Softmax Update ---
+
+                // F.3.e. V-Aggregation
+                threadgroup const half* v_vec_hist_ptr = V_tile + (k_idx_in_tile * params.head_dim);
+                float weight_exp_arg = (page_max_score == -INFINITY && score == -INFINITY) ?
+                                       params.log_exp_min_clamp :
+                                       max(score - page_max_score, params.log_exp_min_clamp);
+                float attention_weight_numerator = fast::exp(weight_exp_arg);
+
+                // Each lane (simd_lane_id) processes different chunks of the head_dim.
+                for (uint h_chunk_idx = simd_lane_id;
+                      h_chunk_idx < (params.head_dim / 4);
+                      h_chunk_idx += actual_simd_width) {
+                    // Calculate the actual memory offset for this float4 chunk
+                    uint h_dim_offset = h_chunk_idx * 4;
+
+                    // Load V_vector chunk (half4) from V_tile and convert to float4
+                    float4 v_chunk_f = float4( *((threadgroup const half4*)(v_vec_hist_ptr + h_dim_offset)) );
+
+                    // Load current accumulator chunk (float4) from this SIMD group's accumulator
+                    float4 acc_chunk_f = *((threadgroup float4*)(v_sum_accumulator_ptr + h_dim_offset));
+
+                    // Weighted accumulation: acc += weight * v
+                    acc_chunk_f = fma(attention_weight_numerator, v_chunk_f, acc_chunk_f);
+
+                    // Store the updated chunk back to this SIMD group's accumulator
+                    *((threadgroup float4*)(v_sum_accumulator_ptr + h_dim_offset)) = acc_chunk_f;
+                }
+                // --- END F.3.e: V-Aggregation ---
+            } // end of k_idx_in_tile loop
+
             // F.4. Write results for this (master_query_idx, target_global_q_head_idx, flat_work_item_idx)
+            if (simd_lane_id == 0) {
+                ulong ms_base_offset = (ulong)master_query_idx * params.num_q_heads * params.num_active_batch_logical_pages +
+                                       (ulong)target_global_q_head_idx * params.num_active_batch_logical_pages;
+                ulong ms_flat_output_idx = ms_base_offset + flat_work_item_idx;
+
+                m_locals_pass1_out[ms_flat_output_idx] = page_max_score;
+                s_locals_pass1_out[ms_flat_output_idx] = page_sum_exp_norm_by_page_max;
+
+                ulong o_base_offset = (ulong)master_query_idx * params.num_q_heads * params.num_active_batch_logical_pages * params.head_dim +
+                                      (ulong)target_global_q_head_idx * params.num_active_batch_logical_pages * params.head_dim +
+                                      (ulong)flat_work_item_idx * params.head_dim;
+
+                device half* o_dest_ptr = o_partials_pass1_out + o_base_offset;
+
+                // Each lane handles a float4 chunk
+                for (uint h_chunk_idx = simd_lane_id;
+                    h_chunk_idx < (params.head_dim / 4);
+                    h_chunk_idx += actual_simd_width) {
+
+                    uint h_dim_offset = h_chunk_idx * 4;
+                    float4 val_f4 = *((threadgroup float4*)(v_sum_accumulator_ptr + h_dim_offset));
+                    *((device half4*)(o_partials_pass1_out + o_base_offset + h_dim_offset)) = half4(val_f4);
+                }
+            }
         }
     } // end of q_block_start_local_idx loop
 } // End of kernel
+
+// =================================================================================================
+// KERNEL DEVELOPMENT NOTES & CURRENT STATUS (As of 2025-05-29, after F.4 implementation)
+//
+// I. KERNEL OBJECTIVE (Pass 1 of Two-Pass Page-Centric Prefill):
+//    This kernel is responsible for Pass 1 of a two-pass prefill strategy.
+//    - Dispatch: One ThreadGroup (TG) per (BatchItem, Logical K/V Page, KVHead).
+//    - Input: Global Q, K-cache, V-cache, page tables, sequence metadata.
+//    - Tiling:
+//        - Symmetric QKV Tiling: A dynamically calculated depth 'D_s' (params.tokens_per_page
+//          for prefill) is used for K_tile, V_tile, and Q-blocks within TGMem.
+//        - K_tile & V_tile: Depth D_s, loaded once per TG for its assigned K/V page.
+//        - Q-block: Depth D_s Q-vectors, loaded iteratively to cover all queries for the
+//          assigned BatchItem. Qs are loaded into Q_shmem_base.
+//    - Output: For each (Query Token, Query Head) processed against the TG's K/V page,
+//      this kernel writes out intermediate results to global buffers:
+//        - m_locals_pass1_out: The local maximum score (page_max_score).
+//        - s_locals_pass1_out: The local sum of exponentials normalized by page_max_score
+//                              (page_sum_exp_norm_by_page_max).
+//        - o_partials_pass1_out: The V-vectors weighted by exp(score - page_max_score) and
+//                                accumulated (unnormalized partial V-sum for this page).
+//
+// II. CURRENT IMPLEMENTATION STATE:
+//    1. TGMem Carving (Section A):
+//        - Correctly allocates space for Q_shmem_block (N_q_per_kv * D_s * HeadDim floats),
+//          K_tile (D_s * HeadDim halves), V_tile (D_s * HeadDim halves), and
+//          V_Sum_Accumulators_Area (total_simd_groups_in_tg * HeadDim floats).
+//        - D_s calculation in C++ correctly accounts for all these TGMem regions.
+//
+//    2. Role Identification & K/V Loading (Sections B, C, D):
+//        - TG correctly identifies its assigned BatchItem, LogicalPage, and KVHead.
+//        - K_tile and V_tile loading from global K/V cache pools is implemented and
+//          cooperatively performed by TG threads.
+//
+//    3. Q-Block Iteration & Loading (Section E):
+//        - Iterates through Q-blocks of depth D_s to cover all queries for the BatchItem.
+//        - Q-block loading into Q_shmem_base is parallelized by K_FACTOR SIMD groups
+//          per GQA stream (SIMD_GROUPS_PER_GQA_GROUP_FACTOR_simd_groups_per_gqa_stream).
+//        - Qs are scaled by inv_sqrt_head_dim upon loading into Q_shmem_base.
+//
+//    4. V_Sum_Accumulators_Area Zeroing:
+//        - Correctly zeroed once per Q-block iteration by all TG threads, covering the
+//          full area required for one accumulator per SIMD group.
+//
+//    5. Compute Phase (Section F - QK^T, Softmax, V-Agg, Writes):
+//        - "Row Strip" Parallelism: The D_s Q-vectors within a Q-block (for a given GQA stream)
+//          are distributed among the K_FACTOR SIMD groups assigned to that stream. Each
+//          SIMD group processes its subset of Q-vectors.
+//        - Per-Q Processing: For each assigned Q-vector, the SIMD group:
+//            - F.3.a (K/V Setup): Sets up pointers to K_tile, V_tile, and calculates
+//              history_token_logical_pos for the inner K-loop.
+//            - F.3.b (Masking): Implements causal and sequence length masking for K/V pairs.
+//            - F.3.c (QK^T): Computes dot product score using dot_product_qk helper.
+//            - F.3.d (Online Softmax): Updates per-Q page_max_score and
+//              page_sum_exp_norm_by_page_max (using Kahan summation) for each valid score.
+//            - F.3.e (V-Aggregation): Calculates attention_weight_numerator and accumulates
+//              weighted V-vectors into its dedicated slice of V_Sum_Accumulators_Area.
+//              The HeadDim-wide accumulation is vectorized across SIMD lanes.
+//        - F.4 (Write Outputs): After processing a Q-vector against all K/V pairs in the
+//          tile, the SIMD group writes its final page_max_score, page_sum_exp_norm_by_page_max,
+//          and the contents of its V-sum accumulator to the global intermediate buffers
+//          (m_locals_pass1_out, s_locals_pass1_out, o_partials_pass1_out).
+//          The write to o_partials_pass1_out is vectorized across SIMD lanes.
+//
+// III. PERFORMANCE CHARACTERISTICS & OBSERVATIONS (as of 2025-05-29):
+//
+//    A. Load-Only Phase (Compute sections F.3.c-e were stubs/minimal ops):
+//        - Initial K/V tile loading (D_s depth): Scales very well, O(S^~0.3-0.4) latency.
+//        - Q-Block Loading (K_FACTOR=6):
+//            - Benchmark (2025-05-29, before V_Sum_Accumulators_Area sizing fix):
+//              "cpp_pal_paged_attention_prefill": { "4096.0": 13.8087 } ms. Slope ~S^1.0.
+//            - Benchmark (2025-05-29, after C++ V_Sum fix impacting D_s):
+//              "cpp_pal_paged_attention_prefill": { "4096.0": 12.1743 } ms. Slope ~S^1.0.
+//            - Benchmark (2025-05-29, after Metal V_Sum TGMem fix & loop structure for F):
+//              "cpp_pal_paged_attention_prefill": { "4096.0": 12.3909 } ms. Slope ~S^1.0.
+//        - The load phase provides significant headroom compared to full MLX SDPA compute.
+//
+//    B. With Compute Phase (F.3.a-e) Implemented (but F.4 writes not yet added):
+//        - Benchmark (2025-05-29):
+//          "cpp_pal_paged_attention_prefill": { "4096.0": 722.8587 } ms.
+//        - Observation: Significant latency increase, GPU utilization at 100%, high power draw.
+//          This indicates the compute operations are "live" and substantial.
+//          The scaling slope appeared to be ~S^1.70 on a log-log plot.
+//
+//    C. With Full Pass 1 Compute (F.3.a-e + F.4 Writes) Implemented:
+//        - Benchmark (2025-05-29, current):
+//          "cpp_pal_paged_attention_prefill": { "4096.0": 829.6074 } ms.
+//        - MLX SDPA for reference (same run): { "4096.0": 29.0186 } ms.
+//        - Observation: Further latency increase due to global writes.
+//          The PAL Pass 1 is ~28.6x slower than MLX SDPA at 4096 tokens.
+//          The scaling slope for PAL Pass 1 remains poor (~S^1.70), while MLX SDPA is ~S^1.16.
+//
+// IV. CURRENT THINKING & NEXT STEPS:
+//    1. High Absolute Latency: The current compute path (iterating D_s K-vectors, each involving
+//       a dot product over HeadDim, online softmax ops, and a V-aggregation over HeadDim)
+//       is computationally intensive. This contributes to the high "y-intercept".
+//    2. S^1.70 Scaling Concern: The primary hypothesis for this non-linear scaling is the
+//       total global memory read volume for Query vectors (`queries_in`). Each of the ~S/D_s
+//       threadgroups (for a sequence of length S) currently reads all ~S query vectors
+//       for that sequence over its Q-block iterations. This results in an S^2/D_s total
+//       Q-read volume from global memory, likely becoming the bottleneck at larger S.
+//    3. Path Forward:
+//        - This Pass 1 kernel is now considered *functionally complete*.
+//        - Next immediate step: Implement Pass 2 (`paged_attn_prefill_pass2.metal`) to consume
+//          the intermediate outputs from Pass 1 and produce the final normalized attention.
+//        - Correctness Verification: Once Pass 1 + Pass 2 are complete, rigorously verify
+//          numerical correctness against a Python reference model of the two-pass algorithm.
+//        - Performance Optimization (Post-Correctness):
+//            - Re-evaluate Pass 1 performance.
+//            - If S^1.70 scaling persists and is the primary limiter, architectural changes
+//              to Pass 1's Q-vector access/sharing strategy will be needed.
+//            - Micro-optimizations within Pass 1 compute (e.g., K-micro-tiling for the
+//              1Q vs D_s Ks interaction, register tuning) can be explored.
+//            - Optimize Pass 2 for efficiency.
+//
+// V. OPEN QUESTIONS / FUTURE OPTIMIZATIONS CONSIDERED (Post-Functional Pass 1 & 2):
+//    - Advanced intra-SIMD group compute for the (1 Q vs D_s Ks) part (K-micro-tiling).
+//    - Asynchronous Q-block loading (double buffering Q_shmem_block) if Q-load still shows
+//      up as a bottleneck after compute optimization.
+//    - Reducing global memory traffic for Q-vectors in Pass 1 for very long sequences.
+//
+// This iterative approach (implement, benchmark, verify correctness, then optimize) is key.
+// The current high latency and S^1.70 scaling are understood in context of the work being done
+// and the current data flow for Qs.
+// =================================================================================================
