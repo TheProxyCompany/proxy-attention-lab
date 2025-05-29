@@ -264,8 +264,8 @@ using namespace metal;
                 // k_vec_hist_ptr is for the current K from K_tile.
                 // params contains inv_sqrt_head_dim (Q was already scaled during load) and head_dim.
 
-                // float score = dot_product_qk(q_vec_ptr, k_vec_hist_ptr, params);
-                float score = 1.0f; // for pass 2 development
+                float score = dot_product_qk(q_vec_ptr, k_vec_hist_ptr, params);
+                // float score = 1.0f; // comment to skip main compute
 
                 // F.3.d. Online Softmax Update
                 float old_page_max_score_val = page_max_score;
@@ -278,16 +278,19 @@ using namespace metal;
                 if (page_max_score > old_page_max_score_val && old_page_max_score_val != -INFINITY) {
                     // Clamp argument to prevent underflow
                     float rescale_exp_arg = max(old_page_max_score_val - page_max_score, params.log_exp_min_clamp);
-                    float scale_factor = fast::exp(rescale_exp_arg);
+                    float actual_scale_factor = fast::exp(rescale_exp_arg);
 
-                    page_sum_exp_norm_by_page_max *= scale_factor;
-                    kahan_c_for_sum_exp *= scale_factor; // Rescale Kahan compensation term
+                    page_sum_exp_norm_by_page_max *= actual_scale_factor;
+                    kahan_c_for_sum_exp *= actual_scale_factor; // Rescale Kahan compensation term
+
+                    // Rescale the existing sum and its Kahan compensator.
+                    for (uint h_rescale_idx = 0; h_rescale_idx < params.head_dim; h_rescale_idx += 4) {
+                        *((threadgroup float4*)(v_sum_accumulator_ptr + h_rescale_idx)) *= actual_scale_factor;
+                    }
                 }
 
                 // Calculate the exponential of (current score - new_page_max_score)
-                float current_term_exp_arg = (page_max_score == -INFINITY && score == -INFINITY) ?
-                                             params.log_exp_min_clamp : // Avoid NaN from -INF - (-INF)
-                                             max(score - page_max_score, params.log_exp_min_clamp);
+                float current_term_exp_arg = max(score - page_max_score, params.log_exp_min_clamp);
                 current_score_exp_contribution = fast::exp(current_term_exp_arg);
 
                 // Kahan summation to add current_score_exp_contribution to page_sum_exp_norm_by_page_max
@@ -302,7 +305,11 @@ using namespace metal;
                 float weight_exp_arg = (page_max_score == -INFINITY && score == -INFINITY) ?
                                        params.log_exp_min_clamp :
                                        max(score - page_max_score, params.log_exp_min_clamp);
-                float attention_weight_numerator = fast::exp(weight_exp_arg);
+
+                if (current_score_exp_contribution < kEpsilonForZeroGuard) {
+                    // Skip this V-vector if the current score's exp contribution is effectively zero.
+                    continue;
+                }
 
                 // Each lane (simd_lane_id) processes different chunks of the head_dim.
                 for (uint h_chunk_idx = simd_lane_id;
@@ -314,14 +321,17 @@ using namespace metal;
                     // Load V_vector chunk (half4) from V_tile and convert to float4
                     float4 v_chunk_f = float4( *((threadgroup const half4*)(v_vec_hist_ptr + h_dim_offset)) );
 
-                    // Load current accumulator chunk (float4) from this SIMD group's accumulator
-                    float4 acc_chunk_f = *((threadgroup float4*)(v_sum_accumulator_ptr + h_dim_offset));
+                    // Load current accumulator value
+                    float4 current_acc = *((threadgroup float4*)(v_sum_accumulator_ptr + h_dim_offset));
 
-                    // Weighted accumulation: acc += weight * v
-                    acc_chunk_f = fma(attention_weight_numerator, v_chunk_f, acc_chunk_f);
+                    // Perform FMA and store back
+                    float4 updated_acc;
+                    updated_acc.x = fma(current_score_exp_contribution, v_chunk_f.x, current_acc.x);
+                    updated_acc.y = fma(current_score_exp_contribution, v_chunk_f.y, current_acc.y);
+                    updated_acc.z = fma(current_score_exp_contribution, v_chunk_f.z, current_acc.z);
+                    updated_acc.w = fma(current_score_exp_contribution, v_chunk_f.w, current_acc.w);
 
-                    // Store the updated chunk back to this SIMD group's accumulator
-                    *((threadgroup float4*)(v_sum_accumulator_ptr + h_dim_offset)) = acc_chunk_f;
+                    *((threadgroup float4*)(v_sum_accumulator_ptr + h_dim_offset)) = updated_acc;
                 }
                 // --- END F.3.e: V-Aggregation ---
             } // end of k_idx_in_tile loop
@@ -348,7 +358,7 @@ using namespace metal;
 
                     uint h_dim_offset = h_chunk_idx * 4;
                     float4 val_f4 = *((threadgroup float4*)(v_sum_accumulator_ptr + h_dim_offset));
-                    *((device half4*)(o_partials_pass1_out + o_base_offset + h_dim_offset)) = half4(val_f4);
+                    *((device half4*)(o_dest_ptr + h_dim_offset)) = half4(val_f4);
                 }
             }
         }
@@ -507,11 +517,13 @@ using namespace metal;
 //           Techniques like K-micro-tiling will be explored after end-to-end correctness
 //           with Pass 2 is established.
 //
-//    - Current State for Pass 2 Development:
-//        - For initial development and debugging of Pass 2, Pass 1 will be used with the
-//          `score = 1.0f` (and correct masking) modification to ensure faster iteration
-//          cycles and simpler intermediate values.
-//        - The full `dot_product_qk` will be reinstated in Pass 1 for final numerical
-//          correctness testing of the complete two-pass system and subsequent performance
-//          tuning of Pass 1 compute.
+//    - Current State for Correctness Testing:
+//        - Pass 1 is now using the full `dot_product_qk` for score computation.
+//        - Pass 2 is fully implemented.
+//        - End-to-end numerical correctness testing against a Python reference is underway.
+//        - Current performance (2025-05-29) with full P1 compute + full P2:
+//          "cpp_pal_paged_attention_prefill": { "4096.0": 1001.0590 } ms. Slope ~S^1.64.
+//          This highlights that while the online softmax logic is now more correct,
+//          the QK^T compute cost and underlying S^2 Q-read traffic remain major
+//          performance factors to address after correctness is fully validated.
 // =================================================================================================

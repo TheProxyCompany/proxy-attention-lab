@@ -267,6 +267,75 @@ static void BM_MLX_SDPA_LatencyVsSeqLen(benchmark::State& state) {
     }
 }
 
+// C++ PAL Decode benchmark function
+static void BM_PAL_DecodeLatencyVsHistoryLen(benchmark::State& state) {
+    // Create test parameters from baseline with specified history length
+    BaselineConfig params;
+    params.batch_size = DECODE_BATCH_SIZE;
+    int history_len = state.range(0); // Use the history length from benchmark args
+
+    // Extract params to local variables for clarity
+    int batch_size = params.batch_size;
+    int num_q_heads = params.num_q_heads;
+    int num_kv_heads = params.num_kv_heads;
+    int head_dim = params.head_dim;
+    int tokens_per_page = params.tokens_per_page;
+    mx::Dtype dtype = params.dtype;
+
+    // Setup input tensors for decode scenario
+    int num_tokens = batch_size;  // One token per sequence for decode
+    int num_logical_pages_per_seq = (history_len + tokens_per_page - 1) / tokens_per_page;
+    int num_total_physical_pages = batch_size * num_logical_pages_per_seq;
+
+    // Create query tensor with shape [num_tokens, num_q_heads, head_dim]
+    // For decode, this represents a single new token per sequence
+    mx::array queries = mx::random::normal(
+        {num_tokens, num_q_heads, head_dim},
+        dtype
+    );
+
+    // K/V cache pools sized for the history: [num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim]
+    mx::array k_cache_pool = mx::random::normal(
+        {num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim},
+        dtype
+    );
+    mx::array v_cache_pool = mx::random::normal(
+        {num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim},
+        dtype
+    );
+
+    // Create page table: [num_sequences_in_batch, num_logical_pages_per_seq]
+    mx::array page_table = create_page_table(batch_size, num_logical_pages_per_seq);
+
+    // Set sequence length for each batch item to the history length
+    mx::array sequence_lengths = mx::full({batch_size}, history_len, mx::int32);
+
+    // Create query-to-sequence mapping for decode (just sequence indices)
+    mx::array query_to_seq_map = mx::arange(batch_size, mx::int32);
+
+    // Create query token offsets for decode (position after history)
+    std::vector<int32_t> offset_data(batch_size);
+    for (int i = 0; i < batch_size; ++i) {
+        offset_data[i] = history_len + 1; // Position after history
+    }
+    mx::array query_token_offset = mx::array(offset_data.data(), {batch_size}, mx::int32);
+
+    // Main benchmark loop
+    for (auto _ : state) {
+        mx::array out = pal::cpp::paged_attention(
+            queries,
+            k_cache_pool,
+            v_cache_pool,
+            page_table,
+            sequence_lengths,
+            query_to_seq_map,
+            query_token_offset,
+            false // use decode mode for this benchmark
+        );
+        out.eval();
+    }
+}
+
 // MLX SDPA Decode benchmark function
 static void BM_MLX_SDPA_DecodeLatencyVsHistoryLen(benchmark::State& state) {
     // Create parameters with history length
@@ -343,20 +412,20 @@ BENCHMARK(BM_MLX_SDPA_LatencyVsSeqLen)
    ->Arg(2048)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
    ->Arg(4096)->Repetitions(REPETITIONS)->Iterations(ITERATIONS);
 
-// BENCHMARK(BM_PAL_DecodeLatencyVsHistoryLen)
-//    ->Arg(64)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-//    ->Arg(128)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-//    ->Arg(256)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-//    ->Arg(1024)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-//    ->Arg(2048)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-//    ->Arg(4096)->Iterations(ITERATIONS)->Repetitions(REPETITIONS);
+BENCHMARK(BM_PAL_DecodeLatencyVsHistoryLen)
+   ->Arg(64)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+   ->Arg(128)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+   ->Arg(256)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+   ->Arg(1024)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+   ->Arg(2048)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+   ->Arg(4096)->Iterations(ITERATIONS)->Repetitions(REPETITIONS);
 
-// BENCHMARK(BM_MLX_SDPA_DecodeLatencyVsHistoryLen)
-//    ->Arg(64)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-//    ->Arg(128)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-//    ->Arg(256)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-//    ->Arg(1024)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-//    ->Arg(2048)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-//    ->Arg(4096)->Iterations(ITERATIONS)->Repetitions(REPETITIONS);
+BENCHMARK(BM_MLX_SDPA_DecodeLatencyVsHistoryLen)
+   ->Arg(64)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+   ->Arg(128)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+   ->Arg(256)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+   ->Arg(1024)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+   ->Arg(2048)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+   ->Arg(4096)->Iterations(ITERATIONS)->Repetitions(REPETITIONS);
 
 BENCHMARK_MAIN();

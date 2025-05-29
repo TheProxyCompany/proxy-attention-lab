@@ -167,7 +167,7 @@ using namespace metal;
 
             // If rescale_factor is effectively zero, this page's o_partial won't contribute,
             // so we can skip the expensive HeadDim loop.
-            if (rescale_factor < kEpsilonForZeroGuard) { // kEpsilonForZeroGuard from paged_attention.h.metal
+            if (rescale_factor < kEpsilonForZeroGuard) {
                 continue;
             }
 
@@ -282,4 +282,59 @@ using namespace metal;
 //      or a modified kernel architecture. This is a higher-level strategy beyond the
 //      current kernel implementation details. The current Pass 1/Pass 2 are designed
 //      for a single "prefill" operation over the given `seq_len_for_this_batch_item`.
+// =================================================================================================
+// =================================================================================================
+// KERNEL DEVELOPMENT NOTES & CURRENT STATUS (As of 2025-05-29, Full Pass 2 Implemented)
+// Advisor: K (Jack + K collaboration)
+//
+// I. KERNEL OBJECTIVE (Pass 2 of Two-Pass Page-Centric Prefill):
+//    This kernel consumes the intermediate outputs from Pass 1 (`m_locals_pass1_out`,
+//    `s_locals_pass1_out`, `o_partials_pass1_out`) to produce the final normalized
+//    attention output vector for each (Query Token, Query Head) pair.
+//
+// II. IMPLEMENTATION STATE:
+//    1. Dispatch & TG/Thread Role:
+//        - TG dispatched for a block of (QueryTokens, QHeads) as defined by C++ primitive
+//          (params.pass2_token_block_size, params.pass2_qhead_block_size).
+//        - Each thread iterates over a subset of (QueryToken, QHead) items within the TG's block.
+//    2. M_global Calculation (Step 3 in code):
+//        - For each item, iterates over all active pages from Pass 1, reading `m_pass1_results`
+//          to find the true global maximum score (M_global_for_this_item).
+//    3. S_global Calculation (Step 4 in code):
+//        - For each item, re-iterates over pages, reads `m_pass1_results` & `s_pass1_results`.
+//        - Calculates `s_page_contribution = s_local_p * exp(m_local_p - M_global_for_this_item)`.
+//        - Accumulates into `S_global_for_this_item` using Kahan summation.
+//    4. O_partial Aggregation & Normalization (Step 5 in code):
+//        - Per-thread `O_final_for_this_thread_tg` accumulator (HeadDim floats) in TGMem zeroed.
+//        - Re-iterates over pages, reads `m_pass1_results` & `o_pass1_results`.
+//        - Calculates `rescale_factor = exp(m_local_p - M_global_for_this_item)`.
+//        - Accumulates `rescaled_o_partial = o_partial_p * rescale_factor` into
+//          `O_final_for_this_thread_tg` (HeadDim-wide vector sum).
+//        - Normalizes `O_final_for_this_thread_tg` by dividing by `S_global_for_this_item`.
+//    5. Final Output Write (Step 6 in code):
+//        - Writes the normalized `O_final_for_this_thread_tg` (converted to half) to the
+//          `final_output_buffer` at the correct (Item, HeadDim) location.
+//
+// III. PERFORMANCE OBSERVATIONS (Pass 1 was using `score=1.0f` for these Pass 2 dev steps):
+//    - Cost of M_global calc (vs. empty Pass 2): Minimal.
+//    - Cost of S_global calc (vs. M_global only): Added ~3.77 ms at 4096 tokens.
+//      (e.g., 4096 tokens: from ~87.15 ms to ~90.93 ms).
+//    - Cost of O-Agg & Norm (vs. M+S_global only): Added ~34.5 ms at 4096 tokens.
+//      (e.g., 4096 tokens: from ~90.93 ms to ~125.42 ms). This step reads the largest
+//      intermediate buffer (`o_partials_pass1_out`) and does HeadDim-wide vector math.
+//    - Cost of Final Write (vs. M,S,O-Agg-Norm only): Minimal change.
+//      (e.g., 4096 tokens: from ~125.42 ms to ~123.21 ms - within variance).
+//
+// IV. NEXT STEPS & FUTURE OPTIMIZATIONS:
+//    1. Correctness Verification: Rigorously test numerical output of the full two-pass
+//       system (with actual dot products in Pass 1) against a Python reference.
+//       Address any discrepancies (like the current test failures).
+//    2. Loop Fusion: The three separate loops over `page_idx` (for M, S, and O) in this
+//       kernel are a prime candidate for fusion to reduce redundant global reads of
+//       `m_pass1_results` and loop overhead. This should be done after correctness is confirmed.
+//    3. TG-Wide Parallel Reduction (If needed for page loop): If `params.num_active_batch_logical_pages`
+//       is very large, the current per-thread iteration over all pages might become a bottleneck.
+//       A TG-wide parallel reduction strategy (where threads cooperatively reduce over pages
+//       for a single output item) could be explored. Current C++ TGMem allocation for Pass 2
+//       already provides some scratch space that could support this.
 // =================================================================================================
