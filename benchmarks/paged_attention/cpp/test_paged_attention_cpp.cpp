@@ -139,9 +139,11 @@ static void BM_PAL_LatencyVsSeqLen(benchmark::State& state) {
     uint32_t final_threads_per_tg = std::min(threads_per_group, static_cast<uint32_t>(1024));
     final_threads_per_tg = ((final_threads_per_tg + SIMD_WIDTH - 1) / SIMD_WIDTH) * SIMD_WIDTH;
 
+    uint32_t total_simd_groups_in_tg = final_threads_per_tg / SIMD_WIDTH;
+
     size_t per_gqa_group_compute_scratch = pal::cpp::calculate_per_gqa_group_compute_scratch(
         head_dim,
-        N_q_per_kv,
+        total_simd_groups_in_tg,
         final_threads_per_tg
     );
 

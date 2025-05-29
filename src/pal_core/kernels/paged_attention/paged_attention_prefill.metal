@@ -78,9 +78,10 @@ using namespace metal;
     current_offset += D_s * params.head_dim * sizeof(half);
 
     // V_Sum_Accumulators_Area allocation (depth N_q_per_kv)
+    const uint total_simd_groups_in_tg_metal = tg_dim.x / actual_simd_width;
     current_offset = (current_offset + kAlignmentMask) & ~kAlignmentMask;
     threadgroup float* V_Sum_Accumulators_Area = (threadgroup float*)(tg_mem_base_byte_ptr + current_offset);
-    current_offset += N_q_per_kv * params.head_dim * sizeof(float); // Space for N_q_per_kv accumulators
+    current_offset += total_simd_groups_in_tg_metal * params.head_dim * sizeof(float);
 
     // B. Role Identification
     uint flat_work_item_idx = tg_pos_in_grid.x;
@@ -195,72 +196,55 @@ using namespace metal;
         threadgroup_barrier(mem_flags::mem_threadgroup); // Entire Q-BLOCK is now in Q_shmem_base.
 
         // --- START: Zero V_Sum_Accumulators_Area ONCE PER Q_BLOCK ---
-        uint total_floats_in_v_acc_area = N_q_per_kv * params.head_dim;
-        uint floats_to_zero_per_thread4 = total_floats_in_v_acc_area / 4;
+        uint total_floats_in_v_acc_area = total_simd_groups_in_tg_metal * params.head_dim;
+        uint num_float4s_to_zero = total_floats_in_v_acc_area / 4;
 
         // Vectorized zeroing using float4
         threadgroup float4* v_acc_area_f4_ptr = (threadgroup float4*)V_Sum_Accumulators_Area;
-        for (uint i = local_idx_in_tg; i < floats_to_zero_per_thread4; i += threads_per_tg) {
+        for (uint i = local_idx_in_tg; i < num_float4s_to_zero; i += tg_dim.x) {
             v_acc_area_f4_ptr[i] = float4(0.0f);
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
         // --- END: Zero V_Sum_Accumulators_Area ---
 
         // F. Compute QK^T
-        // Iterate through each query vector within the loaded Q-block
-        for (uint q_idx_in_block = 0; q_idx_in_block < num_queries_in_this_block; ++q_idx_in_block) {
-            if (gqa_stream_idx_for_this_simd_group >= N_q_per_kv) {
-                // This SIMD group is outside of the active GQA stream
-                continue;
-            }
+        if (gqa_stream_idx_for_this_simd_group >= N_q_per_kv) {
+            // This SIMD group is outside of the active GQA stream
+            continue;
+        }
 
+        threadgroup float* q_block_shmem_for_this_gqa_stream_for_compute = Q_shmem_base +
+                                    (gqa_stream_idx_for_this_simd_group * D_s * params.head_dim);
+
+        // This SIMD group IS active for a GQA stream.
+        // Proceed with "Row Strip" compute.
+        for (uint q_idx_in_block_for_this_sg = sub_simd_group_idx_within_stream;
+              q_idx_in_block_for_this_sg < num_queries_in_this_block; // num_queries_in_this_block is D_s
+              q_idx_in_block_for_this_sg += SIMD_GROUPS_PER_GQA_GROUP_FACTOR_simd_groups_per_gqa_stream
+        ) {
             // F.1. Per-Query Setup
-            uint current_query_local_idx = q_block_start_local_idx + q_idx_in_block;
-            uint master_query_idx = query_starts_for_batch_item_arr[assigned_batch_item_idx] + current_query_local_idx;
-            // This is used for causal masking: a query at position P can only attend to keys at positions < P.
+            // F.1.a: Calculate the local index of this query within the original full sequence
+            uint current_query_local_idx_in_sequence = q_block_start_local_idx + q_idx_in_block_for_this_sg;
+            // F.1.b: Calculate the master (global) index for this query across the entire batch.
+            uint master_query_idx = query_starts_for_batch_item_arr[assigned_batch_item_idx] + current_query_local_idx_in_sequence;
+            // F.1.c: Get the logical position (offset) of this query token within its sequence (for causal masking).
             uint current_q_logical_pos = (uint)query_token_offset_in[master_query_idx];
+            // F.1.d: Determine the target global Q head index this SIMD group is working for.
+            uint target_global_q_head_idx = (assigned_global_kv_head_idx * N_q_per_kv) + gqa_stream_idx_for_this_simd_group;
 
-            // F.2.a Per-SIMD-Group Setup
-            uint target_q_head_local_offset_in_gqa_group = gqa_stream_idx_for_this_simd_group; // Already calculated to enter this block
-            uint target_global_q_head_idx = (assigned_global_kv_head_idx * N_q_per_kv) + target_q_head_local_offset_in_gqa_group;
-
-            // Pointer to the current Q-vector in Q_shmem_base for this q_idx_in_block and this SIMD group's GQA stream
-            threadgroup const float* q_vec_ptr = Q_shmem_base +
-                                                    (target_q_head_local_offset_in_gqa_group * D_s * params.head_dim) +
-                                                    (q_idx_in_block * params.head_dim);
-
-            // Initialize accumulator for this Q-instance (query, q_head) processing this KV-page
+            // F.2.a: Get pointer to the current Q-vector in Q_shmem_block.
+            threadgroup const float* q_vec_ptr = q_block_shmem_for_this_gqa_stream_for_compute +
+                                                 (q_idx_in_block_for_this_sg * params.head_dim);
+            // F.2.b: Get pointer to this SIMD group's dedicated V-sum accumulator.
             threadgroup float* v_sum_accumulator_ptr = V_Sum_Accumulators_Area +
-                                           (target_q_head_local_offset_in_gqa_group * params.head_dim);
+                                                       (simd_group_id * params.head_dim);
+            // F.2.c: Initialize this SIMD group's per-Q softmax statistics (will be held in registers)
+            float page_max_score = -INFINITY;
+            float page_sum_exp_norm_by_page_max = 0.0f;
+            // float kahan_c_for_sum_exp = 0.0f; // Kahan compensation term for page_sum_exp
 
             // F.3. Loop through K/V vectors in the loaded K_tile / V_tile
-            for (uint k_idx_in_tile = 0; k_idx_in_tile < D_s; ++k_idx_in_tile) {
-                // F.3.a. Per-K/V vector setup
-                threadgroup const half* k_vec_hist_ptr = K_tile + (k_idx_in_tile * params.head_dim);
-                threadgroup const half* v_vec_hist_ptr = V_tile + (k_idx_in_tile * params.head_dim);
-
-                // Determine the logical position of this history token in its original sequence.
-                uint history_token_logical_pos = (assigned_logical_page_idx_in_sequence * D_s) + k_idx_in_tile;
-
-                // F.3.b. Causal Masking / Length Check
-                if (history_token_logical_pos >= current_q_logical_pos ||
-                    history_token_logical_pos >= seq_len_for_this_batch_item) {
-                    continue; // Skip this history token
-                }
-
-                // F.3.c. QK^T dot product
-                float score = dot_product_qk(q_vec_ptr, k_vec_hist_ptr, params);
-
-                // F.3.d. Online Softmax Update (will go here)
-                // - (Comment: Content to come: update page_max_score, page_sum_exp)
-
-                // F.3.e. V-Aggregation (will go here)
-                // - (Comment: Content to come: v_sum_accumulator += weight * V_vector)
-
-            } // End loop k_idx_in_tile (history within page)
             // F.4. Write results for this (master_query_idx, target_global_q_head_idx, flat_work_item_idx)
-
-        } // End loop q_idx_in_block (queries within Q-block)
-
+        }
     } // end of q_block_start_local_idx loop
 } // End of kernel

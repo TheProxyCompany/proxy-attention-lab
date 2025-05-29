@@ -555,9 +555,12 @@ void PagedAttentionPrimitive::_eval_gpu_prefill(const std::vector<mx::array>& in
     final_threads_per_tg = ((final_threads_per_tg + actual_simd_width - 1) / actual_simd_width) * actual_simd_width;
     spdlog::debug("[PAL Prefill Debug] final_threads_per_tg = {}", final_threads_per_tg);
 
+    uint32_t total_simd_groups_in_tg = final_threads_per_tg / actual_simd_width;
+    spdlog::debug("[PAL Prefill Debug] total_simd_groups_in_tg = {}", total_simd_groups_in_tg);
+
     size_t per_gqa_group_compute_scratch = calculate_per_gqa_group_compute_scratch(
         core_dims.head_dim,
-        N_q_per_kv,
+        total_simd_groups_in_tg,
         final_threads_per_tg
     );
 
@@ -758,17 +761,17 @@ void PagedAttentionPrimitive::print(std::ostream& os) {
 
 size_t calculate_per_gqa_group_compute_scratch(
     uint32_t head_dimension,
-    uint32_t number_of_query_heads_per_kv_group,
+    uint32_t number_of_simd_groups,
     uint32_t threads_per_group
 ) {
     size_t per_gqa_group_compute_scratch = 0;
 
     // Component 1: Potential TGMem for V-sum accumulators (one per active SIMD group in the GQA group)
-    per_gqa_group_compute_scratch += number_of_query_heads_per_kv_group * head_dimension * sizeof(float);
+    per_gqa_group_compute_scratch += number_of_simd_groups * head_dimension * sizeof(float);
     per_gqa_group_compute_scratch = kernel_utils::AttentionMemoryLayout::align_size(per_gqa_group_compute_scratch);
 
     // Component 2: Potential TGMem for M/L stats (one pair per active SIMD group)
-    per_gqa_group_compute_scratch += number_of_query_heads_per_kv_group * 2 * sizeof(float);
+    per_gqa_group_compute_scratch += number_of_simd_groups * 2 * sizeof(float);
     per_gqa_group_compute_scratch = kernel_utils::AttentionMemoryLayout::align_size(per_gqa_group_compute_scratch);
 
     // Component 3: General TG-wide reduction scratch
