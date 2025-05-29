@@ -260,11 +260,16 @@ using namespace metal;
                 }
 
                 // F.3.c. QK^T dot product
-                // q_vec_ptr is for the current Q this SIMD group is processing.
-                // k_vec_hist_ptr is for the current K from K_tile.
-                // params contains inv_sqrt_head_dim (Q was already scaled during load) and head_dim.
+                float per_lane_partial_score = 0.0f;
+                uint num_f4_chunks_total = params.head_dim / 4;
 
-                float score = dot_product_qk(q_vec_ptr, k_vec_hist_ptr, params);
+                for (uint f4_chunk_idx = simd_lane_id; f4_chunk_idx < num_f4_chunks_total; f4_chunk_idx += actual_simd_width) {
+                    uint d_offset = f4_chunk_idx * 4;
+                    float4 qv = *((threadgroup const float4*)(q_vec_ptr + d_offset));
+                    float4 kv = float4(*((threadgroup const half4*)(k_vec_hist_ptr + d_offset)));
+                    per_lane_partial_score += dot(qv, kv);
+                }
+                float score = simd_sum(per_lane_partial_score);
                 // float score = 1.0f; // comment to skip main compute
 
                 // F.3.d. Online Softmax Update

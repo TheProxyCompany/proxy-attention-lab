@@ -635,6 +635,14 @@ void PagedAttentionPrimitive::_eval_gpu_prefill(const std::vector<mx::array>& in
         static_cast<int32_t>(params.num_active_batch_logical_pages)
     };
 
+    // Shape: [TotalQueryTokensInBatch, NumQHeads, NumActiveBatchLogicalPages, HeadDim]
+    mx::Shape o_shape = {
+        static_cast<int32_t>(params.query_token_count_total),
+        static_cast<int32_t>(params.num_q_heads),
+        static_cast<int32_t>(params.num_active_batch_logical_pages),
+        static_cast<int32_t>(params.head_dim)
+    };
+
     mx::array m_locals_pass1_out_arr = mx::zeros(m_s_shape, mx::float32, s);
     size_t m_locals_pass1_out_arr_bytes = m_locals_pass1_out_arr.nbytes();
     m_locals_pass1_out_arr.set_data(mx::allocator::malloc(m_locals_pass1_out_arr_bytes));
@@ -643,13 +651,6 @@ void PagedAttentionPrimitive::_eval_gpu_prefill(const std::vector<mx::array>& in
     size_t s_locals_pass1_out_arr_bytes = s_locals_pass1_out_arr.nbytes();
     s_locals_pass1_out_arr.set_data(mx::allocator::malloc(s_locals_pass1_out_arr_bytes));
 
-    // Shape: [TotalQueryTokensInBatch, NumQHeads, NumActiveBatchLogicalPages, HeadDim]
-    mx::Shape o_shape = {
-        static_cast<int32_t>(params.query_token_count_total),
-        static_cast<int32_t>(params.num_q_heads),
-        static_cast<int32_t>(params.num_active_batch_logical_pages),
-        static_cast<int32_t>(params.head_dim)
-    };
     mx::array o_partials_pass1_out_arr = mx::zeros(o_shape, mx::float16, s);
     size_t o_partials_pass1_out_arr_bytes = o_partials_pass1_out_arr.nbytes();
     o_partials_pass1_out_arr.set_data(mx::allocator::malloc(o_partials_pass1_out_arr_bytes));
