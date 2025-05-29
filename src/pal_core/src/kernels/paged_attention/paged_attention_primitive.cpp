@@ -384,10 +384,10 @@ void PagedAttentionPrimitive::dispatch_prefill_pass2(
 
     // Calculate Pass 2 memory requirements
     size_t pass2_tg_mem_bytes = 0;
-    pass2_tg_mem_bytes += thread_config.threads_per_group * sizeof(float) * 2;  // Max and sum scratch
-    pass2_tg_mem_bytes += 2 * sizeof(float);                                    // Global stats
+    pass2_tg_mem_bytes += thread_config.threads_per_group * sizeof(float) * 2;  // M and S scratch
     pass2_tg_mem_bytes += thread_config.threads_per_group * core_dims.head_dim * sizeof(float); // O accumulators
     pass2_tg_mem_bytes += core_dims.head_dim * sizeof(float);                   // Final O
+    pass2_tg_mem_bytes += 2 * sizeof(float);                                    // Global stats
     pass2_tg_mem_bytes = kernel_utils::AttentionMemoryLayout::align_size(pass2_tg_mem_bytes);
 
     // Set intermediate input arrays from Pass 1
@@ -400,16 +400,16 @@ void PagedAttentionPrimitive::dispatch_prefill_pass2(
     spdlog::debug("[dispatch_prefill_pass2] work_items_buffer shape: [{}, {}]",
                   work_items_buffer.shape(0), work_items_buffer.shape(1));
 
-    encoder.set_input_array(m_locals_in, 17);
-    encoder.set_input_array(s_locals_in, 18);
-    encoder.set_input_array(o_partials_in, 19);
-
-    // Set work_items_buffer for Pass 2
-    encoder.set_input_array(work_items_buffer, 20);
-
-    // Set parameters and final output
     encoder.set_bytes(&params, sizeof(PagedAttentionParams), 7);
-    encoder.set_output_array(final_out, 8);
+
+    // Set input arrays
+    encoder.set_input_array(m_locals_in, 13);
+    encoder.set_input_array(s_locals_in, 14);
+    encoder.set_input_array(o_partials_in, 15);
+    encoder.set_input_array(work_items_buffer, 16);
+
+    // Set output array
+    encoder.set_output_array(final_out, 17);
 
     metal::MetalDispatcher::dispatch_kernel(encoder, grid, thread_config.threads_per_group, pass2_tg_mem_bytes);
 }

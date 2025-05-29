@@ -37,15 +37,15 @@ using namespace metal;
  */
 [[kernel]] void paged_attn_prefill_pass2_kernel(
     // Pass 1 output buffers
-    device      const float* m_pass1_results        [[buffer(17)]],  // Local max scores per page
-    device      const float* s_pass1_results        [[buffer(18)]],  // Local sum-exponentials per page
-    device      const half*  o_pass1_results        [[buffer(19)]],  // Unnormalized partial V-accumulations
+    device      const float* m_pass1_results        [[buffer(13)]],  // Local max scores per page
+    device      const float* s_pass1_results        [[buffer(14)]],  // Local sum-exponentials per page
+    device      const half*  o_pass1_results        [[buffer(15)]],  // Unnormalized partial V-accumulations
     // Active work items buffer
-    device      const uint2* active_work_item_pairs [[buffer(20)]],  // Active (batch_item, logical_page) pairs
+    device      const uint2* active_work_item_pairs [[buffer(16)]],  // Active (batch_item, logical_page) pairs
     // Parameters
     constant    const PagedAttentionParams& params  [[buffer(7)]],
     // Final output buffer
-    device      half* final_output_buffer           [[buffer(8)]],
+    device      half* final_output_buffer           [[buffer(17)]],
     // Thread/grid identifiers
     uint actual_simd_width                          [[threads_per_simdgroup]],
     threadgroup float* tg_mem                       [[threadgroup(0)]],
