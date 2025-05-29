@@ -129,7 +129,7 @@ using namespace metal;
             float rescale_factor_exp_arg = (M_global_for_this_item == -INFINITY && m_local_p == -INFINITY) ?
                                            params.log_exp_min_clamp :
                                            max(m_local_p - M_global_for_this_item, params.log_exp_min_clamp);
-            float rescale_factor = fast::exp(rescale_factor_exp_arg);
+            float rescale_factor = precise::exp(rescale_factor_exp_arg);
 
             // Contribution of this page to S_global
             float s_page_contribution = s_local_p * rescale_factor;
@@ -163,7 +163,7 @@ using namespace metal;
             float rescale_factor_exp_arg = (M_global_for_this_item == -INFINITY && m_local_p == -INFINITY) ?
                                            params.log_exp_min_clamp :
                                            max(m_local_p - M_global_for_this_item, params.log_exp_min_clamp);
-            float rescale_factor = fast::exp(rescale_factor_exp_arg);
+            float rescale_factor = precise::exp(rescale_factor_exp_arg);
 
             // If rescale_factor is effectively zero, this page's o_partial won't contribute,
             // so we can skip the expensive HeadDim loop.

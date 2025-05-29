@@ -198,12 +198,19 @@ using namespace metal;
         // --- START: Zero V_Sum_Accumulators_Area ONCE PER Q_BLOCK ---
         uint total_floats_in_v_acc_area = total_simd_groups_in_tg_metal * params.head_dim;
         uint num_float4s_to_zero = total_floats_in_v_acc_area / 4;
+        uint remainder_floats = total_floats_in_v_acc_area % 4;
 
         // Vectorized zeroing using float4
         threadgroup float4* v_acc_area_f4_ptr = (threadgroup float4*)V_Sum_Accumulators_Area;
         for (uint i = local_idx_in_tg; i < num_float4s_to_zero; i += tg_dim.x) {
             v_acc_area_f4_ptr[i] = float4(0.0f);
         }
+
+        // Handle remainder floats
+        if (remainder_floats > 0 && local_idx_in_tg < remainder_floats) {
+            V_Sum_Accumulators_Area[num_float4s_to_zero * 4 + local_idx_in_tg] = 0.0f;
+        }
+
         threadgroup_barrier(mem_flags::mem_threadgroup);
         // --- END: Zero V_Sum_Accumulators_Area ---
 
@@ -270,6 +277,8 @@ using namespace metal;
                     per_lane_partial_score += dot(qv, kv);
                 }
                 float score = simd_sum(per_lane_partial_score);
+                // Ensure all lanes have the same value
+                score = simd_broadcast_first(score);
                 // float score = 1.0f; // comment to skip main compute
 
                 // F.3.d. Online Softmax Update
@@ -283,7 +292,7 @@ using namespace metal;
                 if (page_max_score > old_page_max_score_val && old_page_max_score_val != -INFINITY) {
                     // Clamp argument to prevent underflow
                     float rescale_exp_arg = max(old_page_max_score_val - page_max_score, params.log_exp_min_clamp);
-                    float actual_scale_factor = fast::exp(rescale_exp_arg);
+                    float actual_scale_factor = precise::exp(rescale_exp_arg);
 
                     page_sum_exp_norm_by_page_max *= actual_scale_factor;
                     kahan_c_for_sum_exp *= actual_scale_factor; // Rescale Kahan compensation term
@@ -296,7 +305,7 @@ using namespace metal;
 
                 // Calculate the exponential of (current score - new_page_max_score)
                 float current_term_exp_arg = max(score - page_max_score, params.log_exp_min_clamp);
-                current_score_exp_contribution = fast::exp(current_term_exp_arg);
+                current_score_exp_contribution = precise::exp(current_term_exp_arg);
 
                 // Kahan summation to add current_score_exp_contribution to page_sum_exp_norm_by_page_max
                 float y_kahan = current_score_exp_contribution - kahan_c_for_sum_exp;

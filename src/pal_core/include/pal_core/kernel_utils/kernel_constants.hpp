@@ -19,7 +19,6 @@ namespace paged_attention {
     constexpr float kLogFp16DenormMinVal = -88.0f;
 
     // Prefill pass configuration
-    constexpr uint32_t PREFILL_PASS1_Q_HEAD_BLOCK_SIZE = 8;
     constexpr uint32_t PREFILL_PASS2_TOKEN_BLOCK_SIZE = 64;
     constexpr uint32_t PREFILL_PASS2_QHEAD_BLOCK_SIZE = 8;
 
