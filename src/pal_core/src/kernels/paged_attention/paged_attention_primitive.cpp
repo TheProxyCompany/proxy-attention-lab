@@ -50,6 +50,8 @@ using half = short;
 #include <mlx/backend/cpu/encoder.h>
 #include <mlx/backend/metal/device.h>
 #include <mlx/backend/metal/metal.h>
+#include "pal_core/metal/metal_loader.hpp"
+
 #include <mlx/utils.h>
 
 #include "shaders/paged_attention_types.h"
@@ -311,8 +313,7 @@ private:
                 .bytes_per_element = bytes_per_token,
                 .alignment = kernels::paged_attention::TILE_SIZE_ALIGNMENT,
                 .min_size = kernels::paged_attention::MIN_TILE_SIZE_SOFT,
-                .max_size = std::min(kernels::paged_attention::MAX_TILE_SIZE_PRACTICAL,
-                                   static_cast<uint32_t>(params.tokens_per_page)),
+                .max_size = kernels::paged_attention::MAX_TILE_SIZE_PRACTICAL,
                 .preferred_size = (params.head_dim <= 256) ? 64u :
                                 kernels::paged_attention::MIN_TILE_SIZE_SOFT
             };
@@ -541,39 +542,13 @@ void PagedAttentionPrimitive::_eval_gpu_prefill(const std::vector<mx::array>& in
     PagedAttentionValidator validator;
     CoreDims core_dims = validator.validate_and_extract_dims(inputs);
 
-    // Calculate thread configuration for prefill based on model parameters
-    uint32_t actual_simd_width = kernel_state->threadExecutionWidth();
-
-    // Calculate N_q_per_kv (GQA factor)
-    uint32_t N_q_per_kv = 1;
-    if (core_dims.num_kv_heads > 0) { // GQA or MHA
-        N_q_per_kv = std::max(1u, core_dims.num_q_heads / core_dims.num_kv_heads);
-    }
-
-    uint32_t desired_threads_per_tg = actual_simd_width * N_q_per_kv * SIMD_GROUPS_PER_GQA_GROUP_FACTOR;
-    uint32_t max_threads_device = kernel_state->maxTotalThreadsPerThreadgroup();
-    uint32_t final_threads_per_tg = std::min(desired_threads_per_tg, max_threads_device);
-    final_threads_per_tg = ((final_threads_per_tg + actual_simd_width - 1) / actual_simd_width) * actual_simd_width;
-    spdlog::debug("[PAL Prefill Debug] final_threads_per_tg = {}", final_threads_per_tg);
-
-    uint32_t total_simd_groups_in_tg = final_threads_per_tg / actual_simd_width;
-    spdlog::debug("[PAL Prefill Debug] total_simd_groups_in_tg = {}", total_simd_groups_in_tg);
-
-    size_t per_gqa_group_compute_scratch = calculate_per_gqa_group_compute_scratch(
-        core_dims.head_dim,
-        total_simd_groups_in_tg,
-        final_threads_per_tg
-    );
-
-    // Calculate D_s using the new symmetric tile depth function
-    uint32_t D_s = calculate_symmetric_tile_depth(
+    auto [tile_size, final_threads_per_tg, actual_simd_width] = get_optimal_tile_size_and_thread_info(
         core_dims.head_dim,
         core_dims.num_q_heads,
         core_dims.num_kv_heads,
-        metal_device_ptr->maxThreadgroupMemoryLength(),
-        per_gqa_group_compute_scratch
+        s,
+        kernel_state
     );
-    spdlog::debug("[PAL Prefill Debug] Calculated Symmetric Depth D_s = {}", D_s);
 
     // Log input information
     std::vector<std::string> input_names = {
@@ -585,9 +560,9 @@ void PagedAttentionPrimitive::_eval_gpu_prefill(const std::vector<mx::array>& in
     PagedAttentionParamBuilder param_builder(core_dims, inputs[1], inputs[3], true);
     PagedAttentionParams params = param_builder.build(metal_device_ptr);
 
-    // Set both tokens_per_page and tile_size_T_runtime to D_s for prefill
-    params.tokens_per_page = D_s;
-    params.tile_size_T_runtime = D_s; // K/V tile depth is D_s
+    // Set both tokens_per_page and tile_size_T_runtime to tile_size for prefill
+    params.tokens_per_page = tile_size;
+    params.tile_size_T_runtime = tile_size; // K/V tile depth is tile_size
 
     // Calculate memory layout
     auto memory_layout = kernel_utils::calculate_attention_memory_layout(
@@ -598,7 +573,7 @@ void PagedAttentionPrimitive::_eval_gpu_prefill(const std::vector<mx::array>& in
     );
     spdlog::debug("[PAL Prefill Debug] TGMem Assertion Check: Calculated layout total_bytes = {}", memory_layout.total_bytes);
     if (memory_layout.total_bytes > metal_device_ptr->maxThreadgroupMemoryLength()) {
-        throw std::runtime_error("[PAL Primitive] Prefill TGMem budget EXCEEDED with D_s: " + std::to_string(D_s));
+        throw std::runtime_error("[PAL Primitive] Prefill TGMem budget EXCEEDED with tile_size: " + std::to_string(tile_size));
     }
 
     // Create work items buffer and update params BEFORE allocating arrays
@@ -761,7 +736,7 @@ void PagedAttentionPrimitive::print(std::ostream& os) {
        << ", is_prefill=" << (is_prefill_ ? "true" : "false") << ")";
 }
 
-size_t calculate_per_gqa_group_compute_scratch(
+size_t PagedAttentionPrimitive::calculate_per_gqa_group_compute_scratch(
     uint32_t head_dimension,
     uint32_t number_of_simd_groups,
     uint32_t threads_per_group
@@ -789,7 +764,7 @@ size_t calculate_per_gqa_group_compute_scratch(
     return per_gqa_group_compute_scratch;
 }
 
-uint32_t calculate_symmetric_tile_depth(
+uint32_t PagedAttentionPrimitive::calculate_symmetric_tile_depth(
     uint32_t head_dimension,
     uint32_t num_query_heads,
     uint32_t num_kv_heads,
@@ -846,7 +821,70 @@ uint32_t calculate_symmetric_tile_depth(
     }
 
     spdlog::debug("[calculate_symmetric_tile_depth] Final symmetric depth (D_s): {}", symmetric_depth);
-    return symmetric_depth;
+    return std::max(kernels::paged_attention::MAX_TILE_SIZE_PRACTICAL, symmetric_depth);
 }
+
+std::tuple<uint32_t, uint32_t, uint32_t> PagedAttentionPrimitive::get_optimal_tile_size_and_thread_info(
+    uint32_t head_dimension,
+    uint32_t num_query_heads,
+    uint32_t num_kv_heads,
+    mx::StreamOrDevice stream_or_device,
+    std::optional<MTL::ComputePipelineState*> pipeline_state
+  ) {
+    // Prepare Metal kernel and command encoder
+    auto s = mx::to_stream(stream_or_device);
+    auto& d = mlx::core::metal::device(s.device);
+    auto* metal_device_ptr = d.mtl_device();
+
+    MTL::ComputePipelineState* kernel_state = nullptr;
+    if (!pipeline_state) {
+        pal::cpp::MetalLibRegistrar::ensure_pal_metallib_registered(stream_or_device);
+        const std::string library_name = "pal";
+        const std::string kernel_name = "paged_attn_prefill_kernel";
+        kernel_state = d.get_kernel(kernel_name, library_name);
+        if (!kernel_state) {
+            throw std::runtime_error("[PAL Primitive] Failed to load kernel: " + kernel_name);
+        }
+    } else {
+        kernel_state = pipeline_state.value();
+    }
+
+    // Calculate thread configuration for prefill based on model parameters
+    uint32_t actual_simd_width = kernel_state->threadExecutionWidth();
+
+    // Calculate N_q_per_kv (GQA factor)
+    uint32_t N_q_per_kv = 1;
+    if (num_kv_heads > 0) { // GQA or MHA
+        N_q_per_kv = std::max(1u, num_query_heads / num_kv_heads);
+    }
+
+    uint32_t desired_threads_per_tg = actual_simd_width * N_q_per_kv * SIMD_GROUPS_PER_GQA_GROUP_FACTOR;
+    uint32_t max_threads_device = kernel_state->maxTotalThreadsPerThreadgroup();
+    uint32_t final_threads_per_tg = std::min(desired_threads_per_tg, max_threads_device);
+    final_threads_per_tg = ((final_threads_per_tg + actual_simd_width - 1) / actual_simd_width) * actual_simd_width;
+    spdlog::debug("[PAL Prefill Debug] final_threads_per_tg = {}", final_threads_per_tg);
+
+    uint32_t total_simd_groups_in_tg = final_threads_per_tg / actual_simd_width;
+    spdlog::debug("[PAL Prefill Debug] total_simd_groups_in_tg = {}", total_simd_groups_in_tg);
+
+    size_t per_gqa_group_compute_scratch = calculate_per_gqa_group_compute_scratch(
+        head_dimension,
+        total_simd_groups_in_tg,
+        final_threads_per_tg
+    );
+
+    // Calculate D_s using the new symmetric tile depth function
+    uint32_t D_s = calculate_symmetric_tile_depth(
+        head_dimension,
+        num_query_heads,
+        num_kv_heads,
+        metal_device_ptr->maxThreadgroupMemoryLength(),
+        per_gqa_group_compute_scratch
+    );
+
+    spdlog::debug("[PAL Prefill Debug] D_s = {}", D_s);
+
+    return std::make_tuple(D_s, final_threads_per_tg, actual_simd_width);
+  }
 
 }  // namespace pal::cpp

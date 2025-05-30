@@ -23,7 +23,7 @@ import logging
 
 import mlx.core as mx
 
-from proxy_attention_lab import paged_attention
+from proxy_attention_lab import calculate_page_size, paged_attention
 
 logger = logging.getLogger(__name__)
 
@@ -36,9 +36,9 @@ def test_fetch_k_vector_from_multiple_kv_heads() -> None:
     """
     num_tokens = 1
     num_q_heads = 2
-    cfg_tokens_per_page = 64
     cfg_num_kv_heads = 2
     cfg_head_dim = 4
+    cfg_tokens_per_page = calculate_page_size(cfg_head_dim, num_q_heads, cfg_num_kv_heads)
     cfg_max_logical_blocks_per_seq_in_pagetable = 2
     py_queries = mx.zeros((num_tokens, num_q_heads, cfg_head_dim), dtype=mx.float16)
     py_queries[0, 0, :] = 100.0
@@ -82,6 +82,7 @@ def test_fetch_k_vector_from_multiple_kv_heads() -> None:
         py_sequence_lengths,
         py_query_to_seq_map,
         py_query_token_offset,
+        is_prefill=True,
     )
     mx.eval(output_arr)
 
@@ -143,9 +144,9 @@ def test_mqa_kv_head_selection() -> None:
     # MQA configuration: fewer query heads than KV heads
     num_tokens = 1
     num_q_heads = 1  # Only one query head
-    cfg_tokens_per_page = 64
     cfg_num_kv_heads = 2  # Two KV heads
     cfg_head_dim = 4
+    cfg_tokens_per_page = calculate_page_size(cfg_head_dim, num_q_heads, cfg_num_kv_heads)
 
     # Create 3D queries with shape [num_tokens, num_q_heads, cfg_head_dim]
     py_queries = mx.zeros((num_tokens, num_q_heads, cfg_head_dim), dtype=mx.float16)
@@ -187,6 +188,7 @@ def test_mqa_kv_head_selection() -> None:
         py_sequence_lengths,
         py_query_to_seq_map,
         py_query_token_offset,
+        is_prefill=True,
     )
     mx.eval(output_arr)
 
@@ -236,8 +238,8 @@ def test_mqa_multi_token_kv_head_selection_2d_query() -> None:
     # Test configuration
     num_tokens = 5  # Multiple tokens to test consistent KV-head selection
     cfg_head_dim = 4
-    cfg_tokens_per_page = 64
     cfg_num_kv_heads = 4  # Multiple KV heads
+    cfg_tokens_per_page = calculate_page_size(cfg_head_dim, 1, cfg_num_kv_heads)
 
     # Create 2D queries with shape [num_tokens, cfg_head_dim]
     # For 2D queries, the C++ primitive sets params->num_q_heads = 1 internally
@@ -271,6 +273,7 @@ def test_mqa_multi_token_kv_head_selection_2d_query() -> None:
         py_sequence_lengths,
         py_query_to_seq_map,
         py_query_token_offset,
+        is_prefill=False,
     )
     mx.eval(output_arr)
 

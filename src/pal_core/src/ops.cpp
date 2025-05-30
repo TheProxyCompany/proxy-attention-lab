@@ -44,8 +44,7 @@ mx::array paged_attention(
   spdlog::debug("[PAL Ops] pal::cpp::paged_attention C++ operation called.");
 
   // Ensure Metal library is loaded and registered
-  pal::core::detail::MetalLibRegistrar::ensure_pal_metallib_registered(
-      stream_or_device);
+  pal::cpp::MetalLibRegistrar::ensure_pal_metallib_registered(stream_or_device);
 
   // Extract key parameters from input arrays to pass to the primitive
   int num_q_heads = 1;  // Default for 1D/2D queries

@@ -27,7 +27,7 @@ def paged_attention(
     sequence_lengths: mx.array,
     query_to_seq_map: mx.array,
     query_token_offset: mx.array,
-    is_prefill: bool = True,
+    is_prefill: bool,
     stream: mx.Stream | mx.Device | None = None,
 ) -> mx.array:
     """Performs paged attention using the custom C++ primitive and Metal kernel.

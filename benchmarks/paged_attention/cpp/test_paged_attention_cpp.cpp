@@ -132,25 +132,10 @@ static void BM_PAL_LatencyVsSeqLen(benchmark::State& state) {
     int head_dim = params.head_dim;
     mx::Dtype dtype = params.dtype;
 
-    uint32_t N_q_per_kv = std::max(1, num_q_heads / num_kv_heads);
-    uint32_t threads_per_group = SIMD_WIDTH * N_q_per_kv * pal::cpp::PagedAttentionPrimitive::SIMD_GROUPS_PER_GQA_GROUP_FACTOR;
-    uint32_t final_threads_per_tg = std::min(threads_per_group, static_cast<uint32_t>(1024));
-    final_threads_per_tg = ((final_threads_per_tg + SIMD_WIDTH - 1) / SIMD_WIDTH) * SIMD_WIDTH;
-
-    uint32_t total_simd_groups_in_tg = final_threads_per_tg / SIMD_WIDTH;
-
-    size_t per_gqa_group_compute_scratch = pal::cpp::calculate_per_gqa_group_compute_scratch(
-        head_dim,
-        total_simd_groups_in_tg,
-        final_threads_per_tg
-    );
-
-    uint32_t D_s = pal::cpp::calculate_symmetric_tile_depth(
+    auto [D_s, _, _] = pal::cpp::PagedAttentionPrimitive::get_optimal_tile_size_and_thread_info(
         head_dim,
         num_q_heads,
-        num_kv_heads,
-        MAX_THREADGROUP_MEMORY_LENGTH,
-        per_gqa_group_compute_scratch
+        num_kv_heads
     );
 
     params.tokens_per_page = D_s;

@@ -172,7 +172,6 @@ using namespace metal;
 
                 uint current_query_local_idx = q_block_start_local_idx + q_idx_in_block_for_this_sg;
                 uint master_query_idx = query_starts_for_batch_item_arr[assigned_batch_item_idx] + current_query_local_idx;
-                // uint current_q_logical_pos = (uint)query_token_offset_in[master_query_idx]; // For compute later
 
                 // Global source pointer for this specific Q-vector
                 // Assuming queries_in is physically [NumQHeads, TotalQueries, HeadDim]

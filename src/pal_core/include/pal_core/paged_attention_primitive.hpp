@@ -128,6 +128,24 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
    */
   std::vector<mx::Shape> output_shapes(const std::vector<mx::array>& inputs) override;
 
+  /**
+   * @brief Calculates the optimal tile size and thread information for the paged attention kernel.
+   *
+   * @param head_dimension The dimension of the head
+   * @param num_query_heads The number of query heads
+   * @param num_kv_heads The number of key/value heads
+   * @param stream_or_device The stream or device to execute on
+   * @param pipeline_state The pipeline state to use for the kernel
+   * @return A tuple containing the optimal tile size, the number of threads per threadgroup, and the actual SIMD width
+   */
+  static std::tuple<uint32_t, uint32_t, uint32_t> get_optimal_tile_size_and_thread_info(
+    uint32_t head_dimension,
+    uint32_t num_query_heads,
+    uint32_t num_kv_heads,
+    mx::StreamOrDevice stream_or_device = {},
+    std::optional<MTL::ComputePipelineState*> pipeline_state = std::nullopt
+  );
+
  private:
   // Parameters that define kernel behavior
   int num_q_heads_;
@@ -188,21 +206,22 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
   // Helper methods for decode and prefill paths
   void _eval_gpu_decode(const std::vector<mx::array>& inputs, mx::array& out);
   void _eval_gpu_prefill(const std::vector<mx::array>& inputs, mx::array& out);
-};
 
-uint32_t calculate_symmetric_tile_depth(
+  static uint32_t calculate_symmetric_tile_depth(
     uint32_t head_dimension,
     uint32_t num_query_heads,
     uint32_t num_kv_heads,
     size_t max_threadgroup_memory_bytes,
     size_t per_gqa_group_compute_scratch_bytes
-);
+  );
 
-size_t calculate_per_gqa_group_compute_scratch(
+  static size_t calculate_per_gqa_group_compute_scratch(
     uint32_t head_dimension,
     uint32_t number_of_simd_groups,
     uint32_t threads_per_group
-);
+  );
+
+};
 
 
 }  // namespace pal::cpp

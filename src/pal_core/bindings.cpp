@@ -25,6 +25,7 @@
 #include <mlx/mlx.h>
 
 #include "pal_core/ops.hpp"
+#include "pal_core/paged_attention_primitive.hpp"
 
 namespace nb = nanobind;
 using namespace nb::literals;
@@ -38,6 +39,39 @@ using namespace nb::literals;
  */
 NB_MODULE(pal_core, m) {
   m.doc() = "PAL C++ bindings: Paged Attention Operation";
+
+  m.def(
+    "get_optimal_tile_size",
+    []
+    (uint32_t head_dimension,
+    uint32_t num_query_heads,
+    uint32_t num_kv_heads,
+    std::optional<mx::StreamOrDevice> stream_or_device) {
+      auto [tile_size, _, _] = pal::cpp::PagedAttentionPrimitive::get_optimal_tile_size_and_thread_info(
+        head_dimension,
+        num_query_heads,
+        num_kv_heads,
+        stream_or_device.value_or(mx::StreamOrDevice{}));
+      return tile_size;
+    },
+      "head_dimension"_a,
+      "num_query_heads"_a,
+      "num_kv_heads"_a,
+      nb::kw_only(),
+      "stream"_a = nb::none(),
+      nb::sig("def get_optimal_tile_size(head_dimension: int, num_query_heads: int, num_kv_heads: int, *, stream: mlx.core.Stream | mlx.core.Device | None = None) -> int"),
+      R"doc(
+        Calculates the optimal tile size for the paged attention kernel.
+
+        Args:
+            head_dimension (int): The dimension of the head
+            num_query_heads (int): The number of query heads
+            num_kv_heads (int): The number of key/value heads
+            stream (mlx.core.Stream | mlx.core.Device | None, optional): Stream or device
+                                                                        for the operation.
+        Returns:
+            int: The optimal tile size
+      )doc");
 
   m.def(
       "paged_attention",

@@ -23,7 +23,7 @@ import logging
 
 import mlx.core as mx
 
-from proxy_attention_lab import paged_attention
+from proxy_attention_lab import calculate_page_size, paged_attention
 
 logger = logging.getLogger(__name__)
 
@@ -36,9 +36,9 @@ def test_max_score_over_history_in_one_block() -> None:
     """
     # --- Configuration ---
     num_q_threads = 1
-    cfg_tokens_per_page = 64
     cfg_num_kv_heads = 1
     cfg_head_dim = 4
+    cfg_tokens_per_page = 64
     current_position = 3  # Position of the current token (history: positions 0, 1, 2)
 
     # --- Setup test inputs ---
@@ -74,6 +74,7 @@ def test_max_score_over_history_in_one_block() -> None:
         py_sequence_lengths,
         py_query_to_seq_map,
         py_query_token_offset,
+        is_prefill=True,
     )
     mx.eval(output_arr)
 
@@ -218,6 +219,7 @@ def test_max_score_over_multi_block_history() -> None:
         py_sequence_lengths,
         py_query_to_seq_map,
         py_query_token_offset,
+        is_prefill=True,
     )
     mx.eval(output_arr)
 
@@ -388,6 +390,7 @@ def test_zero_history_returns_zero_score() -> None:
         py_sequence_lengths,
         py_query_to_seq_map,
         py_query_token_offset,
+        is_prefill=True,
     )
     mx.eval(output_arr)
 
@@ -492,6 +495,7 @@ def test_history_limited_by_sequence_length() -> None:
         py_sequence_lengths,
         py_query_to_seq_map,
         py_query_token_offset,
+        is_prefill=True,
     )
     mx.eval(output_arr)
 
@@ -647,6 +651,7 @@ def test_history_scan_stops_at_page_table_limit() -> None:
         py_sequence_lengths,
         py_query_to_seq_map,
         py_query_token_offset,
+        is_prefill=True,
     )
     mx.eval(output_arr)
 

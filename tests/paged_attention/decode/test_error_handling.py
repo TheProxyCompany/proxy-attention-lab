@@ -75,6 +75,7 @@ def test_invalid_physical_page_id_in_page_table() -> None:
         py_sequence_lengths,
         py_query_to_seq_map,
         py_query_token_offset,
+        is_prefill=False,
     )
     mx.eval(output_arr)
 
@@ -147,6 +148,7 @@ def test_negative_query_token_offset() -> None:
         py_sequence_lengths,
         py_query_to_seq_map,
         py_query_token_offset,
+        is_prefill=False,
     )
     mx.eval(output_arr)
 
@@ -227,6 +229,7 @@ def test_invalid_seq_idx_in_query_map() -> None:
         py_sequence_lengths,
         py_query_to_seq_map,
         py_query_token_offset,
+        is_prefill=False,
     )
     mx.eval(output_arr)
 
@@ -304,6 +307,7 @@ def test_large_head_dimension() -> None:
         py_sequence_lengths,
         py_query_to_seq_map,
         py_query_token_offset,
+        is_prefill=False,
     )
     mx.eval(output_arr)
 
