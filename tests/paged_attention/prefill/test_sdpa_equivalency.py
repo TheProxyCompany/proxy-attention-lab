@@ -139,9 +139,9 @@ def test_pal_vs_sdpa_equivalency_mha(batch_size, seq_len, num_heads, head_dim, d
     # pal_queries has tokens ordered as [seq0_tokens, seq1_tokens, ...]
     pal_query_to_seq_map = mx.repeat(mx.arange(batch_size, dtype=mx.int32), repeats=seq_len)
 
-    # query_token_offset: for causal attention, 1-indexed position within the sequence
-    # Offsets are [1, 2, ..., SL, 1, 2, ..., SL, ...]
-    pal_query_token_offset = mx.tile(mx.arange(1, seq_len + 1, dtype=mx.int32), batch_size)
+    # query_token_offset: for causal attention, 0-indexed position within the sequence
+    # Offsets are [0, 1, ..., SL-1, 0, 1, ..., SL-1, ...]
+    pal_query_token_offset = mx.tile(mx.arange(seq_len, dtype=mx.int32), batch_size)
 
     pal_queries = mx.contiguous(pal_queries)
     pal_k_cache_pool = mx.contiguous(pal_k_cache_pool)

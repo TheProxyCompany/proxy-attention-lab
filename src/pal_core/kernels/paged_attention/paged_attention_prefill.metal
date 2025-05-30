@@ -159,6 +159,11 @@ using namespace metal;
             uint target_q_head_local_offset_in_gqa_group = gqa_stream_idx_for_this_simd_group;
             uint target_global_q_head_idx = (assigned_global_kv_head_idx * N_q_per_kv) + target_q_head_local_offset_in_gqa_group;
 
+            // Check if the target query head exists (important for MQA where num_q_heads < num_kv_heads)
+            if (target_global_q_head_idx >= params.num_q_heads) {
+                continue; // Skip this SIMD group as it maps to a non-existent query head
+            }
+
             // Base pointer in Q_shmem_base for this GQA stream's entire block of D_s Q-vectors
             threadgroup float* q_block_shmem_for_gqa_stream = Q_shmem_base +
                                     (gqa_stream_idx_for_this_simd_group * D_s * params.head_dim);
@@ -172,11 +177,10 @@ using namespace metal;
                 uint master_query_idx = query_starts_for_batch_item_arr[assigned_batch_item_idx] + current_query_local_idx;
 
                 // Global source pointer for this specific Q-vector
-                // Assuming queries_in is physically [NumQHeads, TotalQueries, HeadDim]
-                device const half* q_head_slice_ptr = queries_in +
-                    (target_global_q_head_idx * params.query_token_count_total * params.head_dim);
-                device const half* q_src_global_ptr = q_head_slice_ptr +
-                    (master_query_idx * params.head_dim);
+                // Queries are in format [TotalQueries, NumQHeads, HeadDim]
+                device const half* q_src_global_ptr = queries_in +
+                    (master_query_idx * params.num_q_heads * params.head_dim) +
+                    (target_global_q_head_idx * params.head_dim);
 
                 // Destination in Q_shmem for this specific Q-vector
                 threadgroup float* q_dest_specific_q_in_shmem = q_block_shmem_for_gqa_stream +
@@ -239,6 +243,11 @@ using namespace metal;
             uint current_q_logical_pos = (uint)query_token_offset_in[master_query_idx];
             // F.1.d: Determine the target global Q head index this SIMD group is working for.
             uint target_global_q_head_idx = (assigned_global_kv_head_idx * N_q_per_kv) + gqa_stream_idx_for_this_simd_group;
+
+            // Check if the target query head exists (important for MQA where num_q_heads < num_kv_heads)
+            if (target_global_q_head_idx >= params.num_q_heads) {
+                continue; // Skip this query as it maps to a non-existent query head
+            }
 
             // F.2.a: Get pointer to the current Q-vector in Q_shmem_block.
             threadgroup const float* q_vec_ptr = q_block_shmem_for_this_gqa_stream_for_compute +

@@ -53,12 +53,22 @@ def test_fetch_k_vector_from_multiple_kv_heads() -> None:
     num_physical_pages = 1
     k_cache_shape = (num_physical_pages, cfg_tokens_per_page, cfg_num_kv_heads, cfg_head_dim)
     py_k_cache_pool = mx.zeros(k_cache_shape, dtype=mx.float16)
-    for i in range(cfg_head_dim):
-        py_k_cache_pool[0, token_slot, 0, i] = float(i + 1)  # [1, 2, 3, 4]
-        py_k_cache_pool[0, token_slot, 1, i] = float(i + 5)  # [5, 6, 7, 8]
+
+    # Set K values for all positions to test causal attention properly
+    for pos in range(sequence_length):
+        if pos == token_slot:
+            # Strong K values at the target position
+            py_k_cache_pool[0, pos, 0, :] = mx.array([1.0, 2.0, 3.0, 4.0], dtype=mx.float16)
+            py_k_cache_pool[0, pos, 1, :] = mx.array([5.0, 6.0, 7.0, 8.0], dtype=mx.float16)
+        else:
+            # Zero K values at other positions to simplify analysis
+            py_k_cache_pool[0, pos, 0, :] = mx.array([0.0, 0.0, 0.0, 0.0], dtype=mx.float16)
+            py_k_cache_pool[0, pos, 1, :] = mx.array([0.0, 0.0, 0.0, 0.0], dtype=mx.float16)
+
     py_v_cache_pool = mx.zeros_like(py_k_cache_pool)
 
     # Set up V-cache pool with distinct values for each K-vector position
+    # Only set V values at the target position
     # Values for KV head 0 (used by Q head 0)
     py_v_cache_pool[0, token_slot, 0, :] = mx.array([10.0, 11.0, 12.0, 13.0], dtype=mx.float16)
     # Values for KV head 1 (used by Q head 1)
@@ -99,6 +109,24 @@ def test_fetch_k_vector_from_multiple_kv_heads() -> None:
 
     logger.info(f"Test: {test_fetch_k_vector_from_multiple_kv_heads.__name__}")
     logger.info(f"  GQA configuration: num_q_heads={num_q_heads}, num_kv_heads={cfg_num_kv_heads}")
+    logger.info(f"  GQA factor N_q_per_kv = {num_q_heads} / {cfg_num_kv_heads} = {num_q_heads // cfg_num_kv_heads}")
+    logger.info(f"  tokens_per_page={cfg_tokens_per_page}")
+    logger.info(f"  Query at token {token_slot}, head 0: {py_queries[token_slot, 0, :]}")
+    logger.info(f"  Query at token {token_slot}, head 1: {py_queries[token_slot, 1, :]}")
+    logger.info(f"  K cache at token {token_slot}, kv_head 0: {py_k_cache_pool[0, token_slot, 0, :]}")
+    logger.info(f"  K cache at token {token_slot}, kv_head 1: {py_k_cache_pool[0, token_slot, 1, :]}")
+    logger.info(f"  V cache at token {token_slot}, kv_head 0: {py_v_cache_pool[0, token_slot, 0, :]}")
+    logger.info(f"  V cache at token {token_slot}, kv_head 1: {py_v_cache_pool[0, token_slot, 1, :]}")
+
+    # Calculate expected dot products
+    q0 = py_queries[token_slot, 0, :].astype(mx.float32)
+    q1 = py_queries[token_slot, 1, :].astype(mx.float32)
+    k0 = py_k_cache_pool[0, token_slot, 0, :].astype(mx.float32)
+    k1 = py_k_cache_pool[0, token_slot, 1, :].astype(mx.float32)
+    logger.info(f"  Expected Q0·K0 = {mx.sum(q0 * k0).item()}")
+    logger.info(f"  Expected Q1·K1 = {mx.sum(q1 * k1).item()}")
+
+    logger.info(f"  Total output shape: {output_arr.shape}")
     logger.info(
         f"  Actual V output for token {token_slot}: {output_arr[token_slot * num_q_heads : (token_slot + 1) * num_q_heads]}"
     )
@@ -115,6 +143,7 @@ def test_fetch_k_vector_from_multiple_kv_heads() -> None:
     assert output_arr.dtype == mx.float16, f"Output dtype {output_arr.dtype} does not match float16"
 
     # For token_slot, we expect the V vectors since only position token_slot has non-zero values
+    # The output ordering might be different - let's check both possibilities
     token_start_idx = token_slot * num_q_heads
     actual_token_output = output_arr[token_start_idx : token_start_idx + num_q_heads]
 
@@ -236,24 +265,31 @@ def test_mqa_multi_token_kv_head_selection_2d_query() -> None:
     num_tokens = 5  # Multiple tokens to test consistent KV-head selection
     cfg_head_dim = 4
     cfg_num_kv_heads = 4  # Multiple KV heads
+
+    # Get the actual tile size the kernel will use
+    # calculate_page_size is actually get_optimal_tile_size from C++
     cfg_tokens_per_page = calculate_page_size(cfg_head_dim, 1, cfg_num_kv_heads)
+
+    # Calculate number of logical pages needed
+    num_logical_pages = (num_tokens + cfg_tokens_per_page - 1) // cfg_tokens_per_page
+    num_physical_pages = num_logical_pages  # For simplicity, 1:1 mapping
 
     # Create 2D queries with shape [num_tokens, cfg_head_dim]
     # For 2D queries, the C++ primitive sets params->num_q_heads = 1 internally
     py_queries = mx.array([[1.0] * cfg_head_dim] * num_tokens, dtype=mx.float16)
 
     # Create K-cache pool with values at position 0
-    num_physical_pages = 1
     k_cache_shape = (num_physical_pages, cfg_tokens_per_page, cfg_num_kv_heads, cfg_head_dim)
     py_k_cache_pool = mx.zeros(k_cache_shape, dtype=mx.float16)
-    # Set K-vector for KV head 0 at position 0
+    # Set K-vector for KV head 0 at position 0 (in the first page)
     py_k_cache_pool[0, 0, 0, :] = mx.array([1.0, 1.0, 1.0, 1.0], dtype=mx.float16)
 
     py_v_cache_pool = mx.zeros_like(py_k_cache_pool)
-    # Set V-vector for KV head 0 at position 0
+    # Set V-vector for KV head 0 at position 0 (in the first page)
     py_v_cache_pool[0, 0, 0, :] = mx.array([10.0, 20.0, 30.0, 40.0], dtype=mx.float16)
 
-    py_page_table = mx.array([[0]], dtype=mx.uint32)  # Simple page table
+    # Create page table with correct number of logical pages
+    py_page_table = mx.array([[i for i in range(num_logical_pages)]], dtype=mx.uint32)
     py_sequence_lengths = mx.array([num_tokens], dtype=mx.int32)  # Must match number of query tokens
 
     # All query tokens map to sequence 0
@@ -288,8 +324,13 @@ def test_mqa_multi_token_kv_head_selection_2d_query() -> None:
     expected_outputs = []
 
     for token_idx in range(num_tokens):
-        # Determine which history positions are valid (within page table limit)
-        valid_positions = [pos for pos in range(token_idx + 1) if pos < cfg_tokens_per_page]
+        # Determine which history positions are valid (within causal mask)
+        valid_positions = []
+        for pos in range(token_idx + 1):
+            # Check if position is within the allocated K/V cache
+            page_idx = pos // cfg_tokens_per_page
+            if page_idx < num_physical_pages and pos < num_tokens:
+                valid_positions.append(pos)
 
         if not valid_positions:
             expected_outputs.append(mx.zeros((cfg_head_dim,), dtype=mx.float16))
@@ -320,10 +361,10 @@ def test_mqa_multi_token_kv_head_selection_2d_query() -> None:
     logger.info(f"Test: {test_mqa_multi_token_kv_head_selection_2d_query.__name__}")
     logger.info(f"  MQA configuration: 2D queries, num_kv_heads={cfg_num_kv_heads}")
     logger.info(f"  Number of tokens: {num_tokens}")
+    logger.info(f"  Actual tile size (tokens_per_page): {cfg_tokens_per_page}")
+    logger.info(f"  Number of logical pages: {num_logical_pages}")
     logger.info(f"  Expected V output first token: {expected_v_output[0]}")
     logger.info(f"  Actual V output first token: {output_arr[0]}")
-    logger.info(f"  Expected V output: {expected_v_output}")
-    logger.info(f"  Actual output: {output_arr}")
 
     # Verify results
     assert output_arr.shape == expected_output_shape, (
