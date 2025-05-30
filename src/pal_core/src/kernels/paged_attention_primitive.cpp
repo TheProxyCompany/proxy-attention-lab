@@ -527,6 +527,8 @@ void PagedAttentionPrimitive::_eval_gpu_prefill(
     // Set both tokens_per_page and tile_size_T_runtime to tile_size for prefill
     params.tokens_per_page = tile_size;
     params.tile_size_T_runtime = tile_size; // K/V tile depth is tile_size
+    spdlog::debug("[PAL Prefill] Final params: tokens_per_page={}, num_q_heads={}, num_kv_heads={}, head_dim={}",
+                  params.tokens_per_page, params.num_q_heads, params.num_kv_heads, params.head_dim);
 
     // Calculate memory layout
     auto memory_layout = kernel_utils::calculate_attention_memory_layout(

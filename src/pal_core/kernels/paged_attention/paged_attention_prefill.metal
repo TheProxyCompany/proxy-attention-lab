@@ -255,6 +255,14 @@ using namespace metal;
             // F.2.b: Get pointer to this SIMD group's dedicated V-sum accumulator.
             threadgroup float* v_sum_accumulator_ptr = V_Sum_Accumulators_Area +
                                                        (simd_group_id * params.head_dim);
+
+            // Zero the V accumulator for this specific query
+            // Each SIMD group processes multiple queries sequentially, so we need to zero between them
+            for (uint h_idx = simd_lane_id; h_idx < params.head_dim; h_idx += actual_simd_width) {
+                v_sum_accumulator_ptr[h_idx] = 0.0f;
+            }
+            simdgroup_barrier(mem_flags::mem_threadgroup);
+
             // F.2.c: Initialize this SIMD group's per-Q softmax statistics (will be held in registers)
             float page_max_score = -INFINITY;
             float page_sum_exp_norm_by_page_max = 0.0f;
@@ -284,9 +292,7 @@ using namespace metal;
                     per_lane_partial_score += dot(qv, kv);
                 }
                 float score = simd_sum(per_lane_partial_score);
-                // Ensure all lanes have the same value
-                score = simd_broadcast_first(score);
-                // float score = 1.0f; // comment to skip main compute
+                // float score = 1.0f; // uncomment to skip main compute
 
                 // F.3.d. Online Softmax Update
                 float old_page_max_score_val = page_max_score;
