@@ -191,21 +191,19 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
       const std::vector<mx::array>& inputs,
       const std::vector<int>& axes) override;
 
-  // Helper function for dispatching prefill pass 2
-  static void dispatch_prefill_pass2(
-      mlx::core::metal::Device& d,
-      const mx::Stream& s,
-      const CoreDims& core_dims,
-      const PagedAttentionParams& params,
-      const mx::array& m_locals_in,
-      const mx::array& s_locals_in,
-      const mx::array& o_partials_in,
-      const mx::array& work_items_buffer,
-      mx::array& final_out);
-
   // Helper methods for decode and prefill paths
-  void _eval_gpu_decode(const std::vector<mx::array>& inputs, mx::array& out);
-  void _eval_gpu_prefill(const std::vector<mx::array>& inputs, mx::array& out);
+  void _eval_gpu_decode(
+    const mx::Stream& stream,
+    mlx::core::metal::Device& device,
+    const std::vector<mx::array>& inputs,
+    mx::array& out
+  );
+  void _eval_gpu_prefill(
+    const mx::Stream& stream,
+    mlx::core::metal::Device& device,
+    const std::vector<mx::array>& inputs,
+    mx::array& out
+  );
 
   static uint32_t calculate_symmetric_tile_depth(
     uint32_t head_dimension,

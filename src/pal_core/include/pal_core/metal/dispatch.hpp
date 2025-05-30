@@ -45,19 +45,6 @@ public:
         size_t target_threads = 64
     );
 
-    // Setup common input arrays for a compute encoder
-    static void setup_input_arrays(
-        mx::metal::CommandEncoder& encoder,
-        const std::vector<mx::array>& inputs,
-        size_t starting_index = 0
-    );
-
-    // Validate all input arrays have valid data pointers
-    static void validate_input_pointers(
-        const std::vector<mx::array>& inputs,
-        const std::string& kernel_name
-    );
-
     // Helper to dispatch a kernel with common setup
     static void dispatch_kernel(
         mx::metal::CommandEncoder& encoder,

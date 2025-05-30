@@ -25,7 +25,6 @@
 #include "pal_core/kernel_utils/validation.hpp"
 #include "pal_core/kernel_utils/tiling.hpp"
 #include "pal_core/metal/dispatch.hpp"
-#include "pal_core/debug/kernel_debug.hpp"
 #include "pal_core/kernel_utils/param_builder.hpp"
 
 // Standard library
@@ -349,8 +348,6 @@ private:
     void calculate_tile_size(PagedAttentionParams& params, MTL::Device* device) {
         if (is_prefill_) {
             params.tile_size_T_runtime = params.tokens_per_page;
-            debug::KernelDebugger::log_tile_config("PAL Primitive Prefill",
-                                          params.tile_size_T_runtime, "T (Symmetric Depth D_s)");
         } else {
             // For decode mode, use existing tile size calculation logic
             // Calculate fixed memory usage with zero tile size
@@ -390,92 +387,9 @@ private:
             }
 
             params.tile_size_T_runtime = tile_config.tile_size;
-
-            debug::KernelDebugger::log_tile_config("PAL Primitive Decode",
-                                                  params.tile_size_T_runtime, "T");
         }
     }
 };
-
-// Dispatch helpers for paged attention
-void PagedAttentionPrimitive::dispatch_prefill_pass2(
-    mlx::core::metal::Device& d,
-    const mx::Stream& s,
-    const CoreDims& core_dims,
-    const PagedAttentionParams& params,
-    const mx::array& m_locals_in,
-    const mx::array& s_locals_in,
-    const mx::array& o_partials_in,
-    const mx::array& work_items_buffer,
-    mx::array& final_out
-) {
-    using namespace kernels::paged_attention;
-
-    debug::KernelDebugger::log_kernel_start("PAL Prefill Pass 2");
-
-    const std::string library_name = "pal";
-    const std::string kernel_name = "paged_attn_prefill_pass2_kernel";
-
-    auto kernel_state = d.get_kernel(kernel_name, library_name);
-    if (!kernel_state) {
-        throw std::runtime_error("[PAL Primitive] Failed to load Pass 2 kernel: " + kernel_name);
-    }
-
-    auto& encoder = d.get_command_encoder(s.index);
-    encoder.set_compute_pipeline_state(kernel_state);
-
-    spdlog::debug("[dispatch_prefill_pass2] Entry: params.num_active_batch_logical_pages = {}",
-                  params.num_active_batch_logical_pages);
-    spdlog::debug("[dispatch_prefill_pass2] params.query_token_count_total = {}, params.num_q_heads = {}",
-                  params.query_token_count_total, params.num_q_heads);
-
-    size_t pass2_grid_width = (params.query_token_count_total + params.pass2_token_block_size - 1) / params.pass2_token_block_size;
-    size_t pass2_grid_height = (params.num_q_heads + params.pass2_qhead_block_size - 1) / params.pass2_qhead_block_size;
-
-    spdlog::debug("[PAL Primitive] Pass 2 grid width: {}, height: {}", pass2_grid_width, pass2_grid_height);
-    spdlog::debug("[PAL Primitive] Pass 2's query token count: {}, num q heads: {}", core_dims.query_token_count, core_dims.num_q_heads);
-
-    metal::DispatchGrid grid;
-    grid.width = pass2_grid_width;
-    grid.height = pass2_grid_height;
-    grid.depth = 1;
-
-    // Calculate thread configuration
-    size_t PASS_2_SIMD_GROUPS_PER_TG = 4;
-    size_t desired_threads_per_tg = kernel_state->threadExecutionWidth() * PASS_2_SIMD_GROUPS_PER_TG;
-    auto thread_config = metal::MetalDispatcher::calculate_optimal_threads(kernel_state, desired_threads_per_tg);
-
-    // Calculate Pass 2 memory requirements
-    size_t pass2_tg_mem_bytes = 0;
-    pass2_tg_mem_bytes += thread_config.threads_per_group * sizeof(float) * 2;  // M and S scratch
-    pass2_tg_mem_bytes += thread_config.threads_per_group * core_dims.head_dim * sizeof(float); // O accumulators
-    pass2_tg_mem_bytes += core_dims.head_dim * sizeof(float);                   // Final O
-    pass2_tg_mem_bytes += 2 * sizeof(float);                                    // Global stats
-    pass2_tg_mem_bytes = kernel_utils::AttentionMemoryLayout::align_size(pass2_tg_mem_bytes);
-
-    // Set intermediate input arrays from Pass 1
-    spdlog::debug("[dispatch_prefill_pass2] m_locals_in shape: [{}, {}, {}]",
-                  m_locals_in.shape(0), m_locals_in.shape(1), m_locals_in.shape(2));
-    spdlog::debug("[dispatch_prefill_pass2] s_locals_in shape: [{}, {}, {}]",
-                  s_locals_in.shape(0), s_locals_in.shape(1), s_locals_in.shape(2));
-    spdlog::debug("[dispatch_prefill_pass2] o_partials_in shape: [{}, {}, {}, {}]",
-                  o_partials_in.shape(0), o_partials_in.shape(1), o_partials_in.shape(2), o_partials_in.shape(3));
-    spdlog::debug("[dispatch_prefill_pass2] work_items_buffer shape: [{}, {}]",
-                  work_items_buffer.shape(0), work_items_buffer.shape(1));
-
-    encoder.set_bytes(&params, sizeof(PagedAttentionParams), 7);
-
-    // Set input arrays
-    encoder.set_input_array(m_locals_in, 13);
-    encoder.set_input_array(s_locals_in, 14);
-    encoder.set_input_array(o_partials_in, 15);
-    encoder.set_input_array(work_items_buffer, 16);
-
-    // Set output array
-    encoder.set_output_array(final_out, 17);
-
-    metal::MetalDispatcher::dispatch_kernel(encoder, grid, thread_config.threads_per_group, pass2_tg_mem_bytes);
-}
 
 PagedAttentionPrimitive::PagedAttentionPrimitive(
     mx::StreamOrDevice stream_or_device,
@@ -504,24 +418,27 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx:
     size_t bytes = out.nbytes();
     out.set_data(mx::allocator::malloc(bytes));
 
-    // Dispatch to appropriate implementation
-    if (is_prefill_) {
-        _eval_gpu_prefill(inputs, out);
-    } else {
-        _eval_gpu_decode(inputs, out);
-    }
-}
-
-void PagedAttentionPrimitive::_eval_gpu_decode(const std::vector<mx::array>& inputs, mx::array& out) {
-    debug::KernelDebugger::log_kernel_start("PAL Decode");
-
-    // Prepare Metal kernel and command encoder
     auto& s = stream();
     auto& d = mlx::core::metal::device(s.device);
 
+    // Dispatch to appropriate implementation
+    if (is_prefill_) {
+        _eval_gpu_prefill(s, d, inputs, out);
+    } else {
+        _eval_gpu_decode(s, d, inputs, out);
+    }
+}
+
+void PagedAttentionPrimitive::_eval_gpu_decode(
+    const mlx::core::Stream& stream,
+    mlx::core::metal::Device& device,
+    const std::vector<mx::array>& inputs,
+    mx::array& out
+) {
+    // Prepare Metal kernel and command encoder
     const std::string library_name = "pal";
     const std::string kernel_name = "paged_attn_decode_kernel";
-    auto kernel_state = d.get_kernel(kernel_name, library_name);
+    auto kernel_state = device.get_kernel(kernel_name, library_name);
     if (!kernel_state) {
         throw std::runtime_error("[PAL Primitive] Failed to load kernel: " + kernel_name);
     }
@@ -530,21 +447,15 @@ void PagedAttentionPrimitive::_eval_gpu_decode(const std::vector<mx::array>& inp
     PagedAttentionValidator validator(/* is_prefill */ false);
     CoreDims core_dims = validator.validate_and_extract_dims(inputs);
 
-    // Log input information
-    std::vector<std::string> input_names = {
-        "q", "k_pool", "v_pool", "page_table",
-        "sequence_lengths", "query_to_seq_map", "query_token_offset"
-    };
-    debug::KernelDebugger::validate_and_log_inputs("PAL Decode", inputs, input_names);
-
     // Build parameters for decode
     PagedAttentionParamBuilder param_builder(core_dims, inputs[1], inputs[3], false);
-    auto* device_ptr = d.mtl_device();
-    PagedAttentionParams params = param_builder.build(device_ptr);
+    PagedAttentionParams params = param_builder.build(device.mtl_device());
 
     // Calculate thread configuration
     auto thread_config = metal::MetalDispatcher::calculate_optimal_threads(
-        kernel_state, kernels::DEFAULT_THREADS_PER_GROUP);
+        kernel_state,
+        kernels::DEFAULT_THREADS_PER_GROUP
+    );
 
     // Calculate memory layout
     auto memory_layout = kernel_utils::calculate_attention_memory_layout(
@@ -554,11 +465,6 @@ void PagedAttentionPrimitive::_eval_gpu_decode(const std::vector<mx::array>& inp
         false  // is_prefill
     );
 
-    debug::KernelDebugger::log_memory_layout("PAL Decode", memory_layout);
-
-    // Validate input pointers
-    metal::MetalDispatcher::validate_input_pointers(inputs, "PAL Decode");
-
     // Calculate dispatch grid for decode
     metal::DispatchGrid grid;
     grid.width = core_dims.num_items_to_process;
@@ -566,13 +472,17 @@ void PagedAttentionPrimitive::_eval_gpu_decode(const std::vector<mx::array>& inp
     grid.depth = params.num_sequences_in_batch;
 
     // Setup compute encoder
-    auto& compute_encoder = d.get_command_encoder(s.index);
+    auto& compute_encoder = device.get_command_encoder(stream.index);
     compute_encoder.set_compute_pipeline_state(kernel_state);
 
-    // Set input arrays
-    metal::MetalDispatcher::setup_input_arrays(compute_encoder, inputs, 0);
-
     // Set parameters and output
+    compute_encoder.set_input_array(inputs[0], 0);
+    compute_encoder.set_input_array(inputs[1], 1);
+    compute_encoder.set_input_array(inputs[2], 2);
+    compute_encoder.set_input_array(inputs[3], 3);
+    compute_encoder.set_input_array(inputs[4], 4);
+    compute_encoder.set_input_array(inputs[5], 5);
+    compute_encoder.set_input_array(inputs[6], 6);
     compute_encoder.set_bytes(&params, sizeof(PagedAttentionParams), 7);
     compute_encoder.set_output_array(out, 8);
 
@@ -580,24 +490,22 @@ void PagedAttentionPrimitive::_eval_gpu_decode(const std::vector<mx::array>& inp
     metal::MetalDispatcher::dispatch_kernel(
         compute_encoder, grid,
         thread_config.threads_per_group,
-        memory_layout.total_bytes);
-
-    debug::KernelDebugger::log_kernel_end("PAL Decode");
+        memory_layout.total_bytes
+    );
 }
 
-void PagedAttentionPrimitive::_eval_gpu_prefill(const std::vector<mx::array>& inputs, mx::array& out) {
-    debug::KernelDebugger::log_kernel_start("PAL Prefill");
-
-    // Prepare Metal kernel and command encoder
-    auto& s = stream();
-    auto& d = mlx::core::metal::device(s.device);
-    auto* metal_device_ptr = d.mtl_device();
+void PagedAttentionPrimitive::_eval_gpu_prefill(
+    const mlx::core::Stream& stream,
+    mlx::core::metal::Device& device,
+    const std::vector<mx::array>& inputs,
+    mx::array& out
+) {
+    auto* metal_device_ptr = device.mtl_device();
 
     const std::string library_name = "pal";
-    const std::string kernel_name = "paged_attn_prefill_kernel";
-    auto kernel_state = d.get_kernel(kernel_name, library_name);
+    auto kernel_state = device.get_kernel("paged_attn_prefill_pass1_kernel", library_name);
     if (!kernel_state) {
-        throw std::runtime_error("[PAL Primitive] Failed to load kernel: " + kernel_name);
+        throw std::runtime_error("[PAL Primitive] Failed to load kernel: paged_attn_prefill_pass1_kernel");
     }
 
     // Validate inputs and extract dimensions
@@ -608,16 +516,10 @@ void PagedAttentionPrimitive::_eval_gpu_prefill(const std::vector<mx::array>& in
         core_dims.head_dim,
         core_dims.num_q_heads,
         core_dims.num_kv_heads,
-        s,
+        stream,
         kernel_state
     );
 
-    // Log input information
-    std::vector<std::string> input_names = {
-        "q", "k_pool", "v_pool", "page_table",
-        "sequence_lengths", "query_to_seq_map", "query_token_offset"
-    };
-    debug::KernelDebugger::validate_and_log_inputs("PAL Prefill", inputs, input_names);
     // Build parameters for prefill
     PagedAttentionParamBuilder param_builder(core_dims, inputs[1], inputs[3], true);
     PagedAttentionParams params = param_builder.build(metal_device_ptr);
@@ -658,7 +560,7 @@ void PagedAttentionPrimitive::_eval_gpu_prefill(const std::vector<mx::array>& in
     mx::array query_starts_buffer = create_query_starts_buffer(
         params.num_sequences_in_batch,
         inputs[4],
-        s
+        stream
     );
     spdlog::debug("[PAL Prefill Debug] query_starts_buffer created. Shape: [{}]", query_starts_buffer.shape(0));
 
@@ -682,17 +584,14 @@ void PagedAttentionPrimitive::_eval_gpu_prefill(const std::vector<mx::array>& in
         static_cast<int32_t>(params.head_dim)
     };
 
-    mx::array m_locals_pass1_out_arr = mx::zeros(m_s_shape, mx::float32, s);
-    size_t m_locals_pass1_out_arr_bytes = m_locals_pass1_out_arr.nbytes();
-    m_locals_pass1_out_arr.set_data(mx::allocator::malloc(m_locals_pass1_out_arr_bytes));
+    mx::array m_locals_pass1_out = mx::array(m_s_shape, mx::float32, nullptr, {});
+    m_locals_pass1_out.set_data(mx::allocator::malloc(m_locals_pass1_out.nbytes()));
 
-    mx::array s_locals_pass1_out_arr = mx::zeros(m_s_shape, mx::float32, s);
-    size_t s_locals_pass1_out_arr_bytes = s_locals_pass1_out_arr.nbytes();
-    s_locals_pass1_out_arr.set_data(mx::allocator::malloc(s_locals_pass1_out_arr_bytes));
+    mx::array s_locals_pass1_out = mx::array(m_s_shape, mx::float32, nullptr, {});
+    s_locals_pass1_out.set_data(mx::allocator::malloc(s_locals_pass1_out.nbytes()));
 
-    mx::array o_partials_pass1_out_arr = mx::zeros(o_shape, mx::float16, s);
-    size_t o_partials_pass1_out_arr_bytes = o_partials_pass1_out_arr.nbytes();
-    o_partials_pass1_out_arr.set_data(mx::allocator::malloc(o_partials_pass1_out_arr_bytes));
+    mx::array o_partials_pass1_out = mx::array(o_shape, mx::float16, nullptr, {});
+    o_partials_pass1_out.set_data(mx::allocator::malloc(o_partials_pass1_out.nbytes()));
 
     // Calculate dispatch grid for prefill Pass 1
     metal::DispatchGrid grid;
@@ -707,20 +606,23 @@ void PagedAttentionPrimitive::_eval_gpu_prefill(const std::vector<mx::array>& in
                   params.num_active_batch_logical_pages);
 
     // Setup compute encoder
-    auto& compute_encoder = d.get_command_encoder(s.index);
+    auto& compute_encoder = device.get_command_encoder(stream.index);
     compute_encoder.set_compute_pipeline_state(kernel_state);
-
-    // Set input arrays
-    metal::MetalDispatcher::setup_input_arrays(compute_encoder, inputs, 0);
-    // Set parameters - we do this here so that the params are updated.
-    compute_encoder.set_bytes(&params, sizeof(PagedAttentionParams), 7);
     // Set active work items buffer
+    compute_encoder.set_input_array(inputs[0], 0);
+    compute_encoder.set_input_array(inputs[1], 1);
+    compute_encoder.set_input_array(inputs[2], 2);
+    compute_encoder.set_input_array(inputs[3], 3);
+    compute_encoder.set_input_array(inputs[4], 4);
+    compute_encoder.set_input_array(inputs[5], 5);
+    compute_encoder.set_input_array(inputs[6], 6);
+    compute_encoder.set_bytes(&params, sizeof(PagedAttentionParams), 7);
     compute_encoder.set_input_array(work_items_buffer, 8);
     compute_encoder.set_input_array(query_starts_buffer, 9);
     // Set intermediate outputs for prefill Pass 1
-    compute_encoder.set_output_array(m_locals_pass1_out_arr, 10);
-    compute_encoder.set_output_array(s_locals_pass1_out_arr, 11);
-    compute_encoder.set_output_array(o_partials_pass1_out_arr, 12);
+    compute_encoder.set_output_array(m_locals_pass1_out, 10);
+    compute_encoder.set_output_array(s_locals_pass1_out, 11);
+    compute_encoder.set_output_array(o_partials_pass1_out, 12);
 
     // Dispatch kernel
     spdlog::debug("[PAL Prefill Debug] Dispatching Pass 1kernel with threads_per_group = {}", final_threads_per_tg);
@@ -730,16 +632,63 @@ void PagedAttentionPrimitive::_eval_gpu_prefill(const std::vector<mx::array>& in
         memory_layout.total_bytes
     );
 
-    // Launch Pass 2 for prefill
-    dispatch_prefill_pass2(
-        d, s, core_dims, params,
-        m_locals_pass1_out_arr,
-        s_locals_pass1_out_arr,
-        o_partials_pass1_out_arr,
-        work_items_buffer,
-        out);
-    spdlog::debug("[PAL Prefill Debug] Pass 2 dispatched");
-    debug::KernelDebugger::log_kernel_end("PAL Prefill");
+    kernel_state = device.get_kernel("paged_attn_prefill_pass2_kernel", library_name);
+    if (!kernel_state) {
+        throw std::runtime_error("[PAL Primitive] Failed to load Pass 2 kernel: paged_attn_prefill_pass2_kernel");
+    }
+
+    compute_encoder.set_compute_pipeline_state(kernel_state);
+
+    size_t pass2_grid_width = (params.query_token_count_total + params.pass2_token_block_size - 1) / params.pass2_token_block_size;
+    size_t pass2_grid_height = (params.num_q_heads + params.pass2_qhead_block_size - 1) / params.pass2_qhead_block_size;
+
+    spdlog::debug("[PAL Primitive] Pass 2 grid width: {}, height: {}", pass2_grid_width, pass2_grid_height);
+    spdlog::debug("[PAL Primitive] Pass 2's query token count: {}, num q heads: {}", core_dims.query_token_count, core_dims.num_q_heads);
+
+    metal::DispatchGrid pass2_grid;
+    pass2_grid.width = pass2_grid_width;
+    pass2_grid.height = pass2_grid_height;
+    pass2_grid.depth = 1;
+
+    // Calculate thread configuration
+    size_t PASS_2_SIMD_GROUPS_PER_TG = 4;
+    size_t desired_threads_per_tg = kernel_state->threadExecutionWidth() * PASS_2_SIMD_GROUPS_PER_TG;
+    auto thread_config = metal::MetalDispatcher::calculate_optimal_threads(kernel_state, desired_threads_per_tg);
+
+    // Calculate Pass 2 memory requirements
+    size_t pass2_tg_mem_bytes = 0;
+    pass2_tg_mem_bytes += thread_config.threads_per_group * sizeof(float) * 2;  // M and S scratch
+    pass2_tg_mem_bytes += thread_config.threads_per_group * core_dims.head_dim * sizeof(float); // O accumulators
+    pass2_tg_mem_bytes += core_dims.head_dim * sizeof(float);                   // Final O
+    pass2_tg_mem_bytes += 2 * sizeof(float);                                    // Global stats
+    pass2_tg_mem_bytes = kernel_utils::AttentionMemoryLayout::align_size(pass2_tg_mem_bytes);
+
+    // Set intermediate input arrays from Pass 1
+    spdlog::debug("[dispatch_prefill_pass2] m_locals_in shape: [{}, {}, {}]",
+                  m_locals_pass1_out.shape(0), m_locals_pass1_out.shape(1), m_locals_pass1_out.shape(2));
+    spdlog::debug("[dispatch_prefill_pass2] s_locals_in shape: [{}, {}, {}]",
+                  s_locals_pass1_out.shape(0), s_locals_pass1_out.shape(1), s_locals_pass1_out.shape(2));
+    spdlog::debug("[dispatch_prefill_pass2] o_partials_in shape: [{}, {}, {}, {}]",
+                  o_partials_pass1_out.shape(0), o_partials_pass1_out.shape(1), o_partials_pass1_out.shape(2), o_partials_pass1_out.shape(3));
+    spdlog::debug("[dispatch_prefill_pass2] work_items_buffer shape: [{}, {}]",
+                  work_items_buffer.shape(0), work_items_buffer.shape(1));
+
+
+    // Set input arrays
+    compute_encoder.set_input_array(m_locals_pass1_out, 0);
+    compute_encoder.set_input_array(s_locals_pass1_out, 1);
+    compute_encoder.set_input_array(o_partials_pass1_out, 2);
+    compute_encoder.set_input_array(work_items_buffer, 3);
+    // Set parameters
+    compute_encoder.set_bytes(&params, sizeof(PagedAttentionParams), 4);
+    // Set output array
+    compute_encoder.set_output_array(out, 5);
+
+    metal::MetalDispatcher::dispatch_kernel(
+        compute_encoder, pass2_grid,
+        thread_config.threads_per_group,
+        pass2_tg_mem_bytes
+    );
 }
 
 std::vector<mx::array> PagedAttentionPrimitive::vjp(
@@ -902,7 +851,7 @@ std::tuple<uint32_t, uint32_t, uint32_t> PagedAttentionPrimitive::get_optimal_ti
     if (!pipeline_state) {
         pal::cpp::MetalLibRegistrar::ensure_pal_metallib_registered(stream_or_device);
         const std::string library_name = "pal";
-        const std::string kernel_name = "paged_attn_prefill_kernel";
+        const std::string kernel_name = "get_device_info";
         kernel_state = d.get_kernel(kernel_name, library_name);
         if (!kernel_state) {
             throw std::runtime_error("[PAL Primitive] Failed to load kernel: " + kernel_name);

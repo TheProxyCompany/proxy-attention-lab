@@ -31,28 +31,6 @@ ThreadConfig MetalDispatcher::calculate_optimal_threads(
     return config;
 }
 
-void MetalDispatcher::setup_input_arrays(
-    mx::metal::CommandEncoder& encoder,
-    const std::vector<mx::array>& inputs,
-    size_t starting_index
-) {
-    for (size_t i = 0; i < inputs.size(); ++i) {
-        encoder.set_input_array(inputs[i], starting_index + i);
-    }
-}
-
-void MetalDispatcher::validate_input_pointers(
-    const std::vector<mx::array>& inputs,
-    const std::string& kernel_name
-) {
-    for (size_t i = 0; i < inputs.size(); ++i) {
-        if (!inputs[i].data<void>()) {
-            spdlog::error("[{}] Input array {} has null data pointer", kernel_name, i);
-            throw std::runtime_error("Null input data pointer detected in " + kernel_name);
-        }
-    }
-}
-
 void MetalDispatcher::dispatch_kernel(
     mx::metal::CommandEncoder& encoder,
     const DispatchGrid& grid,
