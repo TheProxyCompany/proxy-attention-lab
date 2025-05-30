@@ -149,10 +149,10 @@ using namespace metal;
 
         // Calculate the number of SIMD groups per GQA stream
         const uint total_simd_groups_in_tg = tg_dim.x / actual_simd_width;
-        const uint SIMD_GROUPS_PER_GQA_GROUP_FACTOR_simd_groups_per_gqa_stream = total_simd_groups_in_tg / N_q_per_kv;
+        const uint simd_groups_per_gqa_stream = total_simd_groups_in_tg / N_q_per_kv;
 
-        uint gqa_stream_idx_for_this_simd_group = simd_group_id / SIMD_GROUPS_PER_GQA_GROUP_FACTOR_simd_groups_per_gqa_stream;
-        uint sub_simd_group_idx_within_stream = simd_group_id % SIMD_GROUPS_PER_GQA_GROUP_FACTOR_simd_groups_per_gqa_stream;
+        uint gqa_stream_idx_for_this_simd_group = simd_group_id / simd_groups_per_gqa_stream;
+        uint sub_simd_group_idx_within_stream = simd_group_id % simd_groups_per_gqa_stream;
 
         if (gqa_stream_idx_for_this_simd_group < N_q_per_kv) { // Check if this SIMD group is part of an active GQA stream
 
@@ -166,7 +166,7 @@ using namespace metal;
             // Iterate through the Q-vectors that *this specific SIMD group* (within its GQA stream's assigned SIMD groups) is responsible for loading.
             for (uint q_idx_in_block_for_this_sg = sub_simd_group_idx_within_stream;
                 q_idx_in_block_for_this_sg < num_queries_in_this_block;
-                q_idx_in_block_for_this_sg += SIMD_GROUPS_PER_GQA_GROUP_FACTOR_simd_groups_per_gqa_stream) {
+                q_idx_in_block_for_this_sg += simd_groups_per_gqa_stream) {
 
                 uint current_query_local_idx = q_block_start_local_idx + q_idx_in_block_for_this_sg;
                 uint master_query_idx = query_starts_for_batch_item_arr[assigned_batch_item_idx] + current_query_local_idx;
@@ -212,9 +212,9 @@ using namespace metal;
         // --- END: Zero V_Sum_Accumulators_Area ---
 
         // F. Compute QK^T
+        // Skip computation for inactive SIMD groups
         if (gqa_stream_idx_for_this_simd_group >= N_q_per_kv) {
-            // This SIMD group is outside of the active GQA stream
-            continue;
+            continue; // Skip to next Q-block iteration
         }
 
         threadgroup float* q_block_shmem_for_this_gqa_stream_for_compute = Q_shmem_base +
@@ -225,9 +225,10 @@ using namespace metal;
         // It forms the core of the QK^T computation and subsequent V-accumulation.
         // Profiling has indicated this section as a significant contributor to latency,
         // particularly as the number of queries (sequence length) increases.
+
         for (uint q_idx_in_block_for_this_sg = sub_simd_group_idx_within_stream;
-              q_idx_in_block_for_this_sg < num_queries_in_this_block; // num_queries_in_this_block is D_s
-              q_idx_in_block_for_this_sg += SIMD_GROUPS_PER_GQA_GROUP_FACTOR_simd_groups_per_gqa_stream
+              q_idx_in_block_for_this_sg < num_queries_in_this_block;
+              q_idx_in_block_for_this_sg += simd_groups_per_gqa_stream
         ) {
             // F.1. Per-Query Setup
             // F.1.a: Calculate the local index of this query within the original full sequence
@@ -564,8 +565,6 @@ using namespace metal;
         device half* final_out_ptr_for_item = final_output_buffer + base_offset_final_output;
 
         // This thread writes its HeadDim float values (from O_final_for_this_thread_tg)
-        // to global memory, converting to half.
-        // This is a HeadDim-wide operation.
         for (uint h_idx = 0; h_idx < params.head_dim; h_idx += 4) { // Process in float4 chunks
             // Read the float4 chunk from this thread's TGMem accumulator
             float4 val_f4_to_write = *((threadgroup float4*)(O_final_for_this_thread_tg + h_idx));

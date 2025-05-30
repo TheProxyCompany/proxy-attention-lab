@@ -19,7 +19,7 @@ import mlx.core as mx
 import mlx.nn
 import pytest
 
-from proxy_attention_lab import paged_attention
+from proxy_attention_lab import calculate_page_size, paged_attention
 
 logger = logging.getLogger(__name__)
 
@@ -51,13 +51,13 @@ def test_pal_latency_vs_seq_len(benchmark, seq_len_val):
     # Create test parameters from baseline with specified sequence length
     params = BASELINE_CONFIG.copy()
     params["seq_len"] = seq_len_val
-    tokens_per_page = params["tokens_per_page"]
     num_q_heads = params["num_q_heads"]
     num_kv_heads = params["num_kv_heads"]
     head_dim = params["head_dim"]
     dtype = params["dtype"]
     batch_size = params["batch_size"]
     seq_len = params["seq_len"]
+    tokens_per_page = calculate_page_size(head_dim, num_q_heads, num_kv_heads)
 
     # Setup input tensors
     num_tokens = batch_size * seq_len
@@ -310,101 +310,102 @@ def setup_sdpa_decode_inputs(params):
     return queries, keys, values, scale, causal_mask
 
 
-# @pytest.mark.parametrize("history_len_val", [1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072])
-# def test_pal_decode_latency_vs_history_len(benchmark, history_len_val):
-#     """
-#     Benchmark paged_attention decode operation performance across different history lengths.
+@pytest.mark.parametrize("history_len_val", [1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072])
+def test_pal_decode_latency_vs_history_len(benchmark, history_len_val):
+    """
+    Benchmark paged_attention decode operation performance across different history lengths.
 
-#     This test measures the latency of generating a single new token while attending to
-#     a varying amount of history in the KV cache. It uses a fixed batch size to measure
-#     how decode latency scales with history length.
+    This test measures the latency of generating a single new token while attending to
+    a varying amount of history in the KV cache. It uses a fixed batch size to measure
+    how decode latency scales with history length.
 
-#     Args:
-#         benchmark: pytest-benchmark fixture for performance measurement
-#         history_len_val: history length value to test (size of existing KV cache)
-#     """
-#     # Create test parameters for decode phase
-#     params = BASELINE_CONFIG.copy()
-#     params["history_len"] = history_len_val
+    Args:
+        benchmark: pytest-benchmark fixture for performance measurement
+        history_len_val: history length value to test (size of existing KV cache)
+    """
+    # Create test parameters for decode phase
+    params = BASELINE_CONFIG.copy()
+    params["history_len"] = history_len_val
+    params["tokens_per_page"] = calculate_page_size(params["head_dim"], params["num_q_heads"], params["num_kv_heads"])
 
-#     # Calculate the number of query items for benchmarking info
-#     params["num_query_items"] = params["batch_size"] * params["num_q_heads"]
+    # Calculate the number of query items for benchmarking info
+    params["num_query_items"] = params["batch_size"] * params["num_q_heads"]
 
-#     # Add benchmark metadata if supported
-#     if hasattr(benchmark, "extra_info"):
-#         benchmark.extra_info["run_params"] = params.copy()
+    # Add benchmark metadata if supported
+    if hasattr(benchmark, "extra_info"):
+        benchmark.extra_info["run_params"] = params.copy()
 
-#     # Setup decode inputs
-#     queries, k_hist, v_hist, pt, slens_hist, q_map, q_off = setup_pal_decode_inputs(params)
+    # Setup decode inputs
+    queries, k_hist, v_hist, pt, slens_hist, q_map, q_off = setup_pal_decode_inputs(params)
 
-#     # Define benchmark function that evaluates the result
-#     def operation_to_benchmark():
-#         out = paged_attention(
-#             queries,
-#             k_hist,
-#             v_hist,
-#             pt,
-#             slens_hist,
-#             q_map,
-#             q_off,
-#             is_prefill=False,  # explicitly use decode mode for this benchmark
-#         )
-#         mx.eval(out)
-#         return out
+    # Define benchmark function that evaluates the result
+    def operation_to_benchmark():
+        out = paged_attention(
+            queries,
+            k_hist,
+            v_hist,
+            pt,
+            slens_hist,
+            q_map,
+            q_off,
+            is_prefill=False,  # explicitly use decode mode for this benchmark
+        )
+        mx.eval(out)
+        return out
 
-#     # Run benchmark
-#     result = benchmark(operation_to_benchmark)
+    # Run benchmark
+    result = benchmark(operation_to_benchmark)
 
-#     # Assert the output has expected shape and valid values
-#     num_tokens = queries.shape[0]
-#     num_q_heads = queries.shape[1]
-#     head_dim = params["head_dim"]
-#     expected_shape = (num_tokens * num_q_heads, head_dim)
+    # Assert the output has expected shape and valid values
+    num_tokens = queries.shape[0]
+    num_q_heads = queries.shape[1]
+    head_dim = params["head_dim"]
+    expected_shape = (num_tokens * num_q_heads, head_dim)
 
-#     assert result.shape == expected_shape
-#     assert mx.isfinite(result).all()
+    assert result.shape == expected_shape
+    assert mx.isfinite(result).all()
 
 
-# @pytest.mark.parametrize("history_len_val", [1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072])
-# def test_mlx_decode_latency_vs_history_len(benchmark, history_len_val):
-#     """
-#     Benchmark MLX scaled_dot_product_attention decode operation performance across different history lengths.
+@pytest.mark.parametrize("history_len_val", [1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072])
+def test_mlx_decode_latency_vs_history_len(benchmark, history_len_val):
+    """
+    Benchmark MLX scaled_dot_product_attention decode operation performance across different history lengths.
 
-#     This test measures the latency of generating a single new token while attending to
-#     a varying amount of history in the KV cache. It uses a fixed batch size to measure
-#     how decode latency scales with history length.
+    This test measures the latency of generating a single new token while attending to
+    a varying amount of history in the KV cache. It uses a fixed batch size to measure
+    how decode latency scales with history length.
 
-#     Args:
-#         benchmark: pytest-benchmark fixture for performance measurement
-#         history_len_val: history length value to test (size of existing KV cache)
-#     """
-#     # Create test parameters for decode phase
-#     params = BASELINE_CONFIG.copy()
-#     params["history_len"] = history_len_val
+    Args:
+        benchmark: pytest-benchmark fixture for performance measurement
+        history_len_val: history length value to test (size of existing KV cache)
+    """
+    # Create test parameters for decode phase
+    params = BASELINE_CONFIG.copy()
+    params["history_len"] = history_len_val
 
-#     # Add benchmark metadata if supported
-#     if hasattr(benchmark, "extra_info"):
-#         benchmark.extra_info["run_params"] = params.copy()
+    # Add benchmark metadata if supported
+    if hasattr(benchmark, "extra_info"):
+        benchmark.extra_info["run_params"] = params.copy()
 
-#     # Setup decode inputs
-#     queries, keys, values, scale, causal_mask = setup_sdpa_decode_inputs(params)
+    # Setup decode inputs
+    queries, keys, values, scale, causal_mask = setup_sdpa_decode_inputs(params)
 
-#     # Define benchmark function that evaluates the result
-#     def operation_to_benchmark():
-#         output = mx.fast.scaled_dot_product_attention(
-#             queries,
-#             keys,
-#             values,
-#             scale=scale,
-#             mask=causal_mask,
-#         )
-#         mx.eval(output)
-#         return output
+    # Define benchmark function that evaluates the result
+    def operation_to_benchmark():
+        output = mx.fast.scaled_dot_product_attention(
+            queries,
+            keys,
+            values,
+            scale=scale,
+            mask=causal_mask,
+        )
+        mx.eval(output)
+        return output
 
-#     # Run benchmark
-#     result = benchmark(operation_to_benchmark)
+    # Run benchmark
+    result = benchmark(operation_to_benchmark)
 
-#     # Assert the output has expected shape and valid values
-#     expected_shape = (params["batch_size"], params["num_q_heads"], 1, params["head_dim"])
-#     assert result.shape == expected_shape
-#     assert mx.isfinite(result).all()
+    # Assert the output has expected shape and valid values
+    expected_shape = (params["batch_size"], params["num_q_heads"], 1, params["head_dim"])
+    assert result.shape == expected_shape
+    assert mx.isfinite(result).all()

@@ -132,13 +132,13 @@ static void BM_PAL_LatencyVsSeqLen(benchmark::State& state) {
     int head_dim = params.head_dim;
     mx::Dtype dtype = params.dtype;
 
-    auto [D_s, _, _] = pal::cpp::PagedAttentionPrimitive::get_optimal_tile_size_and_thread_info(
+    auto info = pal::cpp::PagedAttentionPrimitive::get_optimal_tile_size_and_thread_info(
         head_dim,
         num_q_heads,
         num_kv_heads
     );
 
-    params.tokens_per_page = D_s;
+    params.tokens_per_page = std::get<0>(info);
     int tokens_per_page = params.tokens_per_page;
 
     // Setup input tensors
@@ -304,6 +304,14 @@ static void BM_PAL_DecodeLatencyVsHistoryLen(benchmark::State& state) {
         offset_data[i] = history_len + 1; // Position after history
     }
     mx::array query_token_offset = mx::array(offset_data.data(), {batch_size}, mx::int32);
+
+    queries.eval();
+    k_cache_pool.eval();
+    v_cache_pool.eval();
+    page_table.eval();
+    sequence_lengths.eval();
+    query_to_seq_map.eval();
+    query_token_offset.eval();
 
     // Main benchmark loop
     for (auto _ : state) {
