@@ -568,14 +568,13 @@ void PagedAttentionPrimitive::_eval_gpu_prefill(
     spdlog::debug("[PAL Prefill Debug] Allocating intermediate arrays with: query_token_count_total={}, num_q_heads={}, num_active_batch_logical_pages={}",
                   params.query_token_count_total, params.num_q_heads, params.num_active_batch_logical_pages);
 
-    // Allocate intermediate arrays for Pass 1 outputs
+    // intermediate arrays for Pass 1 outputs
     // Shape: [TotalQueryTokensInBatch, NumQHeads, NumActiveBatchLogicalPages]
     mx::Shape m_s_shape = {
         static_cast<int32_t>(params.query_token_count_total),
         static_cast<int32_t>(params.num_q_heads),
         static_cast<int32_t>(params.num_active_batch_logical_pages)
     };
-
     // Shape: [TotalQueryTokensInBatch, NumQHeads, NumActiveBatchLogicalPages, HeadDim]
     mx::Shape o_shape = {
         static_cast<int32_t>(params.query_token_count_total),
@@ -583,15 +582,6 @@ void PagedAttentionPrimitive::_eval_gpu_prefill(
         static_cast<int32_t>(params.num_active_batch_logical_pages),
         static_cast<int32_t>(params.head_dim)
     };
-
-    mx::array m_locals_pass1_out = mx::array(m_s_shape, mx::float32, nullptr, {});
-    m_locals_pass1_out.set_data(mx::allocator::malloc(m_locals_pass1_out.nbytes()));
-
-    mx::array s_locals_pass1_out = mx::array(m_s_shape, mx::float32, nullptr, {});
-    s_locals_pass1_out.set_data(mx::allocator::malloc(s_locals_pass1_out.nbytes()));
-
-    mx::array o_partials_pass1_out = mx::array(o_shape, mx::float16, nullptr, {});
-    o_partials_pass1_out.set_data(mx::allocator::malloc(o_partials_pass1_out.nbytes()));
 
     // Calculate dispatch grid for prefill Pass 1
     metal::DispatchGrid grid;
@@ -619,7 +609,21 @@ void PagedAttentionPrimitive::_eval_gpu_prefill(
     compute_encoder.set_bytes(&params, sizeof(PagedAttentionParams), 7);
     compute_encoder.set_input_array(work_items_buffer, 8);
     compute_encoder.set_input_array(query_starts_buffer, 9);
-    // Set intermediate outputs for prefill Pass 1
+
+    // set intermediate outputs for prefill Pass 1
+    mx::array m_locals_pass1_out = mx::array(m_s_shape, mx::float32, nullptr, {});
+    m_locals_pass1_out.set_data(mx::allocator::malloc(m_locals_pass1_out.nbytes()));
+
+    mx::array s_locals_pass1_out = mx::array(m_s_shape, mx::float32, nullptr, {});
+    s_locals_pass1_out.set_data(mx::allocator::malloc(s_locals_pass1_out.nbytes()));
+
+    mx::array o_partials_pass1_out = mx::array(o_shape, mx::float16, nullptr, {});
+    o_partials_pass1_out.set_data(mx::allocator::malloc(o_partials_pass1_out.nbytes()));
+
+    device.add_temporary(m_locals_pass1_out, stream.index);
+    device.add_temporary(s_locals_pass1_out, stream.index);
+    device.add_temporary(o_partials_pass1_out, stream.index);
+
     compute_encoder.set_output_array(m_locals_pass1_out, 10);
     compute_encoder.set_output_array(s_locals_pass1_out, 11);
     compute_encoder.set_output_array(o_partials_pass1_out, 12);
