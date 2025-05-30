@@ -620,6 +620,26 @@ void PagedAttentionPrimitive::_eval_gpu_prefill(
     mx::array o_partials_pass1_out = mx::array(o_shape, mx::float16, nullptr, {});
     o_partials_pass1_out.set_data(mx::allocator::malloc(o_partials_pass1_out.nbytes()));
 
+    // does not work to resolve determinism issue
+    //
+    // auto blit_encoder = device.get_command_buffer(stream.index)->blitCommandEncoder();
+    // blit_encoder->fillBuffer(
+    //     static_cast<MTL::Buffer*>(m_locals_pass1_out.buffer().ptr()),
+    //     NS::Range(0, m_locals_pass1_out.nbytes()),
+    //     0
+    // );
+    // blit_encoder->fillBuffer(
+    //     static_cast<MTL::Buffer*>(s_locals_pass1_out.buffer().ptr()),
+    //     NS::Range(0, s_locals_pass1_out.nbytes()),
+    //     0
+    // );
+    // blit_encoder->fillBuffer(
+    //     static_cast<MTL::Buffer*>(o_partials_pass1_out.buffer().ptr()),
+    //     NS::Range(0, o_partials_pass1_out.nbytes()),
+    //     0
+    // );
+    // blit_encoder->endEncoding();
+
     device.add_temporary(m_locals_pass1_out, stream.index);
     device.add_temporary(s_locals_pass1_out, stream.index);
     device.add_temporary(o_partials_pass1_out, stream.index);
