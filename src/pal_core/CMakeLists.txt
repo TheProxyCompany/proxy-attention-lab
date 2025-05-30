@@ -156,7 +156,7 @@ file(GLOB_RECURSE CORE_LIB_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/kernel_utils/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/metal/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/debug/*.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/*/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/*.cpp"
 )
 
 add_library(${CORE_LIB_NAME} STATIC ${CORE_LIB_SOURCES})
