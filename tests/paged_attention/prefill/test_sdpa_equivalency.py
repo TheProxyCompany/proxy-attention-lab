@@ -202,7 +202,7 @@ def test_pal_vs_sdpa_equivalency_mha(batch_size, seq_len, num_heads, head_dim, d
     logger.info(f"    Difference metrics - Max: {max_diff:.6f}, Mean: {mean_diff:.6f}")
 
     # For FP16, we allow slightly larger differences due to numerical precision & different implementation
-    current_atol = 1e-2 if seq_len < 2048 else 1e-1
+    current_atol = 1e-2
     current_rtol = 1e-5
     logger.info(f"    Tolerance values - Absolute: {current_atol}, Relative: {current_rtol}")
 
