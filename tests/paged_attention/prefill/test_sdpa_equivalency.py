@@ -4,11 +4,9 @@ import mlx.core as mx
 import mlx.nn as nn
 import pytest
 
-from proxy_attention_lab import paged_attention
+from proxy_attention_lab import calculate_page_size, paged_attention
 
 logger = logging.getLogger(__name__)
-
-tokens_per_page = 64
 
 
 @pytest.mark.parametrize(
@@ -50,13 +48,15 @@ def test_pal_vs_sdpa_equivalency_mha(batch_size, seq_len, num_heads, head_dim, d
     mx.random.seed(11)
 
     logger.info(f"Test: {test_pal_vs_sdpa_equivalency_mha.__name__}")
-
     num_q_heads, num_kv_heads = num_heads
 
     logger.info("  Test Configuration:")
     logger.info(f"    Batch size: {batch_size}, Sequence length: {seq_len}")
     logger.info(f"    Query heads: {num_q_heads}, KV heads: {num_kv_heads}, Head dim: {head_dim}")
     logger.info(f"    Data type: {dtype}")
+
+    tokens_per_page = calculate_page_size(head_dim, num_q_heads, num_kv_heads)
+    logger.info(f"    Tokens per page: {tokens_per_page}")
 
     # --- 1. Setup Inputs & Run MLX SDPA (Reference) ---
     sdpa_q_shape = (batch_size, num_q_heads, seq_len, head_dim)

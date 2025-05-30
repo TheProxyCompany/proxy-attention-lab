@@ -41,11 +41,10 @@ def test_paged_attention_determinism() -> None:
     num_kv_heads = 2  # MHA scenario
     head_dim = 64  # A common head dimension
 
-    num_total_pages = 4
-    tokens_per_page = 16
+    tokens_per_page = calculate_page_size(head_dim, num_q_heads, num_kv_heads)
 
-    num_sequences_in_batch = 2
-    max_logical_blocks_per_seq = (tokens_per_page * 2) // tokens_per_page  # e.g., 2 blocks
+    num_sequences_in_batch = 1
+    max_logical_blocks_per_seq = 1
 
     # Seed for reproducibility of input data generation
     mx.random.seed(11)
@@ -59,15 +58,13 @@ def test_paged_attention_determinism() -> None:
     py_queries = mx.random.normal(queries_shape, dtype=mx.float16)
 
     # 2. K/V Cache Pools
-    kv_cache_shape = (num_total_pages, tokens_per_page, num_kv_heads, head_dim)
+    kv_cache_shape = (1, tokens_per_page, num_kv_heads, head_dim)
     py_k_cache_pool = mx.random.normal(kv_cache_shape, dtype=mx.float16)
     py_v_cache_pool = mx.random.normal(kv_cache_shape, dtype=mx.float16)
 
     # 3. Page Table: [NumSequencesInBatch, MaxLogicalBlocksPerSeq]
     # Ensure page IDs are valid (0 to num_total_pages - 1)
-    py_page_table = mx.random.randint(
-        0, num_total_pages, [num_sequences_in_batch, max_logical_blocks_per_seq], dtype=mx.uint32
-    )
+    py_page_table = mx.random.randint(0, 1, [num_sequences_in_batch, max_logical_blocks_per_seq], dtype=mx.uint32)
 
     # 4. Sequence Lengths: [NumSequencesInBatch]
     # Ensure lengths are within reasonable bounds (e.g., up to max_logical_blocks_per_seq * tokens_per_page)

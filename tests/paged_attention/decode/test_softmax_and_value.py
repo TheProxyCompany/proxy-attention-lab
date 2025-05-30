@@ -101,6 +101,14 @@ def test_v_aggregation_local_accumulation() -> None:
     expected_v_output = py_v_cache_pool[0, 0, 0, :] * softmax_prob_hist0  # [10.0, 20.0, 30.0, 40.0] * 1.0
     expected_v_output_reshaped = expected_v_output.reshape(num_items, cfg_head_dim)
 
+    mx.eval(py_queries)
+    mx.eval(py_k_cache_pool)
+    mx.eval(py_v_cache_pool)
+    mx.eval(py_page_table)
+    mx.eval(py_sequence_lengths)
+    mx.eval(py_query_to_seq_map)
+    mx.eval(py_query_token_offset)
+
     # --- Run paged attention ---
     output_arr = paged_attention(
         py_queries,

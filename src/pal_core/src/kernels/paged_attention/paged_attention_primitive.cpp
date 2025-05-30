@@ -137,108 +137,170 @@ static mx::array create_query_starts_buffer(
     return mx::array(query_starts_cpu.data(), {static_cast<int>(num_sequences_in_batch)}, mx::uint32);
 }
 
+
 // Paged attention specific validator
 class PagedAttentionValidator : public kernel_utils::KernelValidator {
 public:
+    // Constructor to store the prefill mode
+    explicit PagedAttentionValidator(bool is_prefill) : is_prefill_(is_prefill) {}
+
     CoreDims validate_and_extract_dims(const std::vector<mx::array>& inputs) {
+        if (inputs.size() != 7) {
+            throw std::invalid_argument(
+                format_error("PAL Primitive", "Expected 7 inputs, received " + std::to_string(inputs.size())));
+        }
+        // Extract early for CoreDims population
+        const auto& k_pool = inputs[1];
+        kernel_utils::ValidationUtils::check_ndim(k_pool, 4, "k_pool");
+        extracted_dims_.tokens_per_page = k_pool.shape(1);
+        extracted_dims_.num_kv_heads = k_pool.shape(2);
+        extracted_dims_.head_dim = k_pool.shape(3);
+
+        // Now call the main validation logic
         validate(inputs);
         return extracted_dims_;
     }
 
     void validate(const std::vector<mx::array>& inputs) override {
-        if (inputs.size() != 7) {
-            throw std::invalid_argument(
-                format_error("PAL Primitive", "Expected 7 inputs, received " + std::to_string(inputs.size())));
-        }
-
         const auto& q = inputs[0];
         const auto& k_pool = inputs[1];
+        const auto& v_pool = inputs[2];
         const auto& page_table = inputs[3];
         const auto& sequence_lengths = inputs[4];
         const auto& query_to_seq_map = inputs[5];
         const auto& query_token_offset = inputs[6];
 
-        // Use common validation utilities
+        // --- Common Validations ---
         kernel_utils::ValidationUtils::check_dtype(page_table, mx::uint32, "page_table");
         kernel_utils::ValidationUtils::check_dtype(sequence_lengths, mx::int32, "sequence_lengths");
         kernel_utils::ValidationUtils::check_dtype(query_to_seq_map, mx::int32, "query_to_seq_map");
         kernel_utils::ValidationUtils::check_dtype(query_token_offset, mx::int32, "query_token_offset");
 
-        // K/V Pool validation
-        kernel_utils::ValidationUtils::check_ndim(k_pool, 4, "k_pool");
+        // K/V Pool validation (ndim check already done for CoreDims, check V-pool matches K-pool)
+        kernel_utils::ValidationUtils::check_ndim(v_pool, 4, "v_pool");
+        if (v_pool.shape() != k_pool.shape()) {
+            throw std::invalid_argument(format_error("PAL Primitive", "K-pool and V-pool shapes must match."));
+        }
+        // extracted_dims_ for tokens_per_page, num_kv_heads, head_dim are from k_pool.
 
-        // Extract dimensions
-        extracted_dims_.tokens_per_page = k_pool.shape(1);
-        extracted_dims_.num_kv_heads = k_pool.shape(2);
-        extracted_dims_.head_dim = k_pool.shape(3);
-
-        // Check vectorization requirement
         kernel_utils::ValidationUtils::check_divisibility(
             extracted_dims_.head_dim,
             kernels::paged_attention::HEAD_DIM_VECTORIZATION,
             "head_dim"
         );
 
-        // Query validation
-        validate_query_format(q);
+        // Query format validation (populates num_q_heads, num_items_to_process, query_token_count in extracted_dims_)
+        validate_query_format(q); // This uses extracted_dims_.head_dim
 
         // Page table validation
         kernel_utils::ValidationUtils::check_ndim(page_table, 2, "page_table");
+        if (sequence_lengths.ndim() != 1) {
+             throw std::invalid_argument(format_error("PAL Primitive", "sequence_lengths must be a 1D array."));
+        }
+        if (page_table.shape(0) != sequence_lengths.size()) {
+            throw std::invalid_argument(format_error("PAL Primitive", "page_table batch dimension must match size of sequence_lengths."));
+        }
 
-        // Sideband array validation
-        validate_sideband_arrays(query_to_seq_map, query_token_offset);
+
+        // --- Mode-Specific Validations ---
+        if (is_prefill_) {
+            spdlog::debug("[PAL Validate] Prefill mode specific input validation...");
+            size_t total_tokens_from_seq_lengths = 0;
+            const int32_t* sl_ptr = sequence_lengths.data<int32_t>();
+            for (int i = 0; i < sequence_lengths.size(); ++i) {
+                if (sl_ptr[i] < 0) {
+                    throw std::invalid_argument(format_error("PAL Prefill", "Sequence lengths cannot be negative."));
+                }
+                total_tokens_from_seq_lengths += static_cast<size_t>(sl_ptr[i]);
+            }
+
+            if (extracted_dims_.query_token_count != total_tokens_from_seq_lengths) {
+                std::ostringstream oss;
+                oss << "For prefill mode, total query tokens from 'queries' input (" << extracted_dims_.query_token_count
+                    << ") must equal the sum of 'sequence_lengths' (" << total_tokens_from_seq_lengths
+                    << "). 'queries' must contain all tokens for all sequences, batched contiguously.";
+                throw std::invalid_argument(format_error("PAL Prefill", oss.str()));
+            }
+
+            // query_to_seq_map and query_token_offset must also match this total token count.
+            if (query_to_seq_map.size() != extracted_dims_.query_token_count) {
+                 throw std::invalid_argument(format_error("PAL Prefill", "query_to_seq_map size must match total query tokens."));
+            }
+            if (query_token_offset.size() != extracted_dims_.query_token_count) {
+                 throw std::invalid_argument(format_error("PAL Prefill", "query_token_offset size must match total query tokens."));
+            }
+
+        } else { // Decode Mode
+            spdlog::debug("[PAL Validate] Decode mode specific input validation...");
+            // In decode, query_token_count is the number of individual queries being decoded (e.g., batch_size if one token per seq).
+            // query_to_seq_map and query_token_offset must match this count.
+            if (query_to_seq_map.size() != extracted_dims_.query_token_count) {
+                 std::ostringstream oss;
+                 oss << "For decode mode, query_to_seq_map size (" << query_to_seq_map.size()
+                     << ") must match number of query items (" << extracted_dims_.query_token_count << ").";
+                 throw std::invalid_argument(format_error("PAL Decode", oss.str()));
+            }
+            if (query_token_offset.size() != extracted_dims_.query_token_count) {
+                 std::ostringstream oss;
+                 oss << "For decode mode, query_token_offset size (" << query_token_offset.size()
+                     << ") must match number of query items (" << extracted_dims_.query_token_count << ").";
+                 throw std::invalid_argument(format_error("PAL Decode", oss.str()));
+            }
+
+            // Check that sequence indices in query_to_seq_map are valid
+            const int32_t* q_to_s_ptr = query_to_seq_map.data<int32_t>();
+            uint32_t num_sequences_in_batch_val = sequence_lengths.size();
+            for (size_t i = 0; i < query_to_seq_map.size(); ++i) {
+                if (q_to_s_ptr[i] < 0 || static_cast<uint32_t>(q_to_s_ptr[i]) >= num_sequences_in_batch_val) {
+                    std::ostringstream oss;
+                    oss << "For decode mode, query_to_seq_map contains invalid sequence index " << q_to_s_ptr[i]
+                        << " at query item " << i << ". Valid range [0, " << num_sequences_in_batch_val - 1 << "].";
+                    throw std::out_of_range(format_error("PAL Decode", oss.str()));
+                }
+            }
+        }
 
         spdlog::debug("[PAL Primitive Validate] Input validation complete.");
     }
 
 private:
     CoreDims extracted_dims_;
+    bool is_prefill_;
 
     void validate_query_format(const mx::array& q) {
         if (q.ndim() == 3) {
+            // For 3D queries, q.shape(0) is number of tokens per q_head group if prefill, or num individual query items if decode
+            // q.shape(1) is num_q_heads
+            // q.shape(2) is head_dim
             if (q.shape(2) != static_cast<int>(extracted_dims_.head_dim)) {
-                throw std::invalid_argument(format_error("PAL Primitive",
-                    "3D Query HeadDim mismatch with K-pool head_dim."));
+                throw std::invalid_argument(format_error("PAL Primitive", "3D Query HeadDim mismatch with K-pool head_dim."));
             }
             extracted_dims_.num_q_heads = q.shape(1);
-            extracted_dims_.num_items_to_process = q.shape(0) * q.shape(1);
-            extracted_dims_.query_token_count = q.shape(0);
+            extracted_dims_.query_token_count = q.shape(0); // Number of "token rows" or "item groups"
+            extracted_dims_.num_items_to_process = extracted_dims_.query_token_count * extracted_dims_.num_q_heads; // Total Q-Head items
         } else if (q.ndim() == 2) {
+            // For 2D queries, q.shape(0) is number of query items/tokens
+            // q.shape(1) is head_dim
             if (q.shape(1) != static_cast<int>(extracted_dims_.head_dim)) {
-                throw std::invalid_argument(format_error("PAL Primitive",
-                    "2D Query HeadDim mismatch with K-pool head_dim."));
+                throw std::invalid_argument(format_error("PAL Primitive", "2D Query HeadDim mismatch with K-pool head_dim."));
             }
-            extracted_dims_.num_q_heads = 1;
-            extracted_dims_.num_items_to_process = q.shape(0);
-            extracted_dims_.query_token_count = q.shape(0);
+            extracted_dims_.num_q_heads = 1; // Implicitly 1 for 2D queries
+            extracted_dims_.query_token_count = q.shape(0); // Number of query items/tokens
+            extracted_dims_.num_items_to_process = extracted_dims_.query_token_count;
         } else if (q.ndim() == 1) {
+            // For 1D queries, q.shape(0) is number of query items/tokens, head_dim must be 1
             if (extracted_dims_.head_dim != 1) {
-                throw std::invalid_argument(format_error("PAL Primitive",
-                    "1D Query requires K-pool head_dim to be 1."));
+                throw std::invalid_argument(format_error("PAL Primitive", "1D Query requires K-pool head_dim to be 1."));
             }
-            extracted_dims_.num_q_heads = 1;
-            extracted_dims_.num_items_to_process = q.shape(0);
-            extracted_dims_.query_token_count = q.shape(0);
+            extracted_dims_.num_q_heads = 1; // Implicitly 1
+            extracted_dims_.query_token_count = q.shape(0); // Number of query items/tokens
+            extracted_dims_.num_items_to_process = extracted_dims_.query_token_count;
         } else {
-            throw std::invalid_argument(format_error("PAL Primitive",
-                "Query 'q' ndim (" + std::to_string(q.ndim()) + ") not supported."));
+            throw std::invalid_argument(format_error("PAL Primitive", "Query 'q' ndim (" + std::to_string(q.ndim()) + ") not supported."));
         }
 
-        if (extracted_dims_.num_items_to_process == 0 && q.size() > 0) {
-            throw std::invalid_argument(format_error("PAL Primitive",
-                "num_items_to_process is 0 but query array is not empty."));
-        }
-    }
-
-    void validate_sideband_arrays(const mx::array& query_to_seq_map,
-                                 const mx::array& query_token_offset) {
-        if (query_to_seq_map.size() != extracted_dims_.query_token_count) {
-            throw std::invalid_argument(format_error("PAL Primitive",
-                "query_to_seq_map size mismatch"));
-        }
-        if (query_token_offset.size() != extracted_dims_.query_token_count) {
-            throw std::invalid_argument(format_error("PAL Primitive",
-                "query_token_offset size mismatch"));
+        if (extracted_dims_.num_items_to_process == 0 && q.size() > 0) { // Or check extracted_dims_.query_token_count
+            throw std::invalid_argument(format_error("PAL Primitive", "Number of items/tokens to process is 0 but query array is not empty."));
         }
     }
 };
@@ -465,7 +527,7 @@ void PagedAttentionPrimitive::_eval_gpu_decode(const std::vector<mx::array>& inp
     }
 
     // Validate inputs and extract dimensions
-    PagedAttentionValidator validator;
+    PagedAttentionValidator validator(/* is_prefill */ false);
     CoreDims core_dims = validator.validate_and_extract_dims(inputs);
 
     // Log input information
@@ -539,7 +601,7 @@ void PagedAttentionPrimitive::_eval_gpu_prefill(const std::vector<mx::array>& in
     }
 
     // Validate inputs and extract dimensions
-    PagedAttentionValidator validator;
+    PagedAttentionValidator validator(/*is_prefill*/ true);
     CoreDims core_dims = validator.validate_and_extract_dims(inputs);
 
     auto [tile_size, final_threads_per_tg, actual_simd_width] = get_optimal_tile_size_and_thread_info(
@@ -821,7 +883,7 @@ uint32_t PagedAttentionPrimitive::calculate_symmetric_tile_depth(
     }
 
     spdlog::debug("[calculate_symmetric_tile_depth] Final symmetric depth (D_s): {}", symmetric_depth);
-    return std::max(kernels::paged_attention::MAX_TILE_SIZE_PRACTICAL, symmetric_depth);
+    return std::min(kernels::paged_attention::MAX_TILE_SIZE_PRACTICAL, symmetric_depth);
 }
 
 std::tuple<uint32_t, uint32_t, uint32_t> PagedAttentionPrimitive::get_optimal_tile_size_and_thread_info(

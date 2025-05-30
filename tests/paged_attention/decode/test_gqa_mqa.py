@@ -179,6 +179,14 @@ def test_mqa_kv_head_selection() -> None:
     # Set token offset to 1 to look at history position 0
     py_query_token_offset = mx.ones(num_q_heads, dtype=mx.int32)
 
+    mx.eval(py_queries)
+    mx.eval(py_k_cache_pool)
+    mx.eval(py_v_cache_pool)
+    mx.eval(py_page_table)
+    mx.eval(py_sequence_lengths)
+    mx.eval(py_query_to_seq_map)
+    mx.eval(py_query_token_offset)
+
     # Call the kernel
     output_arr = paged_attention(
         py_queries,
@@ -263,6 +271,14 @@ def test_mqa_multi_token_kv_head_selection_2d_query() -> None:
 
     # All query tokens look at history position 0
     py_query_token_offset = mx.ones(num_tokens, dtype=mx.int32)
+
+    mx.eval(py_queries)
+    mx.eval(py_k_cache_pool)
+    mx.eval(py_v_cache_pool)
+    mx.eval(py_page_table)
+    mx.eval(py_sequence_lengths)
+    mx.eval(py_query_to_seq_map)
+    mx.eval(py_query_token_offset)
 
     # Call the kernel with our debug version
     output_arr = paged_attention(

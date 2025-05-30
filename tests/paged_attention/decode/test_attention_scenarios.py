@@ -65,6 +65,14 @@ def test_max_score_over_history_in_one_block() -> None:
     py_query_to_seq_map = mx.zeros(num_q_threads, dtype=mx.int32)
     py_query_token_offset = mx.array([current_position], dtype=mx.int32)
 
+    mx.eval(py_queries)
+    mx.eval(py_k_cache_pool)
+    mx.eval(py_v_cache_pool)
+    mx.eval(py_page_table)
+    mx.eval(py_sequence_lengths)
+    mx.eval(py_query_to_seq_map)
+    mx.eval(py_query_token_offset)
+
     # --- Run paged attention ---
     output_arr = paged_attention(
         py_queries,
@@ -209,6 +217,14 @@ def test_max_score_over_multi_block_history() -> None:
     py_sequence_lengths = mx.array([10], dtype=mx.int32)  # More than current_position
     py_query_to_seq_map = mx.zeros(num_q_threads, dtype=mx.int32)  # Maps query to sequence 0
     py_query_token_offset = mx.array([current_position], dtype=mx.int32)  # Current token position
+
+    mx.eval(py_queries)
+    mx.eval(py_k_cache_pool)
+    mx.eval(py_v_cache_pool)
+    mx.eval(py_page_table)
+    mx.eval(py_sequence_lengths)
+    mx.eval(py_query_to_seq_map)
+    mx.eval(py_query_token_offset)
 
     # --- Run paged attention ---
     output_arr = paged_attention(
@@ -380,6 +396,14 @@ def test_zero_history_returns_zero_score() -> None:
 
     # 7. Query Token Offset: CRUCIAL - set to 0 to test zero-history case
     py_query_token_offset = mx.zeros(num_q_threads, dtype=mx.int32)
+
+    mx.eval(py_queries)
+    mx.eval(py_k_cache_pool)
+    mx.eval(py_v_cache_pool)
+    mx.eval(py_page_table)
+    mx.eval(py_sequence_lengths)
+    mx.eval(py_query_to_seq_map)
+    mx.eval(py_query_token_offset)
 
     # --- Run paged attention ---
     output_arr = paged_attention(
@@ -641,6 +665,14 @@ def test_history_scan_stops_at_page_table_limit() -> None:
 
     # 7. Query Token Offset: Set to 5, so history would be positions 0-4
     py_query_token_offset = mx.array([query_token_offset], dtype=mx.int32)
+
+    mx.eval(py_queries)
+    mx.eval(py_k_cache_pool)
+    mx.eval(py_v_cache_pool)
+    mx.eval(py_page_table)
+    mx.eval(py_sequence_lengths)
+    mx.eval(py_query_to_seq_map)
+    mx.eval(py_query_token_offset)
 
     # --- Run paged attention ---
     output_arr = paged_attention(

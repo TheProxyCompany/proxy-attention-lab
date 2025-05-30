@@ -498,6 +498,14 @@ def test_parallel_online_max_and_sum_exp() -> None:
     py_query_to_seq_map = mx.zeros(num_q_threads, dtype=mx.int32)  # Maps query to sequence 0
     py_query_token_offset = mx.array([current_position], dtype=mx.int32)  # Current token position
 
+    mx.eval(py_queries)
+    mx.eval(py_k_cache_pool)
+    mx.eval(py_v_cache_pool)
+    mx.eval(py_page_table)
+    mx.eval(py_sequence_lengths)
+    mx.eval(py_query_to_seq_map)
+    mx.eval(py_query_token_offset)
+
     # --- Run paged attention ---
     output_arr = paged_attention(
         py_queries,
