@@ -148,8 +148,7 @@ using namespace metal;
         uint num_queries_in_this_block = min(D_s, seq_len_for_this_batch_item - q_block_start_local_idx);
 
         // Calculate the number of SIMD groups per GQA stream
-        const uint total_simd_groups_in_tg = tg_dim.x / actual_simd_width;
-        const uint simd_groups_per_gqa_stream = total_simd_groups_in_tg / N_q_per_kv;
+        const uint simd_groups_per_gqa_stream = total_simd_groups_in_tg_metal / N_q_per_kv;
 
         uint gqa_stream_idx_for_this_simd_group = simd_group_id / simd_groups_per_gqa_stream;
         uint sub_simd_group_idx_within_stream = simd_group_id % simd_groups_per_gqa_stream;
@@ -225,11 +224,7 @@ using namespace metal;
                                     (gqa_stream_idx_for_this_simd_group * D_s * params.head_dim);
 
         // Proceed with "Row Strip" compute for this SIMD group.
-        // This loop iterates over queries within the current block assigned to this SIMD group.
         // It forms the core of the QK^T computation and subsequent V-accumulation.
-        // Profiling has indicated this section as a significant contributor to latency,
-        // particularly as the number of queries (sequence length) increases.
-
         for (uint q_idx_in_block_for_this_sg = sub_simd_group_idx_within_stream;
               q_idx_in_block_for_this_sg < num_queries_in_this_block;
               q_idx_in_block_for_this_sg += simd_groups_per_gqa_stream
@@ -292,7 +287,7 @@ using namespace metal;
                     per_lane_partial_score += dot(qv, kv);
                 }
                 float score = simd_sum(per_lane_partial_score);
-                // float score = 1.0f; // uncomment to skip main compute
+                score = simd_broadcast_first(score);
 
                 // F.3.d. Online Softmax Update
                 float old_page_max_score_val = page_max_score;
@@ -396,7 +391,7 @@ using namespace metal;
                 *((device half4*)(o_dest_ptr + h_dim_offset)) = half4(val_f4);
             }
             // all lanes finished their chunk
-        } // end of k_idx_in_tile loop
+        } // end of query processing loop
     } // end of q_block_start_local_idx loop
 } // End of kernel
 
