@@ -661,7 +661,7 @@ void PagedAttentionPrimitive::_eval_gpu_prefill(
     pass2_grid.depth = 1;
 
     // Calculate thread configuration
-    size_t PASS_2_SIMD_GROUPS_PER_TG = 4;
+    size_t PASS_2_SIMD_GROUPS_PER_TG = 2;
     size_t desired_threads_per_tg = kernel_state->threadExecutionWidth() * PASS_2_SIMD_GROUPS_PER_TG;
     auto thread_config = metal::MetalDispatcher::calculate_optimal_threads(kernel_state, desired_threads_per_tg);
 

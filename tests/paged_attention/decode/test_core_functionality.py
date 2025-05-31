@@ -393,6 +393,14 @@ def test_correct_token_processing_for_2d_queries_variable_offsets() -> None:
     # Thread 1 will look at position 1 by setting offset to 2
     py_query_token_offset = mx.array([1, 2], dtype=mx.int32)
 
+    mx.eval(py_queries)
+    mx.eval(py_k_cache_pool)
+    mx.eval(py_v_cache_pool)
+    mx.eval(py_page_table)
+    mx.eval(py_sequence_lengths)
+    mx.eval(py_query_to_seq_map)
+    mx.eval(py_query_token_offset)
+
     # Run paged attention
     output_arr = paged_attention(
         py_queries,

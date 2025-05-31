@@ -251,9 +251,9 @@ using namespace metal;
                                                        (simd_group_id * params.head_dim);
 
             // Zero the V accumulator for this specific query
-            // Each SIMD group processes multiple queries sequentially, so we need to zero between them
-            for (uint h_idx = simd_lane_id; h_idx < params.head_dim; h_idx += actual_simd_width) {
-                v_sum_accumulator_ptr[h_idx] = 0.0f;
+            threadgroup float4* v_acc_f4_ptr = (threadgroup float4*)v_sum_accumulator_ptr;
+            for (uint f4_idx = simd_lane_id; f4_idx < chunked_head_dim_size; f4_idx += actual_simd_width) {
+                v_acc_f4_ptr[f4_idx] = float4(0.0f);
             }
             simdgroup_barrier(mem_flags::mem_threadgroup);
 

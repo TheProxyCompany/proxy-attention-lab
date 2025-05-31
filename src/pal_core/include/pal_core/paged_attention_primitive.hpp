@@ -69,7 +69,7 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
     bool is_prefill = true
   );
 
-  static constexpr uint32_t SIMD_GROUPS_PER_GQA_GROUP_FACTOR = 6; // hand tuned; 4-6 seems to be the sweet spot
+  static constexpr uint32_t SIMD_GROUPS_PER_GQA_GROUP_FACTOR = 4; // hand tuned; 4-6 seems to be the sweet spot
 
   /**
    * @brief Evaluates the primitive on CPU.
