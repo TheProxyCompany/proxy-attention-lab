@@ -15,6 +15,7 @@
 //
 // Google Benchmark for PAL C++ Operations
 
+#include "pal_core/paged_attention_primitive.hpp"
 #include <benchmark/benchmark.h>
 #include <cmath>
 #include <vector>
@@ -28,16 +29,14 @@
 #include <spdlog/spdlog.h>
 
 #include "pal_core/ops.hpp"
-#include "pal_core/metal_loader.hpp"
+#include "pal_core/metal/metal_loader.hpp"
 
 namespace mx = mlx::core;
 
 // Static initializer to set spdlog level for benchmarks
 struct BenchmarkSpdlogInitializer {
     BenchmarkSpdlogInitializer() {
-        // Set default log level for benchmarks to debug to see GPU copy logs
-        spdlog::set_level(spdlog::level::warn);
-        spdlog::info("PAL C++ Benchmarks: spdlog level set to 'debug' for debugging GPU copies.");
+        spdlog::set_level(spdlog::level::off);
     }
 };
 // This object will be constructed before main(), ensuring the log level is set
@@ -50,13 +49,16 @@ struct BaselineConfig {
     int seq_len = 2048;  // tokens
     int num_q_heads = 32;
     int num_kv_heads = 16;
-    int head_dim = 128; // bottleneck dim
-    int tokens_per_page = 64;
+    int head_dim = 128;
+    int tokens_per_page = 56;
     mx::Dtype dtype = mx::float16;
 };
 
 // Decode-specific batch size
 const int DECODE_BATCH_SIZE = 1;
+
+const int SIMD_WIDTH = 32;
+const int MAX_THREADGROUP_MEMORY_LENGTH = 32768;
 
 // Helper function to create causal mask (for SDPA)
 mx::array create_causal_mask(int seq_len, mx::Dtype dtype) {
@@ -128,8 +130,16 @@ static void BM_PAL_LatencyVsSeqLen(benchmark::State& state) {
     int num_q_heads = params.num_q_heads;
     int num_kv_heads = params.num_kv_heads;
     int head_dim = params.head_dim;
-    int tokens_per_page = params.tokens_per_page;
     mx::Dtype dtype = params.dtype;
+
+    auto info = pal::cpp::PagedAttentionPrimitive::get_optimal_tile_size_and_thread_info(
+        head_dim,
+        num_q_heads,
+        num_kv_heads
+    );
+
+    params.tokens_per_page = std::get<0>(info);
+    int tokens_per_page = params.tokens_per_page;
 
     // Setup input tensors
     int num_tokens = batch_size * seq_len;
@@ -163,6 +173,14 @@ static void BM_PAL_LatencyVsSeqLen(benchmark::State& state) {
 
     // Create query token offsets: [num_tokens]
     mx::array query_token_offset = create_query_token_offset(batch_size, seq_len);
+
+    k_cache_pool.eval();
+    v_cache_pool.eval();
+    queries.eval();
+    page_table.eval();
+    sequence_lengths.eval();
+    query_to_seq_map.eval();
+    query_token_offset.eval();
 
     // Main benchmark loop
     for (auto _ : state) {
@@ -234,67 +252,6 @@ static void BM_MLX_SDPA_LatencyVsSeqLen(benchmark::State& state) {
     }
 }
 
-
-// only need this one time to register the metal lib
-void BM_PAL_LatencyVsSeqLen_Setup(const ::benchmark::State& state) {
-    // Create test parameters from baseline with specified sequence length
-    BaselineConfig params;
-    params.seq_len = 16;
-
-    // Extract params to local variables for clarity
-    int batch_size = params.batch_size;
-    int seq_len = params.seq_len;
-    int num_q_heads = params.num_q_heads;
-    int num_kv_heads = params.num_kv_heads;
-    int head_dim = params.head_dim;
-    int tokens_per_page = params.tokens_per_page;
-    mx::Dtype dtype = params.dtype;
-
-    // Setup input tensors
-    int num_tokens = batch_size * seq_len;
-    int num_logical_pages_per_seq = (seq_len + tokens_per_page - 1) / tokens_per_page;
-    int num_total_physical_pages = batch_size * num_logical_pages_per_seq;
-
-    // Create query tensor with shape [num_tokens, num_q_heads, head_dim]
-    mx::array queries = mx::random::normal(
-        {num_tokens, num_q_heads, head_dim},
-        dtype
-    );
-
-    // K/V cache pools: [num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim]
-    mx::array k_cache_pool = mx::random::normal(
-        {num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim},
-        dtype
-    );
-    mx::array v_cache_pool = mx::random::normal(
-        {num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim},
-        dtype
-    );
-
-    // Create page table: [num_sequences_in_batch, num_logical_pages_per_seq]
-    mx::array page_table = create_page_table(batch_size, num_logical_pages_per_seq);
-
-    // Set sequence length for each batch item: [num_sequences_in_batch]
-    mx::array sequence_lengths = mx::full({batch_size}, seq_len, mx::int32);
-
-    // Create query-to-sequence mapping: [num_tokens]
-    mx::array query_to_seq_map = create_query_to_seq_map(batch_size, seq_len);
-
-    // Create query token offsets: [num_tokens]
-    mx::array query_token_offset = create_query_token_offset(batch_size, seq_len);
-
-    // ----------------------------------------------------
-    //  Warm-up (compile shader, register Metal lib, etc.)
-    // ----------------------------------------------------
-    mx::array warm = pal::cpp::paged_attention(
-        queries, k_cache_pool, v_cache_pool,
-        page_table, sequence_lengths,
-        query_to_seq_map, query_token_offset,
-        true); // use prefill mode
-    warm.eval();                  // wait for GPU
-}
-
-// Register the benchmarks with all sequence lengths from Python benchmark
 // C++ PAL Decode benchmark function
 static void BM_PAL_DecodeLatencyVsHistoryLen(benchmark::State& state) {
     // Create test parameters from baseline with specified history length
@@ -347,6 +304,14 @@ static void BM_PAL_DecodeLatencyVsHistoryLen(benchmark::State& state) {
         offset_data[i] = history_len + 1; // Position after history
     }
     mx::array query_token_offset = mx::array(offset_data.data(), {batch_size}, mx::int32);
+
+    queries.eval();
+    k_cache_pool.eval();
+    v_cache_pool.eval();
+    page_table.eval();
+    sequence_lengths.eval();
+    query_to_seq_map.eval();
+    query_token_offset.eval();
 
     // Main benchmark loop
     for (auto _ : state) {
@@ -421,25 +386,37 @@ static void BM_MLX_SDPA_DecodeLatencyVsHistoryLen(benchmark::State& state) {
     }
 }
 
-const int REPETITIONS = 3;
-const int ITERATIONS = 1;
+const int REPETITIONS = 20; // magic number
+const int ITERATIONS = 10; // magic number
 
 BENCHMARK(BM_PAL_LatencyVsSeqLen)
-   ->Arg(64)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)->Setup(BM_PAL_LatencyVsSeqLen_Setup)
-   ->Arg(512)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-    ->Arg(1024)->Iterations(ITERATIONS)->Repetitions(REPETITIONS);
+   ->Arg(64)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
+   ->Arg(256)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
+   ->Arg(512)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
+   ->Arg(1024)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
+   ->Arg(2048)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
+   ->Arg(4096)->Repetitions(REPETITIONS)->Iterations(ITERATIONS);
 
 BENCHMARK(BM_MLX_SDPA_LatencyVsSeqLen)
-   ->Arg(64)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-   ->Arg(512)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-    ->Arg(1024)->Iterations(ITERATIONS)->Repetitions(REPETITIONS);
+   ->Arg(64)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
+   ->Arg(256)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
+   ->Arg(512)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
+   ->Arg(1024)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
+   ->Arg(2048)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
+   ->Arg(4096)->Repetitions(REPETITIONS)->Iterations(ITERATIONS);
 
 BENCHMARK(BM_PAL_DecodeLatencyVsHistoryLen)
+   ->Arg(64)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+   ->Arg(128)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+   ->Arg(256)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
    ->Arg(1024)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
    ->Arg(2048)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
    ->Arg(4096)->Iterations(ITERATIONS)->Repetitions(REPETITIONS);
 
 BENCHMARK(BM_MLX_SDPA_DecodeLatencyVsHistoryLen)
+   ->Arg(64)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+   ->Arg(128)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+   ->Arg(256)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
    ->Arg(1024)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
    ->Arg(2048)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
    ->Arg(4096)->Iterations(ITERATIONS)->Repetitions(REPETITIONS);

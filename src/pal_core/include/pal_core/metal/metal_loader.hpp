@@ -43,7 +43,7 @@ namespace mx = mlx::core;
  */
 std::string find_own_shared_library_path_for_pal();
 
-namespace pal::core::detail {
+namespace pal::cpp {
 
 /**
  * @brief Handles Metal library registration for PAL kernels

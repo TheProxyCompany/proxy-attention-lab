@@ -106,6 +106,7 @@ def test_paged_attention_determinism() -> None:
         py_sequence_lengths,
         py_query_to_seq_map,
         py_query_token_offset,
+        is_prefill=False,
     )
     mx.eval(output1)  # Ensure computation is done
 
@@ -119,6 +120,7 @@ def test_paged_attention_determinism() -> None:
         py_sequence_lengths,
         py_query_to_seq_map,
         py_query_token_offset,
+        is_prefill=False,
     )
     mx.eval(output2)  # Ensure computation is done
 

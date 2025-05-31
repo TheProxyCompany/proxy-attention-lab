@@ -23,7 +23,7 @@
 #include "mlx/backend/common/utils.h"
 #include "mlx/utils.h"
 
-#include "pal_core/metal_loader.hpp"
+#include "pal_core/metal/metal_loader.hpp"
 #include "pal_core/paged_attention_primitive.hpp"
 
 #include <spdlog/spdlog.h>
@@ -44,8 +44,7 @@ mx::array paged_attention(
   spdlog::debug("[PAL Ops] pal::cpp::paged_attention C++ operation called.");
 
   // Ensure Metal library is loaded and registered
-  pal::core::detail::MetalLibRegistrar::ensure_pal_metallib_registered(
-      stream_or_device);
+  pal::cpp::MetalLibRegistrar::ensure_pal_metallib_registered(stream_or_device);
 
   // Extract key parameters from input arrays to pass to the primitive
   int num_q_heads = 1;  // Default for 1D/2D queries
@@ -72,7 +71,13 @@ mx::array paged_attention(
 
   // Create the primitive instance with the extracted parameters
   auto primitive = std::make_shared<PagedAttentionPrimitive>(
-      stream_or_device, num_q_heads, num_kv_heads, head_dim, tokens_per_page, is_prefill);
+      stream_or_device,
+      num_q_heads,
+      num_kv_heads,
+      head_dim,
+      tokens_per_page,
+      is_prefill
+    );
 
   spdlog::debug("[PAL Ops] PagedAttentionPrimitive instance created.");
 
@@ -93,8 +98,16 @@ mx::array paged_attention(
   // Construct the output MLX array, adding the operation in the graph
   return mx::array(
       out_shape, out_dtype, primitive,
-      {queries, k_cache_pool, v_cache_pool, page_table, sequence_lengths,
-       query_to_seq_map, query_token_offset});
+      {
+        queries,
+        k_cache_pool,
+        v_cache_pool,
+        page_table,
+        sequence_lengths,
+        query_to_seq_map,
+        query_token_offset
+      }
+    );
 }
 
 }  // namespace pal::cpp

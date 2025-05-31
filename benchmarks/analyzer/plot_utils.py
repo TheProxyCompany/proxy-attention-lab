@@ -31,7 +31,7 @@ def get_plot_styles() -> dict[str, str | float]:
     styles["TICK_LABEL_FONTSIZE"] = 10
     styles["LEGEND_FONTSIZE"] = 10
     styles["GRID_COLOR"] = "#D3D3D3"
-    styles["GRID_ALPHA"] = 0.3
+    styles["GRID_ALPHA"] = 0.5
     styles["PAL_LABEL"] = r"$\mathbf{PAL\ PagedAttention}$"
     styles["MLX_LABEL"] = r"$\mathbf{MLX\ ScaledDotProductAttention}$"
     return styles
@@ -54,7 +54,7 @@ def apply_common_plot_aesthetics(
     ax.set_xscale(x_scale)
     ax.set_yscale(y_scale)
     ax.grid(True, which="both", alpha=styles["GRID_ALPHA"], color=styles["GRID_COLOR"])
-    ax.tick_params(axis="both", which="major", labelsize=styles["TICK_LABEL_FONTSIZE"])
+    ax.tick_params(axis="both", which="both", labelsize=styles["TICK_LABEL_FONTSIZE"])
     if include_legend:
         ax.legend(loc="best", fontsize=styles["LEGEND_FONTSIZE"])
     plt.tight_layout()

@@ -151,7 +151,13 @@ set(METALLIB_TITLE "pal")
 set(PAL_METALLIB_FILENAME "pal.metallib")
 
 # --- Core C++ Static Library ---
-file(GLOB_RECURSE CORE_LIB_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
+file(GLOB_RECURSE CORE_LIB_SOURCES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/kernel_utils/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/metal/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/debug/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/*.cpp"
+)
 
 add_library(${CORE_LIB_NAME} STATIC ${CORE_LIB_SOURCES})
 
@@ -183,7 +189,7 @@ target_link_libraries(
 
 file(
     GLOB_RECURSE METAL_SOURCES
-    "${CMAKE_CURRENT_SOURCE_DIR}/kernels/*.metal"
+    "${CMAKE_CURRENT_SOURCE_DIR}/kernels/paged_attention/*.metal"
 )
 message(STATUS "Configuring Metal library build for PAL with sources: ${METAL_SOURCES}")
 mlx_build_metallib(
@@ -196,7 +202,7 @@ mlx_build_metallib(
         ${MLX_INCLUDE_DIRS}
     OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     OUTPUT_FILENAME ${PAL_METALLIB_FILENAME}
-    DEBUG ON
+    # DEBUG ON
 )
 
 set(PAL_METALLIB_PATH ${CMAKE_CURRENT_BINARY_DIR}/${PAL_METALLIB_FILENAME} CACHE INTERNAL "Path to built pal.metallib")

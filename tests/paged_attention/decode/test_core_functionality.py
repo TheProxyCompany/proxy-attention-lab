@@ -94,6 +94,7 @@ def test_fetch_k_vector_element_for_first_token_of_sequence() -> None:
         py_sequence_lengths,
         py_query_to_seq_map,
         py_query_token_offset,
+        is_prefill=False,
     )
     mx.eval(output_arr)
 
@@ -197,6 +198,7 @@ def test_fetch_entire_k_vector_for_specific_token_slot() -> None:
         py_sequence_lengths,
         py_query_to_seq_map,
         py_query_token_offset,
+        is_prefill=False,
     )
     mx.eval(output_arr)
 
@@ -301,6 +303,7 @@ def test_fetch_k_vector_from_variable_token_slot_in_first_logical_block() -> Non
         py_sequence_lengths,
         py_query_to_seq_map,
         py_query_token_offset,
+        is_prefill=False,
     )
     mx.eval(output_arr)
 
@@ -390,6 +393,14 @@ def test_correct_token_processing_for_2d_queries_variable_offsets() -> None:
     # Thread 1 will look at position 1 by setting offset to 2
     py_query_token_offset = mx.array([1, 2], dtype=mx.int32)
 
+    mx.eval(py_queries)
+    mx.eval(py_k_cache_pool)
+    mx.eval(py_v_cache_pool)
+    mx.eval(py_page_table)
+    mx.eval(py_sequence_lengths)
+    mx.eval(py_query_to_seq_map)
+    mx.eval(py_query_token_offset)
+
     # Run paged attention
     output_arr = paged_attention(
         py_queries,
@@ -399,6 +410,7 @@ def test_correct_token_processing_for_2d_queries_variable_offsets() -> None:
         py_sequence_lengths,
         py_query_to_seq_map,
         py_query_token_offset,
+        is_prefill=False,
     )
     mx.eval(output_arr)
 
@@ -494,6 +506,14 @@ def test_parallel_online_max_and_sum_exp() -> None:
     py_query_to_seq_map = mx.zeros(num_q_threads, dtype=mx.int32)  # Maps query to sequence 0
     py_query_token_offset = mx.array([current_position], dtype=mx.int32)  # Current token position
 
+    mx.eval(py_queries)
+    mx.eval(py_k_cache_pool)
+    mx.eval(py_v_cache_pool)
+    mx.eval(py_page_table)
+    mx.eval(py_sequence_lengths)
+    mx.eval(py_query_to_seq_map)
+    mx.eval(py_query_token_offset)
+
     # --- Run paged attention ---
     output_arr = paged_attention(
         py_queries,
@@ -503,6 +523,7 @@ def test_parallel_online_max_and_sum_exp() -> None:
         py_sequence_lengths,
         py_query_to_seq_map,
         py_query_token_offset,
+        is_prefill=False,
     )
     mx.eval(output_arr)
 
@@ -631,6 +652,7 @@ def test_dot_product_q_with_single_k_vector() -> None:
         py_sequence_lengths,
         py_query_to_seq_map,
         py_query_token_offset,
+        is_prefill=False,
     )
     mx.eval(output_arr)
 

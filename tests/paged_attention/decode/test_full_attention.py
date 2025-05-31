@@ -98,6 +98,14 @@ def test_full_attention_in_one_block() -> None:
     # 7. Query Token Offset: Current position
     py_query_token_offset = mx.array([current_position], dtype=mx.int32)
 
+    mx.eval(py_queries)
+    mx.eval(py_k_cache_pool)
+    mx.eval(py_v_cache_pool)
+    mx.eval(py_page_table)
+    mx.eval(py_sequence_lengths)
+    mx.eval(py_query_to_seq_map)
+    mx.eval(py_query_token_offset)
+
     # --- Run paged attention ---
     output_arr = paged_attention(
         py_queries,
@@ -107,6 +115,7 @@ def test_full_attention_in_one_block() -> None:
         py_sequence_lengths,
         py_query_to_seq_map,
         py_query_token_offset,
+        is_prefill=False,
     )
     mx.eval(output_arr)
 

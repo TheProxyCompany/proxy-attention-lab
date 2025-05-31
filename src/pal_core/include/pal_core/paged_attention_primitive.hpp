@@ -31,6 +31,15 @@ namespace mx = mlx::core;
 
 namespace pal::cpp {
 
+struct CoreDims {
+    uint32_t head_dim{0};
+    uint32_t num_q_heads{0};
+    uint32_t tokens_per_page{0};
+    uint32_t num_kv_heads{0};
+    size_t num_items_to_process{0};
+    size_t query_token_count{0};
+};
+
 /**
  * @brief Custom primitive implementation for paged attention operations.
  *
@@ -59,6 +68,8 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
     int tokens_per_page = 0,
     bool is_prefill = true
   );
+
+  static constexpr uint32_t SIMD_GROUPS_PER_GQA_GROUP_FACTOR = 4; // hand tuned; 4-6 seems to be the sweet spot
 
   /**
    * @brief Evaluates the primitive on CPU.
@@ -93,7 +104,21 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
    * @param other The other primitive to compare with
    * @return true if primitives are equivalent, false otherwise
    */
-  bool is_equivalent(const mx::Primitive& other) const override;
+  bool is_equivalent(const mx::Primitive& other) const override {
+    // Check if the other primitive is the same type
+    if (typeid(*this) != typeid(other)) {
+      return false;
+    }
+
+    // Cast and compare stored parameters
+    const PagedAttentionPrimitive& other_pa =
+        static_cast<const PagedAttentionPrimitive&>(other);
+    return (this->num_q_heads_ == other_pa.num_q_heads_ &&
+            this->num_kv_heads_ == other_pa.num_kv_heads_ &&
+            this->head_dim_ == other_pa.head_dim_ &&
+            this->tokens_per_page_ == other_pa.tokens_per_page_ &&
+            this->is_prefill_ == other_pa.is_prefill_);
+  }
 
   /**
    * @brief Calculates output shapes based on input shapes.
@@ -102,6 +127,24 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
    * @return Vector of output shapes
    */
   std::vector<mx::Shape> output_shapes(const std::vector<mx::array>& inputs) override;
+
+  /**
+   * @brief Calculates the optimal tile size and thread information for the paged attention kernel.
+   *
+   * @param head_dimension The dimension of the head
+   * @param num_query_heads The number of query heads
+   * @param num_kv_heads The number of key/value heads
+   * @param stream_or_device The stream or device to execute on
+   * @param pipeline_state The pipeline state to use for the kernel
+   * @return A tuple containing the optimal tile size, the number of threads per threadgroup, and the actual SIMD width
+   */
+  static std::tuple<uint32_t, uint32_t, uint32_t> get_optimal_tile_size_and_thread_info(
+    uint32_t head_dimension,
+    uint32_t num_query_heads,
+    uint32_t num_kv_heads,
+    mx::StreamOrDevice stream_or_device = {},
+    std::optional<MTL::ComputePipelineState*> pipeline_state = std::nullopt
+  );
 
  private:
   // Parameters that define kernel behavior
@@ -148,6 +191,35 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
       const std::vector<mx::array>& inputs,
       const std::vector<int>& axes) override;
 
+  // Helper methods for decode and prefill paths
+  void _eval_gpu_decode(
+    const mx::Stream& stream,
+    mlx::core::metal::Device& device,
+    const std::vector<mx::array>& inputs,
+    mx::array& out
+  );
+  void _eval_gpu_prefill(
+    const mx::Stream& stream,
+    mlx::core::metal::Device& device,
+    const std::vector<mx::array>& inputs,
+    mx::array& out
+  );
+
+  static uint32_t calculate_symmetric_tile_depth(
+    uint32_t head_dimension,
+    uint32_t num_query_heads,
+    uint32_t num_kv_heads,
+    size_t max_threadgroup_memory_bytes,
+    size_t per_gqa_group_compute_scratch_bytes
+  );
+
+  static size_t calculate_per_gqa_group_compute_scratch(
+    uint32_t head_dimension,
+    uint32_t number_of_simd_groups,
+    uint32_t threads_per_group
+  );
+
 };
+
 
 }  // namespace pal::cpp

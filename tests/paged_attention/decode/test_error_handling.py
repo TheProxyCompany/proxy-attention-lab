@@ -21,6 +21,7 @@ various edge cases and invalid inputs gracefully without crashing.
 import logging
 
 import mlx.core as mx
+import pytest
 
 from proxy_attention_lab import paged_attention
 
@@ -75,6 +76,7 @@ def test_invalid_physical_page_id_in_page_table() -> None:
         py_sequence_lengths,
         py_query_to_seq_map,
         py_query_token_offset,
+        is_prefill=False,
     )
     mx.eval(output_arr)
 
@@ -147,6 +149,7 @@ def test_negative_query_token_offset() -> None:
         py_sequence_lengths,
         py_query_to_seq_map,
         py_query_token_offset,
+        is_prefill=False,
     )
     mx.eval(output_arr)
 
@@ -218,6 +221,14 @@ def test_invalid_seq_idx_in_query_map() -> None:
     py_query_to_seq_map = mx.array([0, 2], dtype=mx.int32)  # First query->seq 0, second->INVALID seq 2
     py_query_token_offset = mx.array([0, 0], dtype=mx.int32)
 
+    mx.eval(py_queries)
+    mx.eval(py_k_cache_pool)
+    mx.eval(py_v_cache_pool)
+    mx.eval(py_page_table)
+    mx.eval(py_sequence_lengths)
+    mx.eval(py_query_to_seq_map)
+    mx.eval(py_query_token_offset)
+
     # Run paged attention with invalid sequence index
     output_arr = paged_attention(
         py_queries,
@@ -227,31 +238,12 @@ def test_invalid_seq_idx_in_query_map() -> None:
         py_sequence_lengths,
         py_query_to_seq_map,
         py_query_token_offset,
+        is_prefill=False,
     )
-    mx.eval(output_arr)
 
-    # Expected shape is [num_queries, head_dim]
-    expected_output_shape = (num_q_threads, cfg_head_dim)
-
-    # With invalid sequence index, we expect zeros for output
-    expected_output_value = mx.zeros((num_q_threads, cfg_head_dim), dtype=mx.float16)
-
-    # Log test details
-    logger.info(f"Test: {test_invalid_seq_idx_in_query_map.__name__}")
-    logger.info(f"  Query sequence map: {py_query_to_seq_map}")
-    logger.info("  Invalid sequence index: 2 (max valid index is 1)")
-    logger.info(f"  Expected output: {expected_output_value}")
-    logger.info(f"  Actual output: {output_arr}")
-
-    # Verify results
-    assert output_arr.shape == expected_output_shape, (
-        f"Output shape {output_arr.shape} does not match expected {expected_output_shape}"
-    )
-    assert output_arr.dtype == mx.float16, f"Output dtype {output_arr.dtype} does not match float16"
-    # Check the entire output is zeros
-    assert mx.allclose(output_arr, expected_output_value, atol=1e-3), (
-        "Output should be zeros due to invalid sequence index"
-    )
+    # We expect an IndexError to be raised because the sequence index is out of bounds
+    with pytest.raises(IndexError):
+        mx.eval(output_arr)
 
 
 def test_large_head_dimension() -> None:
@@ -304,6 +296,7 @@ def test_large_head_dimension() -> None:
         py_sequence_lengths,
         py_query_to_seq_map,
         py_query_token_offset,
+        is_prefill=False,
     )
     mx.eval(output_arr)
 

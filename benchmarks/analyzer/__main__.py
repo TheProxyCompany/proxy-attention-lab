@@ -32,16 +32,31 @@ def process_cpp_file(file_data: dict) -> pd.DataFrame:
         if "pal" in x.lower() and "decode" in x.lower()
         else "cpp_mlx_sdpa_decode"
         if "mlx" in x.lower() and "decode" in x.lower()
-        else "cpp_pal_paged_attention"
+        else "cpp_pal_paged_attention_prefill"
         if "pal" in x.lower()
-        else "cpp_mlx_sdpa"
+        else "cpp_mlx_sdpa_prefill"
     )
 
     if "param" not in results_df.columns:
         results_df["param"] = results_df["name"].apply(lambda x: x.split("/")[1])
 
+    # First, extract stddev data from aggregate runs
     if "aggregate_name" in results_df.columns:
-        results_df = results_df[(results_df["run_type"] == "aggregate") & (results_df["aggregate_name"] == "median")]
+        # Get stddev values for each param
+        stddev_df = results_df[(results_df["run_type"] == "aggregate") & (results_df["aggregate_name"] == "stddev")][
+            ["param", "group", "real_time", "time_unit"]
+        ].copy()
+        stddev_df = stddev_df.rename(columns={"real_time": "std_latency"})
+
+        # Get median values
+        median_df = results_df[
+            (results_df["run_type"] == "aggregate") & (results_df["aggregate_name"] == "median")
+        ].copy()
+
+        # Merge stddev data with median data
+        results_df = median_df.merge(stddev_df[["param", "group", "std_latency"]], on=["param", "group"], how="left")
+    else:
+        results_df["std_latency"] = 0
 
     results_df["mean_latency"] = results_df["real_time"]
     # convert to milliseconds
@@ -49,12 +64,22 @@ def process_cpp_file(file_data: dict) -> pd.DataFrame:
         match str(results_df["time_unit"].iloc[0]):
             case "ns":
                 results_df["mean_latency"] = results_df["mean_latency"] / 1_000_000
+                if "std_latency" in results_df.columns:
+                    results_df["std_latency"] = results_df["std_latency"] / 1_000_000
             case "us":
                 results_df["mean_latency"] = results_df["mean_latency"] / 1_000
+                if "std_latency" in results_df.columns:
+                    results_df["std_latency"] = results_df["std_latency"] / 1_000
             case "ms":
                 pass
 
     results_df["sequence_length"] = results_df["param"].astype(float)
+
+    # Add iterations info
+    if "iterations" in results_df.columns:
+        results_df["iterations"] = results_df["iterations"]
+    else:
+        results_df["iterations"] = results_df.get("repetitions", 1)
 
     return results_df
 
@@ -69,14 +94,23 @@ def process_python_file(file_data: dict) -> pd.DataFrame:
         if "pal" in x.lower() and "decode" in x.lower()
         else "python_mlx_sdpa_decode"
         if "mlx" in x.lower() and "decode" in x.lower()
-        else "python_pal_paged_attention"
+        else "python_pal_paged_attention_prefill"
         if "pal" in x.lower()
-        else "python_mlx_sdpa"
+        else "python_mlx_sdpa_prefill"
     )
 
     results_df["sequence_length"] = results_df["param"].astype(float)
     results_df["mean_latency"] = results_df["stats"].apply(lambda x: x["mean"] * 1000)  # convert to milliseconds
     results_df["mean_latency"] = results_df["mean_latency"].astype(float)
+
+    # Extract standard deviation if available
+    if "stats" in results_df.columns:
+        results_df["std_latency"] = results_df["stats"].apply(
+            lambda x: x.get("stddev", 0) * 1000 if isinstance(x, dict) else 0
+        )  # convert to milliseconds
+        results_df["iterations"] = results_df["stats"].apply(
+            lambda x: x.get("iterations", 1) if isinstance(x, dict) else 1
+        )
 
     return results_df
 
@@ -106,15 +140,19 @@ def main() -> None:
 
     logger.info("Found %d JSON files to analyze", len(json_files))
     for json_file in json_files:
-        with open(json_file) as f:
-            file_data = json.load(f)
-            if "python" in json_file.name:
-                # assume any file with "python" in the name is a python benchmark file
-                benchmarks_data = process_python_file(file_data)
-            else:
-                # assume any file without "python" in the name is a c++ benchmark file
-                benchmarks_data = process_cpp_file(file_data)
-            results_df = pd.concat([results_df, benchmarks_data])
+        try:
+            with open(json_file) as f:
+                file_data = json.load(f)
+                if "python" in json_file.name:
+                    # assume any file with "python" in the name is a python benchmark file
+                    benchmarks_data = process_python_file(file_data)
+                else:
+                    # assume any file without "python" in the name is a c++ benchmark file
+                    benchmarks_data = process_cpp_file(file_data)
+                results_df = pd.concat([results_df, benchmarks_data])
+        except Exception as e:
+            logger.error(f"Error processing {json_file}: {e}")
+            continue
 
     # Get styles for plotting
     styles = plot_utils.get_plot_styles()
@@ -125,7 +163,11 @@ def main() -> None:
 
     # Plot latency vs sequence length
     logger.info("Generating latency vs sequence length plot...")
-    seq_len_plot = latency_vs_seq_len.plot(df=results_df, output_dir=args.output_dir, styles=styles)
+    try:
+        seq_len_plot = latency_vs_seq_len.plot(df=results_df, output_dir=args.output_dir, styles=styles)
+    except ValueError as e:
+        logger.error(f"Error generating latency vs sequence length plot: {e}")
+        return
 
     if seq_len_plot:
         plot_filenames["latency_vs_seq_len"] = seq_len_plot

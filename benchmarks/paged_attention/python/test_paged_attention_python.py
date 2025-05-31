@@ -19,7 +19,7 @@ import mlx.core as mx
 import mlx.nn
 import pytest
 
-from proxy_attention_lab import paged_attention
+from proxy_attention_lab import calculate_page_size, paged_attention
 
 logger = logging.getLogger(__name__)
 
@@ -30,12 +30,12 @@ BASELINE_CONFIG = {
     "num_q_heads": 32,
     "num_kv_heads": 16,
     "head_dim": 128,
-    "tokens_per_page": 64,
+    "tokens_per_page": 16,
     "dtype": mx.float16,
 }
 
 
-@pytest.mark.parametrize("seq_len_val", [64, 128, 256, 512, 1024, 2048])
+@pytest.mark.parametrize("seq_len_val", [64, 128, 256, 512, 1024, 2048, 4096])
 def test_pal_latency_vs_seq_len(benchmark, seq_len_val):
     """
     Benchmark paged_attention operation performance across different sequence lengths.
@@ -51,13 +51,13 @@ def test_pal_latency_vs_seq_len(benchmark, seq_len_val):
     # Create test parameters from baseline with specified sequence length
     params = BASELINE_CONFIG.copy()
     params["seq_len"] = seq_len_val
-    tokens_per_page = params["tokens_per_page"]
     num_q_heads = params["num_q_heads"]
     num_kv_heads = params["num_kv_heads"]
     head_dim = params["head_dim"]
     dtype = params["dtype"]
     batch_size = params["batch_size"]
     seq_len = params["seq_len"]
+    tokens_per_page = calculate_page_size(head_dim, num_q_heads, num_kv_heads)
 
     # Setup input tensors
     num_tokens = batch_size * seq_len
@@ -130,7 +130,7 @@ def test_pal_latency_vs_seq_len(benchmark, seq_len_val):
     assert mx.isfinite(result).all()
 
 
-@pytest.mark.parametrize("seq_len_val", [64, 128, 256, 512, 1024, 2048])
+@pytest.mark.parametrize("seq_len_val", [64, 128, 256, 512, 1024, 2048, 4096])
 def test_mlx_latency_vs_seq_len(benchmark, seq_len_val):
     """
     Benchmark MLX scaled_dot_product_attention operation performance across different sequence lengths.
@@ -310,7 +310,7 @@ def setup_sdpa_decode_inputs(params):
     return queries, keys, values, scale, causal_mask
 
 
-@pytest.mark.parametrize("history_len_val", [1024, 2048, 4096, 8192, 16384, 32768])
+@pytest.mark.parametrize("history_len_val", [1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072])
 def test_pal_decode_latency_vs_history_len(benchmark, history_len_val):
     """
     Benchmark paged_attention decode operation performance across different history lengths.
@@ -326,6 +326,7 @@ def test_pal_decode_latency_vs_history_len(benchmark, history_len_val):
     # Create test parameters for decode phase
     params = BASELINE_CONFIG.copy()
     params["history_len"] = history_len_val
+    params["tokens_per_page"] = calculate_page_size(params["head_dim"], params["num_q_heads"], params["num_kv_heads"])
 
     # Calculate the number of query items for benchmarking info
     params["num_query_items"] = params["batch_size"] * params["num_q_heads"]
@@ -365,7 +366,7 @@ def test_pal_decode_latency_vs_history_len(benchmark, history_len_val):
     assert mx.isfinite(result).all()
 
 
-@pytest.mark.parametrize("history_len_val", [1024, 2048, 4096, 8192, 16384, 32768])
+@pytest.mark.parametrize("history_len_val", [1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072])
 def test_mlx_decode_latency_vs_history_len(benchmark, history_len_val):
     """
     Benchmark MLX scaled_dot_product_attention decode operation performance across different history lengths.

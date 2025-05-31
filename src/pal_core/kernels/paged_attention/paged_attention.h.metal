@@ -17,7 +17,7 @@
 // ============================================================================
 
 #include <metal_stdlib>
-#include "../include/shaders/paged_attention_types.h"
+#include "../../include/shaders/paged_attention_types.h"
 
 using namespace metal;
 
@@ -31,45 +31,6 @@ constant static const uint kAlignmentMask = kAlignmentBytes - 1;
 
 constant static const float kEpsilonForZeroGuard = 1e-9f;
 constant static const float kSmallDenominatorThreshold = 1e-6f;
-
-
-/**
- * @brief Main kernel for paged attention computation.
- *
- * @param queries_in Query vectors [N_tokens × H_q × D] or [N] when H_q==1
- * @param k_cache_pool_in Key cache [Pages × T_pp × H_kv × D]
- * @param v_cache_pool_in Value cache [Pages × T_pp × H_kv × D]
- * @param page_table_in Page mapping table [Seqs × MaxBlocks]
- * @param sequence_lengths_in Sequence lengths [Seqs]
- * @param query_to_seq_map_in Maps queries to sequence indices [N_threads]
- * @param query_token_offset_in Position of each query in its sequence [N_threads]
- * @param params Parameters struct controlling kernel execution
- * @param output_buffer Output buffer for attention results
- * @param tg_mem Threadgroup memory for scratch space
- * @param tg_pos_in_grid Threadgroup position in grid
- * @param tg_dim Threadgroup dimensions
- * @param local_idx_in_tg Thread index in threadgroup
- * @param simd_lane_id Thread index in SIMD group
- * @param simd_group_id SIMD group index in threadgroup
- */
-[[kernel]] void paged_attn_kernel(
-    device      const half* queries_in,
-    device      const half* k_cache_pool_in,
-    device      const half* v_cache_pool_in,
-    device      const uint* page_table_in,
-    device      const int*  sequence_lengths_in,
-    device      const int*  query_to_seq_map_in,
-    device      const int*  query_token_offset_in,
-    constant    const PagedAttentionParams& params,
-    device      half* output_buffer,
-    threadgroup float* tg_mem,
-    uint3       tg_pos_in_grid,
-    uint3       tg_dim,
-    uint        local_idx_in_tg,
-    uint        simd_lane_id,
-    uint        simd_group_id
-);
-
 
 /**
  * Maps a query head index to its corresponding key-value head index.
@@ -152,6 +113,59 @@ static inline device const half* fetch_kv_pointer(
     // Return the appropriate pointer
     return is_k_vector ? (k_cache_pool_in_param + total_offset) : (v_cache_pool_in_param + total_offset);
 }
+
+// DEPRECATED
+// /**
+//  * Optimized version of fetch_kv_pointer that uses pre-calculated strides.
+//  * This version avoids redundant multiplication inside the function.
+//  *
+//  * @param is_k_vector True for K pointer, false for V pointer
+//  * @param actual_hist_token_pos History token position to fetch
+//  * @param target_kv_head_idx Already mapped KV head index
+//  * @param k_cache_pool_in_param Key cache base pointer
+//  * @param v_cache_pool_in_param Value-cache base pointer
+//  * @param page_table_slice Prefetched page-table slice for current sequence
+//  * @param kernel_params Kernel parameters struct
+//  * @return Pointer to the K/V vector, or nullptr if invalid
+//  */
+// static inline device const half* fetch_kv_pointer_optimized(
+//     bool is_k_vector, // true for K, false for V
+//     uint actual_hist_token_pos,
+//     uint target_kv_head_idx, // Already mapped
+//     device const half* k_cache_pool_in_param,
+//     device const half* v_cache_pool_in_param,
+//     threadgroup const uint* page_table_slice,
+//     constant const PagedAttentionParams& kernel_params
+// ) {
+//     if ((is_k_vector && k_cache_pool_in_param == nullptr) ||
+//         (!is_k_vector && v_cache_pool_in_param == nullptr) ||
+//         page_table_slice == nullptr) {
+//         return nullptr;
+//     }
+
+//     // Calculate indices for page table lookup
+//     uint logical_block_idx = actual_hist_token_pos / kernel_params.tokens_per_page;
+//     if (logical_block_idx >= kernel_params.max_logical_blocks_per_seq) {
+//         return nullptr;  // Invalid block index
+//     }
+
+//     uint token_slot_in_page = actual_hist_token_pos % kernel_params.tokens_per_page;
+//     uint physical_page_id = page_table_slice[logical_block_idx];
+//     if (physical_page_id >= kernel_params.num_physical_pages_in_pool) {
+//         return nullptr;  // Invalid page
+//     }
+
+//     // Calculate strides
+//     ulong per_token_stride = (ulong)kernel_params.num_kv_heads * (ulong)kernel_params.head_dim;
+//     ulong per_page_stride = (ulong)kernel_params.tokens_per_page * per_token_stride;
+
+//     ulong total_offset = (ulong)physical_page_id * per_page_stride +
+//                          (ulong)token_slot_in_page * per_token_stride +
+//                          (ulong)target_kv_head_idx * (ulong)kernel_params.head_dim;
+
+//     // Return the appropriate pointer
+//     return is_k_vector ? (k_cache_pool_in_param + total_offset) : (v_cache_pool_in_param + total_offset);
+// }
 
 /**
  * Updates the shared softmax statistics using Kahan summation for numerical stability.
