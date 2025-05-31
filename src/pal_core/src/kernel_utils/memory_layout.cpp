@@ -27,7 +27,7 @@ AttentionMemoryLayout calculate_attention_memory_layout(
     }
     // This num_simd_groups is based on actual launched threads_per_group,
     // which should be query_heads_per_kv_group * actual_simd_lanes_per_group for prefill.
-    const uint32_t num_simd_groups_in_tg = calculate_simd_groups(threads_per_group, actual_simd_lanes_per_group);
+    const uint32_t num_simd_groups_in_tg = (threads_per_group + actual_simd_lanes_per_group - 1) / actual_simd_lanes_per_group;
 
     // Scratch for TG-wide reductions (e.g. finding max score)
     size_t partial_reduce_scratch = threads_per_group * sizeof(float);
@@ -60,12 +60,12 @@ AttentionMemoryLayout calculate_attention_memory_layout(
         current_offset_bytes = AttentionMemoryLayout::align_size(current_offset_bytes + layout.v_tile_bytes);
 
         // Component 1: V-sum accumulator space (matches Component 1 from _eval_gpu_prefill)
-        size_t v_sum_accum_bytes_tgm = query_heads_per_kv_group * params.head_dim * sizeof(float);
-        current_offset_bytes = AttentionMemoryLayout::align_size(current_offset_bytes + v_sum_accum_bytes_tgm);
+        // The kernel allocates V_Sum_Accumulators_Area for total_simd_groups_in_tg_metal
+        current_offset_bytes = AttentionMemoryLayout::align_size(current_offset_bytes + simd_v_sums_scratch);
 
         // Component 2: M/L stats space (matches Component 2 from _eval_gpu_prefill)
-        size_t ml_stats_bytes_tgm = query_heads_per_kv_group * 2 * sizeof(float);
-        current_offset_bytes = AttentionMemoryLayout::align_size(current_offset_bytes + ml_stats_bytes_tgm);
+        // Each SIMD group needs space for M and L stats
+        current_offset_bytes = AttentionMemoryLayout::align_size(current_offset_bytes + global_stats_scratch);
 
         // Component 3: General reduction scratch (matches Component 3 from _eval_gpu_prefill)
         layout.partial_reduce_scratch_bytes = partial_reduce_scratch;
