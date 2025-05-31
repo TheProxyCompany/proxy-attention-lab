@@ -121,7 +121,7 @@ using namespace metal;
             dst_k_vector_h4_ptr[chunk_idx] = src_k_vector_h4_ptr[chunk_idx];
         }
     }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
+    simdgroup_barrier(mem_flags::mem_threadgroup);
 
     // Load V-tile
     for (uint token_idx_on_page = 0; token_idx_on_page < D_s; ++token_idx_on_page) {
@@ -136,7 +136,7 @@ using namespace metal;
             dst_v_vector_h4_ptr[chunk_idx] = src_v_vector_h4_ptr[chunk_idx];
         }
     }
-    threadgroup_barrier(mem_flags::mem_threadgroup); // K_tile and V_tile (depth D_s) are now loaded.
+    simdgroup_barrier(mem_flags::mem_threadgroup); // K_tile and V_tile (depth D_s) are now loaded.
 
     // E. Query Block Iteration and Loading
     uint seq_len_for_this_batch_item = (uint)sequence_lengths_in[assigned_batch_item_idx];
@@ -204,13 +204,6 @@ using namespace metal;
         for (uint i = local_idx_in_tg; i < num_float4s_to_zero; i += tg_dim.x) {
             v_acc_area_f4_ptr[i] = float4(0.0f);
         }
-
-        // Handle remainder floats
-        if (remainder_floats > 0 && local_idx_in_tg < remainder_floats) {
-            V_Sum_Accumulators_Area[num_float4s_to_zero * 4 + local_idx_in_tg] = 0.0f;
-        }
-
-        threadgroup_barrier(mem_flags::mem_threadgroup);
         // --- END: Zero V_Sum_Accumulators_Area ---
 
         // F. Compute QK^T
@@ -255,7 +248,6 @@ using namespace metal;
             for (uint f4_idx = simd_lane_id; f4_idx < chunked_head_dim_size; f4_idx += actual_simd_width) {
                 v_acc_f4_ptr[f4_idx] = float4(0.0f);
             }
-            simdgroup_barrier(mem_flags::mem_threadgroup);
 
             // F.2.c: Initialize this SIMD group's per-Q softmax statistics (will be held in registers)
             float page_max_score = -INFINITY;
@@ -295,29 +287,25 @@ using namespace metal;
 
                 // If page_max_score changed, we need to rescale the existing sum and its Kahan compensator.
                 if (page_max_score > old_page_max_score_val && old_page_max_score_val != -INFINITY) {
-                    // Clamp argument to prevent underflow
                     float rescale_exp_arg = max(old_page_max_score_val - page_max_score, params.log_exp_min_clamp);
-                    float actual_scale_factor = precise::exp(rescale_exp_arg);
+                    float actual_scale_factor = fast::exp(rescale_exp_arg);
 
-                    // check if we need to rescale
-                    if (fabs(actual_scale_factor - 1.0f) > 1e-6f) {
-                        page_sum_exp_norm_by_page_max *= actual_scale_factor;
-                        kahan_c_for_sum_exp *= actual_scale_factor; // Rescale Kahan compensation term
+                    page_sum_exp_norm_by_page_max *= actual_scale_factor;
+                    kahan_c_for_sum_exp *= actual_scale_factor; // Rescale Kahan compensation term
 
-                        // Rescale the existing sum and its Kahan compensator.
-                        for (uint h_rescale_idx = simd_lane_id;
-                            h_rescale_idx < chunked_head_dim_size;
-                            h_rescale_idx += actual_simd_width)
-                        {
-                            uint d = h_rescale_idx * 4;
-                            *((threadgroup float4*)(v_sum_accumulator_ptr + d)) *= actual_scale_factor;
-                        }
+                    // Rescale the existing sum and its Kahan compensator.
+                    for (uint h_rescale_idx = simd_lane_id;
+                        h_rescale_idx < chunked_head_dim_size;
+                        h_rescale_idx += actual_simd_width)
+                    {
+                        uint d = h_rescale_idx * 4;
+                        *((threadgroup float4*)(v_sum_accumulator_ptr + d)) *= actual_scale_factor;
                     }
                 }
 
                 // Calculate the exponential of (current score - new_page_max_score)
                 float current_term_exp_arg = max(score - page_max_score, params.log_exp_min_clamp);
-                current_score_exp_contribution = precise::exp(current_term_exp_arg);
+                current_score_exp_contribution = fast::exp(current_term_exp_arg);
 
                 // Kahan summation to add current_score_exp_contribution to page_sum_exp_norm_by_page_max
                 float y_kahan = current_score_exp_contribution - kahan_c_for_sum_exp;
@@ -446,106 +434,87 @@ using namespace metal;
             continue;
         }
 
-        // --- 3. Initialize and find M_global for this (master_query_idx, target_global_q_head_idx) item ---
+        // --- 3. Fused loop: Online M_global/S_global update with O_partial aggregation ---
+
+        // Initialize statistics and O_final accumulator
         float M_global_for_this_item = -INFINITY;
-
-        // Loop over all pages that Pass 1 processed.
-        // params.num_active_batch_logical_pages is the size of the third dimension of m_pass1_results.
-        for (uint page_idx = 0; page_idx < params.num_active_batch_logical_pages; ++page_idx) {
-            // Calculate flat index into m_pass1_results.
-            // Layout of m_pass1_results: [TotalQueryTokens, NumQHeads, NumActivePages]
-            ulong m_s_stride_qhead = params.num_active_batch_logical_pages;
-            ulong m_s_stride_query = params.num_q_heads * params.num_active_batch_logical_pages;
-
-            ulong flat_idx_m_pass1 = (ulong)master_query_idx * m_s_stride_query +
-                                     (ulong)target_global_q_head_idx * m_s_stride_qhead +
-                                     page_idx;
-
-            float current_page_m_local = m_pass1_results[flat_idx_m_pass1];
-            M_global_for_this_item = max(M_global_for_this_item, current_page_m_local);
-        }
-
-        // --- Step 4: Calculate S_global_for_this_item ---
         float S_global_for_this_item = 0.0f;
         float kahan_c_for_S_global = 0.0f; // Kahan compensation term for S_global
 
-        // fuse with above for loop eventually.
-        for (uint page_idx = 0; page_idx < params.num_active_batch_logical_pages; ++page_idx) {
-                        // Layout: [TotalQueryTokens, NumQHeads, NumActivePages]
-            ulong m_s_stride_qhead = params.num_active_batch_logical_pages;
-            ulong m_s_stride_query = params.num_q_heads * params.num_active_batch_logical_pages;
-
-            ulong flat_idx_ms_pass1 = (ulong)master_query_idx * m_s_stride_query +
-                                      (ulong)target_global_q_head_idx * m_s_stride_qhead +
-                                      page_idx;
-
-            float m_local_p = m_pass1_results[flat_idx_ms_pass1];
-            float s_local_p = s_pass1_results[flat_idx_ms_pass1];
-
-            // Calculate exp(m_local_p - M_global_for_this_item)
-            // Clamp the argument to exp.
-            float rescale_factor_exp_arg = max(m_local_p - M_global_for_this_item, params.log_exp_min_clamp);
-            float rescale_factor = fast::exp(rescale_factor_exp_arg);
-
-            // Contribution of this page to S_global
-            float s_page_contribution = s_local_p * rescale_factor;
-
-            // Kahan summation for S_global_for_this_item
-            float y_kahan = s_page_contribution - kahan_c_for_S_global;
-            float t_kahan = S_global_for_this_item + y_kahan;
-            kahan_c_for_S_global = (t_kahan - S_global_for_this_item) - y_kahan;
-            S_global_for_this_item = t_kahan;
-        }
-
-        // --- BEGIN Step 5: O_partial Aggregation & Normalization (using TGMem for O_final) ---
-
         // Initialize this thread's dedicated O_final accumulator in TGMem to zeros.
-        // Each thread zeros its own HeadDim slice.
         for (uint h_idx_init = 0; h_idx_init < params.head_dim; h_idx_init += 4) {
              *((threadgroup float4*)(O_final_for_this_thread_tg + h_idx_init)) = float4(0.0f);
         }
 
-        // Loop over all pages again for this item to aggregate o_partials
+        // Single fused loop over all pages
         for (uint page_idx = 0; page_idx < params.num_active_batch_logical_pages; ++page_idx) {
-            // Calculate flat index for m_pass1_results
+            // Calculate flat indices for accessing Pass 1 results
             ulong m_s_stride_qhead = params.num_active_batch_logical_pages;
             ulong m_s_stride_query = params.num_q_heads * params.num_active_batch_logical_pages;
-            ulong flat_idx_m_pass1 = (ulong)master_query_idx * m_s_stride_query +
-                                     (ulong)target_global_q_head_idx * m_s_stride_qhead +
-                                     page_idx;
-            float m_local_p = m_pass1_results[flat_idx_m_pass1];
+            ulong flat_idx_ms_pass1 = (ulong)master_query_idx * m_s_stride_query +
+                                      (ulong)target_global_q_head_idx * m_s_stride_qhead +
+                                      page_idx;
 
-            // Calculate rescale_factor: exp(m_local_p - M_global_for_this_item)
-            float rescale_factor_exp_arg = max(m_local_p - M_global_for_this_item, params.log_exp_min_clamp);
-            float rescale_factor = precise::exp(rescale_factor_exp_arg);
+            // Load m_local_p and s_local_p for this page
+            float m_local_p = m_pass1_results[flat_idx_ms_pass1];
+            float s_local_p = s_pass1_results[flat_idx_ms_pass1];
 
-            // If rescale_factor is effectively zero, this page's o_partial won't contribute,
-            // so we can skip the expensive HeadDim loop.
-            if (rescale_factor < kEpsilonForZeroGuard) {
-                continue;
-            }
-
-            // Calculate base offset for o_partials_pass1_out for this item and page
-            // Layout: [TotalQueries, NumQHeads, NumActivePages, HeadDim]
+            // Load pointer to o_partial_p for this page
             ulong o_stride_page = params.head_dim;
             ulong o_stride_qhead = params.num_active_batch_logical_pages * params.head_dim;
             ulong o_stride_query = params.num_q_heads * params.num_active_batch_logical_pages * params.head_dim;
-
             ulong base_offset_o_partial = (ulong)master_query_idx * o_stride_query +
                                           (ulong)target_global_q_head_idx * o_stride_qhead +
                                           (ulong)page_idx * o_stride_page;
-
             device const half* o_partial_p_ptr = o_pass1_results + base_offset_o_partial;
 
-            // Aggregate the HeadDim components into this thread's TGMem O accumulator
-            // This inner loop is done by THIS thread, operating on its O_final_for_this_thread_tg.
-            for (uint h_idx = 0; h_idx < params.head_dim; h_idx += 4) {
-                float4 o_partial_chunk_f = float4( *((device const half4*)(o_partial_p_ptr + h_idx)) );
+            // Online update of M_global
+            float old_M_global = M_global_for_this_item;
+            M_global_for_this_item = max(M_global_for_this_item, m_local_p);
 
-                // Accumulate into this thread's TGMem accumulator
-                *((threadgroup float4*)(O_final_for_this_thread_tg + h_idx)) += o_partial_chunk_f * rescale_factor;
+            // If M_global changed, rescale existing accumulators
+            if (M_global_for_this_item > old_M_global && old_M_global != -INFINITY) {
+                float scale_existing_factor_exp_arg = max(old_M_global - M_global_for_this_item, params.log_exp_min_clamp);
+                float scale_existing_factor = precise::exp(scale_existing_factor_exp_arg);
+
+                // Rescale S_global and its Kahan compensator
+                S_global_for_this_item *= scale_existing_factor;
+                kahan_c_for_S_global *= scale_existing_factor;
+
+                // Rescale O_final accumulator
+                for (uint h_idx = 0; h_idx < params.head_dim; h_idx += 4) {
+                    *((threadgroup float4*)(O_final_for_this_thread_tg + h_idx)) *= scale_existing_factor;
+                }
             }
-        }
+
+            // Calculate current page's contribution scale
+            float scale_factor_current_page_exp_arg = max(m_local_p - M_global_for_this_item, params.log_exp_min_clamp);
+            float scale_factor_current_page = precise::exp(scale_factor_current_page_exp_arg);
+
+            // Aggregate scaled s_local_p using Kahan summation
+            float s_page_contribution = s_local_p * scale_factor_current_page;
+            float y_kahan = s_page_contribution - kahan_c_for_S_global;
+            float t_kahan = S_global_for_this_item + y_kahan;
+            kahan_c_for_S_global = (t_kahan - S_global_for_this_item) - y_kahan;
+            S_global_for_this_item = t_kahan;
+
+            // Aggregate scaled o_partial_p if contribution is non-negligible
+            if (scale_factor_current_page >= kEpsilonForZeroGuard) {
+                for (uint h_idx = 0; h_idx < params.head_dim; h_idx += 4) {
+                    float4 o_partial_chunk_f = float4(*((device const half4*)(o_partial_p_ptr + h_idx)));
+                    float4 current_acc = *((threadgroup float4*)(O_final_for_this_thread_tg + h_idx));
+
+                    // Use fma for accumulation
+                    float4 updated_acc;
+                    updated_acc.x = fma(scale_factor_current_page, o_partial_chunk_f.x, current_acc.x);
+                    updated_acc.y = fma(scale_factor_current_page, o_partial_chunk_f.y, current_acc.y);
+                    updated_acc.z = fma(scale_factor_current_page, o_partial_chunk_f.z, current_acc.z);
+                    updated_acc.w = fma(scale_factor_current_page, o_partial_chunk_f.w, current_acc.w);
+
+                    *((threadgroup float4*)(O_final_for_this_thread_tg + h_idx)) = updated_acc;
+                }
+            }
+        } // End of fused loop
 
         // Normalize the final O_vector (in TGMem) by S_global_for_this_item
         float inv_S_global = (S_global_for_this_item > kSmallDenominatorThreshold) ?
