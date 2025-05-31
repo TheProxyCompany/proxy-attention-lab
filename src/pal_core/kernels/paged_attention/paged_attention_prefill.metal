@@ -22,6 +22,14 @@
 
 using namespace metal;
 
+
+[[kernel]] void get_device_info() {
+    // used for fetching a metal compute pipeline state
+    // for the current device to get the max threads per group
+    // and simd group size
+}
+
+
 /**
  * paged_attn_prefill_kernel
  * Pass 1 of the page-centric prefill architecture.
@@ -399,154 +407,303 @@ using namespace metal;
     uint3       tg_dim                              [[threads_per_threadgroup]],
     uint        local_idx_in_tg                     [[thread_index_in_threadgroup]]
 ) {
-    // --- TGMem Carving for Pass 2 ---
+    // Number of SIMD groups in this TG
+    const uint NumSIMDgroups_Pass2 = tg_dim.x / actual_simd_width;
+    const uint simd_group_id = local_idx_in_tg / actual_simd_width;
+    const uint simd_lane_id = local_idx_in_tg % actual_simd_width;
+
+    // Base for TGMem carving
     threadgroup uchar* tg_mem_base_byte_ptr = (threadgroup uchar*)tg_mem;
     uintptr_t current_tg_offset = 0;
 
-    current_tg_offset = (current_tg_offset + kAlignmentMask) & ~kAlignmentMask;
-    threadgroup float* O_final_accumulators_base_tg = (threadgroup float*)(tg_mem_base_byte_ptr + current_tg_offset);
-    // Each thread gets its own slice of this O_final_accumulators_base_tg
-    threadgroup float* O_final_for_this_thread_tg = O_final_accumulators_base_tg + (local_idx_in_tg * params.head_dim);
+     // Helper for alignment
+    auto align_offset = [] (uintptr_t offset, size_t alignment) {
+        return (offset + alignment - 1) & ~(alignment - 1);
+    };
+    const size_t float_alignment = alignof(float);
+    const size_t float4_alignment = alignof(float4);
 
-    // --- 1. Determine the (Query Token Block, Q-Head Block) this TG is responsible for ---
-    uint query_token_block_offset = tg_pos_in_grid.x * params.pass2_token_block_size;
-    uint q_head_block_offset = tg_pos_in_grid.y * params.pass2_qhead_block_size;
+    // 1. M_item_shared_scalar (single float)
+    current_tg_offset = align_offset(current_tg_offset, float_alignment);
+    threadgroup float* M_item_shared_scalar = (threadgroup float*)(tg_mem_base_byte_ptr + current_tg_offset);
+    current_tg_offset += sizeof(float);
 
-    // --- 2. Each thread iterates over the output items assigned to it within the TG's block ---
-    // N_outputs_per_TG is the number of (QueryToken, QHead) pairs this TG processes.
-    uint num_outputs_in_tg_block = params.pass2_token_block_size * params.pass2_qhead_block_size;
-    uint threads_in_tg_p2 = tg_dim.x; // Total threads in this Pass 2 TG
+    // 2. S_item_shared_scalar (single float)
+    current_tg_offset = align_offset(current_tg_offset, float_alignment);
+    threadgroup float* S_item_shared_scalar = (threadgroup float*)(tg_mem_base_byte_ptr + current_tg_offset);
+    current_tg_offset += sizeof(float);
 
-    for (uint item_idx_processed_by_thread = local_idx_in_tg;
-          item_idx_processed_by_thread < num_outputs_in_tg_block;
-          item_idx_processed_by_thread += threads_in_tg_p2) {
+    // 3. S_item_kahan_c_shared (single float)
+    current_tg_offset = align_offset(current_tg_offset, float_alignment);
+    threadgroup float* S_item_kahan_c_shared = (threadgroup float*)(tg_mem_base_byte_ptr + current_tg_offset);
+    current_tg_offset += sizeof(float);
 
-        // Map the flat item_idx_processed_by_thread to 2D local indices within the block
-        uint local_token_idx_in_block = item_idx_processed_by_thread % params.pass2_token_block_size;
-        uint local_q_head_idx_in_block = item_idx_processed_by_thread / params.pass2_token_block_size; // Integer division
+    // 4. O_item_shared_accumulator[params.head_dim] (float array)
+    //    Align to float4_alignment because it's often accessed as float4
+    current_tg_offset = align_offset(current_tg_offset, float4_alignment);
+    threadgroup float* O_item_shared_accumulator = (threadgroup float*)(tg_mem_base_byte_ptr + current_tg_offset);
+    current_tg_offset += params.head_dim * sizeof(float);
 
-        // Calculate the absolute master_query_idx and target_global_q_head_idx for this item
-        uint master_query_idx = query_token_block_offset + local_token_idx_in_block;
-        uint target_global_q_head_idx = q_head_block_offset + local_q_head_idx_in_block;
+    // 5. simdgroup_m_scratch[NumSIMDgroups_Pass2] (float array)
+    current_tg_offset = align_offset(current_tg_offset, float_alignment); // Align base of this array
+    threadgroup float* simdgroup_m_scratch = (threadgroup float*)(tg_mem_base_byte_ptr + current_tg_offset);
+    current_tg_offset += NumSIMDgroups_Pass2 * sizeof(float);
 
-        // Boundary checks for the specific item this thread is processing
-        if (master_query_idx >= params.query_token_count_total || target_global_q_head_idx >= params.num_q_heads) {
+    // 6. simdgroup_s_scratch[NumSIMDgroups_Pass2] (float array)
+    current_tg_offset = align_offset(current_tg_offset, float_alignment); // Align base
+    threadgroup float* simdgroup_s_scratch = (threadgroup float*)(tg_mem_base_byte_ptr + current_tg_offset);
+    current_tg_offset += NumSIMDgroups_Pass2 * sizeof(float);
+
+    // 7. simdgroup_o_partials[NumSIMDgroups_Pass2][params.head_dim] (float 2D array)
+    //    Align base to float4_alignment as it will be accessed in chunks
+    current_tg_offset = align_offset(current_tg_offset, float4_alignment);
+    threadgroup float* simdgroup_o_partials = (threadgroup float*)(tg_mem_base_byte_ptr + current_tg_offset);
+    // --- End of TGMem Carving ---
+
+    // --- Outer Item Loop (Serial within TG) ---
+    const uint items_in_token_dim = params.pass2_token_block_size;
+    const uint items_in_qhead_dim = params.pass2_qhead_block_size;
+
+    const uint items_in_flat_dim = items_in_token_dim * items_in_qhead_dim;
+
+    // A single loop that iterates through all items in the TG's 2D block.
+    // Each iteration of this loop processes ONE (QueryToken, QHead) item cooperatively by the whole TG.
+    for (uint item_flat_idx_in_block = 0; item_flat_idx_in_block < items_in_flat_dim; ++item_flat_idx_in_block) {
+        // Map the flat item index back to 2D local indices within this TG's block
+        uint local_token_idx_in_block = item_flat_idx_in_block % items_in_token_dim;
+        uint local_q_head_idx_in_block = item_flat_idx_in_block / items_in_token_dim;
+
+        // Calculate the absolute global master_query_idx and target_global_q_head_idx for the current item
+        uint current_master_query_idx = (tg_pos_in_grid.x * items_in_token_dim) + local_token_idx_in_block;
+        uint current_target_q_head_idx = (tg_pos_in_grid.y * items_in_qhead_dim) + local_q_head_idx_in_block;
+
+        // Boundary Check: Ensure this item is within the actual data dimensions
+        if (current_master_query_idx >= params.query_token_count_total ||
+            current_target_q_head_idx >= params.num_q_heads) {
             continue;
         }
 
-        // --- 3. Fused loop: Online M_global/S_global update with O_partial aggregation ---
-
-        // Initialize statistics and O_final accumulator
-        float M_global_for_this_item = -INFINITY;
-        float S_global_for_this_item = 0.0f;
-        float kahan_c_for_S_global = 0.0f; // Kahan compensation term for S_global
-
-        // Initialize this thread's dedicated O_final accumulator in TGMem to zeros.
-        for (uint h_idx_init = 0; h_idx_init < params.head_dim; h_idx_init += 4) {
-             *((threadgroup float4*)(O_final_for_this_thread_tg + h_idx_init)) = float4(0.0f);
+        // Single thread initializes the scalar shared values
+        if (local_idx_in_tg == 0) {
+            *M_item_shared_scalar = -INFINITY;
+            *S_item_shared_scalar = 0.0f;
+            *S_item_kahan_c_shared = 0.0f;
         }
 
-        // Single fused loop over all pages
-        for (uint page_idx = 0; page_idx < params.num_active_batch_logical_pages; ++page_idx) {
-            // Calculate flat indices for accessing Pass 1 results
-            ulong m_s_stride_qhead = params.num_active_batch_logical_pages;
-            ulong m_s_stride_query = params.num_q_heads * params.num_active_batch_logical_pages;
-            ulong flat_idx_ms_pass1 = (ulong)master_query_idx * m_s_stride_query +
-                                      (ulong)target_global_q_head_idx * m_s_stride_qhead +
-                                      page_idx;
+        // All threads in the TG cooperatively zero out the shared array accumulators.
+        // Each thread zeros a slice of the array.
 
-            // Load m_local_p and s_local_p for this page
-            float m_local_p = m_pass1_results[flat_idx_ms_pass1];
-            float s_local_p = s_pass1_results[flat_idx_ms_pass1];
+        // Zero O_item_shared_accumulator[params.head_dim]
+        for (uint i = local_idx_in_tg; i < params.head_dim; i += tg_dim.x) {
+            O_item_shared_accumulator[i] = 0.0f;
+        }
 
-            // Load pointer to o_partial_p for this page
-            ulong o_stride_page = params.head_dim;
-            ulong o_stride_qhead = params.num_active_batch_logical_pages * params.head_dim;
-            ulong o_stride_query = params.num_q_heads * params.num_active_batch_logical_pages * params.head_dim;
-            ulong base_offset_o_partial = (ulong)master_query_idx * o_stride_query +
-                                          (ulong)target_global_q_head_idx * o_stride_qhead +
-                                          (ulong)page_idx * o_stride_page;
-            device const half* o_partial_p_ptr = o_pass1_results + base_offset_o_partial;
+        // Zero simdgroup_m_scratch[NumSIMDgroups_Pass2]
+        for (uint i = local_idx_in_tg; i < NumSIMDgroups_Pass2; i += tg_dim.x) {
+            simdgroup_m_scratch[i] = -INFINITY; // Initialize max accumulators to -INF
+        }
 
-            // Online update of M_global
-            float old_M_global = M_global_for_this_item;
-            M_global_for_this_item = max(M_global_for_this_item, m_local_p);
+        // Zero simdgroup_s_scratch[NumSIMDgroups_Pass2]
+        for (uint i = local_idx_in_tg; i < NumSIMDgroups_Pass2; i += tg_dim.x) {
+            simdgroup_s_scratch[i] = 0.0f;
+        }
 
-            // If M_global changed, rescale existing accumulators
-            if (M_global_for_this_item > old_M_global && old_M_global != -INFINITY) {
-                float scale_existing_factor_exp_arg = max(old_M_global - M_global_for_this_item, params.log_exp_min_clamp);
-                float scale_existing_factor = precise::exp(scale_existing_factor_exp_arg);
+        // Zero simdgroup_o_partials[NumSIMDgroups_Pass2][params.head_dim]
+        // Total elements = NumSIMDgroups_Pass2 * params.head_dim
+        for (uint i = local_idx_in_tg; i < (NumSIMDgroups_Pass2 * params.head_dim); i += tg_dim.x) {
+            simdgroup_o_partials[i] = 0.0f;
+        }
 
-                // Rescale S_global and its Kahan compensator
-                S_global_for_this_item *= scale_existing_factor;
-                kahan_c_for_S_global *= scale_existing_factor;
+        // Barrier to ensure all initializations are complete
+        threadgroup_barrier(mem_flags::mem_threadgroup);
 
-                // Rescale O_final accumulator
-                for (uint h_idx = 0; h_idx < params.head_dim; h_idx += 4) {
-                    *((threadgroup float4*)(O_final_for_this_thread_tg + h_idx)) *= scale_existing_factor;
-                }
+        // --- Phase A: Compute M_global ---
+        float m_thread_private_max = -INFINITY;
+        for (uint page_idx = local_idx_in_tg; page_idx < params.num_active_batch_logical_pages; page_idx += tg_dim.x) {
+            ulong m_s_stride_qhead_dim = params.num_active_batch_logical_pages;
+            ulong m_s_stride_query_dim = params.num_q_heads * m_s_stride_qhead_dim;
+            ulong flat_idx_m_value = (ulong)current_master_query_idx * m_s_stride_query_dim +
+                                     (ulong)current_target_q_head_idx * m_s_stride_qhead_dim +
+                                     page_idx;
+
+            float m_value_from_page = m_pass1_results[flat_idx_m_value];
+            m_thread_private_max = max(m_thread_private_max, m_value_from_page);
+        }
+
+        float m_simdgroup_max = simd_max(m_thread_private_max);
+
+        if (simd_lane_id == 0) {
+            simdgroup_m_scratch[simd_group_id] = m_simdgroup_max;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        if (simd_group_id == 0) {
+            float final_max_for_item_local_to_sg0 = -INFINITY;
+            // Lanes of SIMDgroup 0 cooperatively reduce simdgroup_m_scratch
+            for (uint i = simd_lane_id; i < NumSIMDgroups_Pass2; i += actual_simd_width) {
+                final_max_for_item_local_to_sg0 = max(final_max_for_item_local_to_sg0, simdgroup_m_scratch[i]);
+            }
+            // Reduce among lanes of SIMDgroup 0
+            float final_max_for_item_reduced_in_sg0 = simd_max(final_max_for_item_local_to_sg0);
+
+            if (simd_lane_id == 0) { // Lane 0 of SIMDgroup 0 writes the final result
+                *M_item_shared_scalar = final_max_for_item_reduced_in_sg0;
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        // --- End of Phase A ---
+
+        // --- Phase B: Cooperative S_global & O_final Accumulation ---
+        float M_final_item_val = *M_item_shared_scalar;
+
+        // Each SIMDgroup initializes its private sum for S and Kahan compensator (in registers)
+        float s_sg_private_sum = 0.0f;
+
+        threadgroup float* my_sg_o_partial_accumulator = simdgroup_o_partials +
+                                                         (simd_group_id * params.head_dim);
+
+        // Each SIMDgroup 'simd_group_id' processes a slice of pages.
+        // All lanes within that SIMDgroup will cooperate on each of these pages.
+        uint pages_per_sg_base = params.num_active_batch_logical_pages / NumSIMDgroups_Pass2;
+        uint pages_remainder_sg = params.num_active_batch_logical_pages % NumSIMDgroups_Pass2;
+        uint start_page_for_this_sg = simd_group_id * pages_per_sg_base + min(simd_group_id, pages_remainder_sg);
+        uint end_page_for_this_sg = start_page_for_this_sg + pages_per_sg_base + (simd_group_id < pages_remainder_sg ? 1 : 0);
+
+        for (uint page_idx = start_page_for_this_sg; page_idx < end_page_for_this_sg; ++page_idx) {
+            float m_local_p_this_page;
+            float s_local_p_this_page;
+            float rescale_factor_this_page;
+
+            if (simd_lane_id == 0) {
+                // Lane 0 calculates the flat index for m_pass1_results and s_pass1_results
+                ulong m_s_stride_qhead_dim = params.num_active_batch_logical_pages;
+                ulong m_s_stride_query_dim = params.num_q_heads * m_s_stride_qhead_dim;
+                ulong flat_idx_ms_value = (ulong)current_master_query_idx * m_s_stride_query_dim +
+                                        (ulong)current_target_q_head_idx * m_s_stride_qhead_dim +
+                                        page_idx; // Use the 'page_idx' from the loop
+
+                m_local_p_this_page = m_pass1_results[flat_idx_ms_value];
+                s_local_p_this_page = s_pass1_results[flat_idx_ms_value];
+
+                rescale_factor_this_page = precise::exp(max(m_local_p_this_page - M_final_item_val,
+                                                            params.log_exp_min_clamp));
             }
 
-            // Calculate current page's contribution scale
-            float scale_factor_current_page_exp_arg = max(m_local_p - M_global_for_this_item, params.log_exp_min_clamp);
-            float scale_factor_current_page = precise::exp(scale_factor_current_page_exp_arg);
+            // Broadcast the values from lane 0 to all other lanes in the SIMDgroup
+            s_local_p_this_page = simd_broadcast_first(s_local_p_this_page);
+            rescale_factor_this_page = simd_broadcast_first(rescale_factor_this_page);
 
-            // Aggregate scaled s_local_p using Kahan summation
-            float s_page_contribution = s_local_p * scale_factor_current_page;
-            float y_kahan = s_page_contribution - kahan_c_for_S_global;
-            float t_kahan = S_global_for_this_item + y_kahan;
-            kahan_c_for_S_global = (t_kahan - S_global_for_this_item) - y_kahan;
-            S_global_for_this_item = t_kahan;
-
-            // Aggregate scaled o_partial_p if contribution is non-negligible
-            if (scale_factor_current_page >= kEpsilonForZeroGuard) {
-                for (uint h_idx = 0; h_idx < params.head_dim; h_idx += 4) {
-                    float4 o_partial_chunk_f = float4(*((device const half4*)(o_partial_p_ptr + h_idx)));
-                    float4 current_acc = *((threadgroup float4*)(O_final_for_this_thread_tg + h_idx));
-
-                    // Use fma for accumulation
-                    float4 updated_acc;
-                    updated_acc.x = fma(scale_factor_current_page, o_partial_chunk_f.x, current_acc.x);
-                    updated_acc.y = fma(scale_factor_current_page, o_partial_chunk_f.y, current_acc.y);
-                    updated_acc.z = fma(scale_factor_current_page, o_partial_chunk_f.z, current_acc.z);
-                    updated_acc.w = fma(scale_factor_current_page, o_partial_chunk_f.w, current_acc.w);
-
-                    *((threadgroup float4*)(O_final_for_this_thread_tg + h_idx)) = updated_acc;
-                }
+            if (simd_lane_id == 0) {
+                s_sg_private_sum += s_local_p_this_page * rescale_factor_this_page;
             }
-        } // End of fused loop
 
-        // Normalize the final O_vector (in TGMem) by S_global_for_this_item
-        float inv_S_global = (S_global_for_this_item > kSmallDenominatorThreshold) ?
-                              (1.0f / S_global_for_this_item) : 0.0f;
+            if (rescale_factor_this_page >= kEpsilonForZeroGuard) {
+                // 1. Calculate base pointer to o_partial_p for the current page in global memory
+                ulong o_stride_page_dim = params.head_dim;
+                ulong o_stride_qhead_dim = params.num_active_batch_logical_pages * o_stride_page_dim;
+                ulong o_stride_query_dim = params.num_q_heads * o_stride_qhead_dim;
+                ulong base_offset_o_global = (ulong)current_master_query_idx * o_stride_query_dim +
+                                            (ulong)current_target_q_head_idx * o_stride_qhead_dim +
+                                            (ulong)page_idx * o_stride_page_dim;
+                device const half* o_partial_p_global_ptr = o_pass1_results + base_offset_o_global;
 
-        for (uint h_idx = 0; h_idx < params.head_dim; h_idx += 4) {
-            *((threadgroup float4*)(O_final_for_this_thread_tg + h_idx)) *= inv_S_global;
+                // 2. Lanes of this SIMDgroup cooperatively load, scale, and accumulate
+                //    Each lane 'simd_lane_id' handles a slice of params.head_dim.
+                for (uint h_offset_in_head = simd_lane_id;
+                    h_offset_in_head < params.head_dim;
+                    h_offset_in_head += actual_simd_width) {
+
+                    // Load one 'half' component from global o_partial_p
+                    float o_val_from_page_float = (float)o_partial_p_global_ptr[h_offset_in_head];
+
+                    // Scale and accumulate into this SIMDgroup's TGMem slice
+                    // using FMA for precision and potential performance.
+                    my_sg_o_partial_accumulator[h_offset_in_head] =
+                        fma(o_val_from_page_float,
+                            rescale_factor_this_page,
+                            my_sg_o_partial_accumulator[h_offset_in_head]);
+                }
+            } // End if (rescale_factor_this_page >= kEpsilonForZeroGuard)
         }
-        // --- END Step 5: O_partial Aggregation & Normalization ---
-
-        // --- BEGIN Step 6: Write O_final_for_this_thread_tg to final_output_buffer ---
-        // Calculate the flat index for this item in the 1D view of [TotalItems, HeadDim].
-        ulong output_item_flat_idx = (ulong)master_query_idx * params.num_q_heads + target_global_q_head_idx;
-        ulong base_offset_final_output = output_item_flat_idx * params.head_dim;
-
-        device half* final_out_ptr_for_item = final_output_buffer + base_offset_final_output;
-
-        // This thread writes its HeadDim float values (from O_final_for_this_thread_tg)
-        for (uint h_idx = 0; h_idx < params.head_dim; h_idx += 4) { // Process in float4 chunks
-            // Read the float4 chunk from this thread's TGMem accumulator
-            float4 val_f4_to_write = *((threadgroup float4*)(O_final_for_this_thread_tg + h_idx));
-
-            // Convert to half4 and write to global memory
-            *((device half4*)(final_out_ptr_for_item + h_idx)) = half4(val_f4_to_write);
+        // --- After this loop, this SIMDgroup 'simd_group_id' has processed all its assigned pages. ---
+        if (simd_lane_id == 0) {
+            simdgroup_s_scratch[simd_group_id] = s_sg_private_sum;
         }
-        // --- END Step 6: Write O_final_for_this_thread_tg to final_output_buffer ---
-    } // End loop over items assigned to this thread
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        // --- End of Phase B ---
+
+        if ((simd_group_id == 0) && (simd_lane_id == 0)) { // Only lane 0 of SIMDgroup 0 performs the serial Kahan sum
+            for (uint i = 0; i < NumSIMDgroups_Pass2; ++i) {
+                float s_contrib_from_sg_scratch = simdgroup_s_scratch[i];
+
+                // Apply Kahan summation to *S_item_shared_scalar
+                float y_kahan = s_contrib_from_sg_scratch - (*S_item_kahan_c_shared);
+                float t_kahan = (*S_item_shared_scalar) + y_kahan;
+                *S_item_kahan_c_shared = (t_kahan - (*S_item_shared_scalar)) - y_kahan;
+                *S_item_shared_scalar = t_kahan;
+            }
+        }
+
+        for (uint h_target = local_idx_in_tg; // Each thread starts at its own ID as an index into HeadDim
+              h_target < params.head_dim;
+              h_target += tg_dim.x) { // Strides by total threads in TG
+
+            float sum_for_this_h_component = 0.0f; // Private register accumulator for this thread for this h_target
+
+            // This thread now sums contributions for its h_target across all SIMDgroups' partials
+            for (uint sg_idx = 0; sg_idx < NumSIMDgroups_Pass2; ++sg_idx) {
+                // Accessing simdgroup_o_partials[sg_idx][h_target]
+                // Layout: simdgroup_o_partials is [NumSIMDgroups_Pass2 * params.head_dim]
+                sum_for_this_h_component += simdgroup_o_partials[sg_idx * params.head_dim + h_target];
+            }
+
+            // Write the final sum for this h_target to the shared TGMem accumulator
+            O_item_shared_accumulator[h_target] = sum_for_this_h_component;
+        }
+        // --- End of Phase C ---
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // --- Phase D: Normalization and Write ---
+        float S_final_val = *S_item_shared_scalar;
+        float inv_S_final = 0.0f;
+
+        if (S_final_val > kSmallDenominatorThreshold) {
+            inv_S_final = 1.0f / S_final_val;
+        }
+
+        ulong output_item_flat_idx = (ulong)current_master_query_idx * params.num_q_heads + current_target_q_head_idx;
+        ulong base_offset_global_output = output_item_flat_idx * params.head_dim;
+        device half* final_out_ptr_for_item_base = final_output_buffer + base_offset_global_output;
+
+        const uint elements_per_vector_write = 4; // for half4
+        uint num_vector_writes = params.head_dim / elements_per_vector_write;
+
+        for (uint vec_idx = local_idx_in_tg;
+              vec_idx < num_vector_writes;
+              vec_idx += tg_dim.x) {
+
+            uint h_start_idx = vec_idx * elements_per_vector_write;
+
+            // Read 4 float components from O_item_shared_accumulator
+            float4 o_chunk_float = float4(O_item_shared_accumulator[h_start_idx + 0],
+                                          O_item_shared_accumulator[h_start_idx + 1],
+                                          O_item_shared_accumulator[h_start_idx + 2],
+                                          O_item_shared_accumulator[h_start_idx + 3]);
+
+            // Normalize
+            o_chunk_float *= inv_S_final;
+
+            // Convert to half4
+            half4 o_chunk_half = half4(o_chunk_float);
+
+            // Write to global memory
+            device half4* dest_ptr_h4 = (device half4*)(final_out_ptr_for_item_base + h_start_idx);
+            *dest_ptr_h4 = o_chunk_half;
+        }
+
+        // Barrier before the TG proceeds to the next item_flat_idx_in_block.
+        // Ensures all global writes for the current item are done, and TGMem is safe for reuse.
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    } // end of item_flat_idx_in_block loop
 
 } // End of kernel
-
-[[kernel]] void get_device_info() {
-    // used for fetching a metal compute pipeline state
-    // for the current device to get the max threads per group
-    // and simd group size
-}

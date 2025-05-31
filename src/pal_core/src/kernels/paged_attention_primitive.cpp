@@ -661,17 +661,45 @@ void PagedAttentionPrimitive::_eval_gpu_prefill(
     pass2_grid.depth = 1;
 
     // Calculate thread configuration
-    size_t PASS_2_SIMD_GROUPS_PER_TG = 2;
-    size_t desired_threads_per_tg = kernel_state->threadExecutionWidth() * PASS_2_SIMD_GROUPS_PER_TG;
+    size_t desired_threads_per_tg = kernel_state->threadExecutionWidth() * SIMD_GROUPS_PER_THREADGROUP_PASS2;
     auto thread_config = metal::MetalDispatcher::calculate_optimal_threads(kernel_state, desired_threads_per_tg);
+    size_t num_simd_groups_pass2 = thread_config.threads_per_group / kernel_state->threadExecutionWidth();
 
-    // Calculate Pass 2 memory requirements
+    // 2. Calculate Pass 2 Threadgroup Memory (Reflects cooperative processing of ONE item)
     size_t pass2_tg_mem_bytes = 0;
-    pass2_tg_mem_bytes += thread_config.threads_per_group * sizeof(float) * 2;  // M and S scratch
-    pass2_tg_mem_bytes += thread_config.threads_per_group * core_dims.head_dim * sizeof(float); // O accumulators
-    pass2_tg_mem_bytes += core_dims.head_dim * sizeof(float);                   // Final O
-    pass2_tg_mem_bytes += 2 * sizeof(float);                                    // Global stats
-    pass2_tg_mem_bytes = kernel_utils::AttentionMemoryLayout::align_size(pass2_tg_mem_bytes);
+    uintptr_t current_offset_for_calc = 0; // For careful carving simulation
+
+    // Component 1: M_item_shared_scalar (float)
+    current_offset_for_calc += sizeof(float);
+    current_offset_for_calc = kernel_utils::AttentionMemoryLayout::align_size(current_offset_for_calc); // Align after each logical block
+
+    // Component 2: S_item_shared_scalar (float)
+    current_offset_for_calc += sizeof(float);
+    current_offset_for_calc = kernel_utils::AttentionMemoryLayout::align_size(current_offset_for_calc);
+
+    // Component 3: S_item_kahan_c_shared (float)
+    current_offset_for_calc += sizeof(float);
+    current_offset_for_calc = kernel_utils::AttentionMemoryLayout::align_size(current_offset_for_calc);
+
+    // Component 4: O_item_shared_accumulator[params.head_dim] (float array)
+    current_offset_for_calc += params.head_dim * sizeof(float);
+    current_offset_for_calc = kernel_utils::AttentionMemoryLayout::align_size(current_offset_for_calc);
+
+    // Component 5: Scratch for M-Reduction (simdgroup_m_scratch[NumSIMDgroups_Pass2])
+    current_offset_for_calc += num_simd_groups_pass2 * sizeof(float);
+    current_offset_for_calc = kernel_utils::AttentionMemoryLayout::align_size(current_offset_for_calc);
+
+    // Component 6: Scratch for S-Reduction (simdgroup_s_scratch[NumSIMDgroups_Pass2])
+    current_offset_for_calc += num_simd_groups_pass2 * sizeof(float);
+    current_offset_for_calc = kernel_utils::AttentionMemoryLayout::align_size(current_offset_for_calc);
+
+    // Component 7: Scratch for O-Reduction (simdgroup_o_partials[NumSIMDgroups_Pass2][params.head_dim])
+    current_offset_for_calc += num_simd_groups_pass2 * params.head_dim * sizeof(float);
+    current_offset_for_calc = kernel_utils::AttentionMemoryLayout::align_size(current_offset_for_calc);
+
+    // Component 8: Final Guard Padding (optional but good practice)
+    current_offset_for_calc += pal::cpp::kernel_utils::kFinalMemoryPaddingGuardBytes;
+    pass2_tg_mem_bytes = kernel_utils::AttentionMemoryLayout::align_size(current_offset_for_calc);
 
     // Set intermediate input arrays from Pass 1
     spdlog::debug("[dispatch_prefill_pass2] m_locals_in shape: [{}, {}, {}]",
@@ -879,7 +907,7 @@ std::tuple<uint32_t, uint32_t, uint32_t> PagedAttentionPrimitive::get_optimal_ti
         N_q_per_kv = std::max(1u, num_query_heads / num_kv_heads);
     }
 
-    uint32_t desired_threads_per_tg = actual_simd_width * N_q_per_kv * SIMD_GROUPS_PER_GQA_GROUP_FACTOR;
+    uint32_t desired_threads_per_tg = actual_simd_width * N_q_per_kv * SIMD_GROUPS_PER_GQA_GROUP_FACTOR_PREFILL_PASS_1;
     uint32_t max_threads_device = kernel_state->maxTotalThreadsPerThreadgroup();
     uint32_t final_threads_per_tg = std::min(desired_threads_per_tg, max_threads_device);
     final_threads_per_tg = ((final_threads_per_tg + actual_simd_width - 1) / actual_simd_width) * actual_simd_width;
