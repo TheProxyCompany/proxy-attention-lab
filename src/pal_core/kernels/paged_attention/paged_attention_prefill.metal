@@ -100,7 +100,7 @@ using namespace metal;
 
     // D. Cooperative K/V Loading into TGMem
     const uint threads_per_tg = tg_dim.x;
-    const uint chunks_per_row_kv = params.head_dim / 4; // For K/V (half4)
+    const uint chunked_head_dim_size = params.head_dim / 4; // For K/V (half4)
 
     // Pre-compute page base offset for K/V cache pool
     // Note: params.tokens_per_page is D_s here.
@@ -117,7 +117,7 @@ using namespace metal;
         threadgroup half* k_dst_ptr = K_tile + token_idx_on_page * params.head_dim;
         threadgroup half4* dst_k_vector_h4_ptr = (threadgroup half4*)(k_dst_ptr);
         device const half4* src_k_vector_h4_ptr = (device const half4*)(k_src_ptr);
-        for (uint chunk_idx = local_idx_in_tg; chunk_idx < chunks_per_row_kv; chunk_idx += threads_per_tg) {
+        for (uint chunk_idx = local_idx_in_tg; chunk_idx < chunked_head_dim_size; chunk_idx += threads_per_tg) {
             dst_k_vector_h4_ptr[chunk_idx] = src_k_vector_h4_ptr[chunk_idx];
         }
     }
@@ -132,7 +132,7 @@ using namespace metal;
         threadgroup half* v_dst_ptr = V_tile + token_idx_on_page * params.head_dim;
         threadgroup half4* dst_v_vector_h4_ptr = (threadgroup half4*)(v_dst_ptr);
         device const half4* src_v_vector_h4_ptr = (device const half4*)(v_src_ptr);
-        for (uint chunk_idx = local_idx_in_tg; chunk_idx < chunks_per_row_kv; chunk_idx += threads_per_tg) {
+        for (uint chunk_idx = local_idx_in_tg; chunk_idx < chunked_head_dim_size; chunk_idx += threads_per_tg) {
             dst_v_vector_h4_ptr[chunk_idx] = src_v_vector_h4_ptr[chunk_idx];
         }
     }
@@ -186,8 +186,7 @@ using namespace metal;
                                                                 (q_idx_in_block_for_this_sg * params.head_dim);
 
                 // The actual_simd_width lanes of THIS SIMD group load this ONE Q-vector
-                uint chunks_per_q_vector = params.head_dim / 4; // Qs are float4 in TGMem from half4 global
-                for (uint c_idx = simd_lane_id; c_idx < chunks_per_q_vector; c_idx += actual_simd_width) {
+                for (uint c_idx = simd_lane_id; c_idx < chunked_head_dim_size; c_idx += actual_simd_width) {
                     ((threadgroup float4*)q_dest_specific_q_in_shmem)[c_idx] =
                         float4(((device const half4*)q_src_global_ptr)[c_idx]) * params.inv_sqrt_head_dim;
                 }
@@ -278,9 +277,7 @@ using namespace metal;
 
                 // F.3.c. QK^T dot product
                 float per_lane_partial_score = 0.0f;
-                uint num_f4_chunks_total = params.head_dim / 4;
-
-                for (uint f4_chunk_idx = simd_lane_id; f4_chunk_idx < num_f4_chunks_total; f4_chunk_idx += actual_simd_width) {
+                for (uint f4_chunk_idx = simd_lane_id; f4_chunk_idx < chunked_head_dim_size; f4_chunk_idx += actual_simd_width) {
                     uint d_offset = f4_chunk_idx * 4;
                     float4 qv = *((threadgroup const float4*)(q_vec_ptr + d_offset));
                     float4 kv = float4(*((threadgroup const half4*)(k_vec_hist_ptr + d_offset)));
@@ -309,7 +306,7 @@ using namespace metal;
 
                         // Rescale the existing sum and its Kahan compensator.
                         for (uint h_rescale_idx = simd_lane_id;
-                            h_rescale_idx < params.head_dim / 4;
+                            h_rescale_idx < chunked_head_dim_size;
                             h_rescale_idx += actual_simd_width)
                         {
                             uint d = h_rescale_idx * 4;
@@ -330,19 +327,15 @@ using namespace metal;
                 // --- END F.3.d: Online Softmax Update ---
 
                 // F.3.e. V-Aggregation
-                threadgroup const half* v_vec_hist_ptr = V_tile + (k_idx_in_tile * params.head_dim);
-                float weight_exp_arg = (page_max_score == -INFINITY && score == -INFINITY) ?
-                                       params.log_exp_min_clamp :
-                                       max(score - page_max_score, params.log_exp_min_clamp);
-
                 if (current_score_exp_contribution < kEpsilonForZeroGuard) {
                     // Skip this V-vector if the current score's exp contribution is effectively zero.
                     continue;
                 }
 
+                threadgroup const half* v_vec_hist_ptr = V_tile + (k_idx_in_tile * params.head_dim);
                 // Each lane (simd_lane_id) processes different chunks of the head_dim.
                 for (uint h_chunk_idx = simd_lane_id;
-                      h_chunk_idx < (params.head_dim / 4);
+                      h_chunk_idx < chunked_head_dim_size;
                       h_chunk_idx += actual_simd_width) {
                     // Calculate the actual memory offset for this float4 chunk
                     uint h_dim_offset = h_chunk_idx * 4;
@@ -383,7 +376,7 @@ using namespace metal;
 
             // Each lane handles a float4 chunk
             for (uint h_chunk_idx = simd_lane_id;
-                h_chunk_idx < (params.head_dim / 4);
+                h_chunk_idx < chunked_head_dim_size;
                 h_chunk_idx += actual_simd_width) {
 
                 uint h_dim_offset = h_chunk_idx * 4;
@@ -491,10 +484,8 @@ using namespace metal;
 
             // Calculate exp(m_local_p - M_global_for_this_item)
             // Clamp the argument to exp.
-            float rescale_factor_exp_arg = (M_global_for_this_item == -INFINITY && m_local_p == -INFINITY) ?
-                                           params.log_exp_min_clamp :
-                                           max(m_local_p - M_global_for_this_item, params.log_exp_min_clamp);
-            float rescale_factor = precise::exp(rescale_factor_exp_arg);
+            float rescale_factor_exp_arg = max(m_local_p - M_global_for_this_item, params.log_exp_min_clamp);
+            float rescale_factor = fast::exp(rescale_factor_exp_arg);
 
             // Contribution of this page to S_global
             float s_page_contribution = s_local_p * rescale_factor;
@@ -525,9 +516,7 @@ using namespace metal;
             float m_local_p = m_pass1_results[flat_idx_m_pass1];
 
             // Calculate rescale_factor: exp(m_local_p - M_global_for_this_item)
-            float rescale_factor_exp_arg = (M_global_for_this_item == -INFINITY && m_local_p == -INFINITY) ?
-                                           params.log_exp_min_clamp :
-                                           max(m_local_p - M_global_for_this_item, params.log_exp_min_clamp);
+            float rescale_factor_exp_arg = max(m_local_p - M_global_for_this_item, params.log_exp_min_clamp);
             float rescale_factor = precise::exp(rescale_factor_exp_arg);
 
             // If rescale_factor is effectively zero, this page's o_partial won't contribute,
