@@ -98,6 +98,14 @@ def test_paged_attention_smoke() -> None:
     logger.info(f"    Sequence lengths: {mock_sequence_lengths.shape}")
     logger.info(f"    Query token offsets: {mock_query_token_offset}")
 
+    mx.eval(mock_queries)
+    mx.eval(mock_k_cache_pool)
+    mx.eval(mock_v_cache_pool)
+    mx.eval(mock_page_table)
+    mx.eval(mock_sequence_lengths)
+    mx.eval(mock_query_to_seq_map)
+    mx.eval(mock_query_token_offset)
+
     try:
         # Run the paged attention operation
         out = paged_attention(
