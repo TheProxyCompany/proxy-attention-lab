@@ -62,10 +62,10 @@ using namespace metal;
     const uint q_head_for_kv_map     = (params.num_q_heads > 1)
                                      ? (global_item_idx % params.num_q_heads)
                                      : 0;
-    const uint target_kv_head_idx_item =
-        map_q_to_kv_head(q_head_for_kv_map,
-                         params.num_q_heads,
-                         params.num_kv_heads);
+    uint target_kv_head_idx = q_head_for_kv_map;
+    if (params.num_q_heads > params.num_kv_heads) { // GQA
+        target_kv_head_idx = q_head_for_kv_map / (params.num_q_heads / params.num_kv_heads);
+    }
 
     // --- 5/10: Threadgroup Memory Carving ---
     // Layout for reductions, statistics and vector caching.
@@ -155,7 +155,6 @@ using namespace metal;
         q_vec_f4[chunk] = q_float_chunk;
     }
     // All threads read q_shmem in later steps, ensure writes complete across the group
-    threadgroup_barrier(mem_flags::mem_threadgroup);
 
     // --- 7/10: History & Sequence Length Setup ---
     uint token_idx_for_sideband_lookup;
@@ -166,29 +165,13 @@ using namespace metal;
     }
 
     uint item_seq_idx_in_batch = (uint)query_to_seq_map_in[token_idx_for_sideband_lookup];
-    if (item_seq_idx_in_batch >= params.num_sequences_in_batch) {
-        // Zero the output for this item and exit
-        if (local_thread_idx == 0) {
-            zero_output_vector_for_item(global_item_idx, output_buffer, params);
-        }
-        return;
-    }
-
     // Prefetch page-table slice for this sequence into threadgroup memory
     for (uint blk = local_thread_idx; blk < params.max_logical_blocks_per_seq; blk += tg_dim.x) {
         uint flat_idx = item_seq_idx_in_batch * params.max_logical_blocks_per_seq + blk;
         tg_page_table_slice[blk] = page_table_in[flat_idx];
     }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
 
     int item_signed_query_token_offset = query_token_offset_in[token_idx_for_sideband_lookup];
-    if (item_signed_query_token_offset < 0) {
-        // Zero the output for this item and exit
-        if (local_thread_idx == 0) {
-            zero_output_vector_for_item(global_item_idx, output_buffer, params);
-        }
-        return;
-    }
 
     uint item_current_q_token_logical_pos = (uint)item_signed_query_token_offset;
     uint item_actual_sequence_length = (uint)sequence_lengths_in[item_seq_idx_in_batch];
@@ -201,8 +184,6 @@ using namespace metal;
         (*tg_global_stats).y = 0.0f; // s_global
         (*tg_s_global_comp) = 0.0f; // Kahan summation compensation term
     }
-    // Thread 0 initializes tg_global_stats; all threads read these values
-    threadgroup_barrier(mem_flags::mem_threadgroup); // Ensure initialized before use
 
     // --- 9/10: Setup Output Accumulator ---
     float acc_tile_local_fp32[kMaxHeadDimMetal]; // FP32 accumulator for numerical stability
@@ -253,16 +234,8 @@ using namespace metal;
 
                     dst_row_h4_ptr[chunk_idx_in_row] = h4_val_from_global;  // Store to K_tile
                 }
-            } else { // nullptr from fetch_kv_pointer, so zero the row
-                for (uint chunk_idx_in_row = simd_lane_id;
-                     chunk_idx_in_row < chunks_per_row_const;
-                     chunk_idx_in_row += simd_size_const) {
-
-                    dst_row_h4_ptr[chunk_idx_in_row] = half4(0.0h);  // Store zeros as half4
-                }
             }
         } // end for row_idx_in_tile
-        threadgroup_barrier(mem_flags::mem_threadgroup); // Ensure K_tile is fully populated before use
 
         // Each SIMD group cooperatively loads one or more rows assigned to it
         for (uint row_idx_in_tile = simd_group_id; // SIMD group 'simd_group_id' starts with this row
@@ -297,16 +270,8 @@ using namespace metal;
 
                     dst_row_h4_ptr[chunk_idx_in_row] = h4_val_from_global;  // Store to V_tile
                 }
-            } else { // nullptr from fetch_kv_pointer, so zero the row
-                for (uint chunk_idx_in_row = simd_lane_id;
-                     chunk_idx_in_row < chunks_per_row_const;
-                     chunk_idx_in_row += simd_size_const) {
-
-                    dst_row_h4_ptr[chunk_idx_in_row] = half4(0.0h);  // Store zeros as half4
-                }
             }
         } // end for row_idx_in_tile
-        threadgroup_barrier(mem_flags::mem_threadgroup); // Ensure V_tile is fully populated before use
 
         // --- 10.1.1/10: History Tile - Score Calculation (no stashing in fused path) ---
         float thread_score_val = -INFINITY; // Default to a state that would lead to zero contribution
