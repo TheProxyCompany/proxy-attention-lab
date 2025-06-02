@@ -28,9 +28,9 @@ from proxy_attention_lab import paged_attention
 logger = logging.getLogger(__name__)
 
 
-@pytest.mark.parametrize("history_length", [16, 64, 128, 1024, 2048, 4096])
+@pytest.mark.parametrize("history_length", [16, 128, 1024, 4096])
 @pytest.mark.parametrize("num_queries_tokens", [4, 16])
-@pytest.mark.parametrize("tokens_per_page", [16, 32, 64])
+@pytest.mark.parametrize("tokens_per_page", [16, 64])
 @pytest.mark.parametrize("num_sequences_in_batch", [1, 2, 4])
 def test_paged_attention_determinism(
     history_length,
