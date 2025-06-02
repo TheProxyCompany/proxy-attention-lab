@@ -197,7 +197,7 @@ mlx_build_metallib(
     TITLE ${METALLIB_TITLE}
     SOURCES ${METAL_SOURCES}
     INCLUDE_DIRS
-        ${CMAKE_CURRENT_SOURCE_DIR}/include/shaders
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/kernels
         ${PAL_METAL_CPP_INCLUDE_DIR}/
         ${MLX_INCLUDE_DIRS}
     OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}

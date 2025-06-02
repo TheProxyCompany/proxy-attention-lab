@@ -39,14 +39,13 @@ using namespace metal;
     device      const half*     v_cache_pool_in                 [[buffer(2)]],
     device      const uint*     page_table_in                   [[buffer(3)]],
     device      const int*      sequence_lengths_in             [[buffer(4)]],
-    device      const int*      query_to_seq_map_in             [[buffer(5)]],
-    device      const int*      query_token_offset_in           [[buffer(6)]],
-    constant    const           PagedAttentionParams& params    [[buffer(7)]],      // Parameters
-    device      const uint2*    active_work_item_pairs          [[buffer(8)]],      // Active (batch_item, logical_page) pairs
-    device      const uint*     query_starts_for_batch_item_arr [[buffer(9)]],      // Query starts for each batch item
-    device      float*          m_locals_pass1_out              [[buffer(10)]],     // Local max scores
-    device      float*          s_locals_pass1_out              [[buffer(11)]],     // Local sum-exponentials
-    device      half*           o_partials_pass1_out            [[buffer(12)]],     // Unnormalized partial V-accumulations
+    device      const int*      query_token_offset_in           [[buffer(5)]],
+    constant    const           PagedAttentionParams& params    [[buffer(6)]],      // Parameters
+    device      const uint2*    active_work_item_pairs          [[buffer(7)]],      // Active (batch_item, logical_page) pairs
+    device      const uint*     query_starts_for_batch_item_arr [[buffer(8)]],      // Query starts for each batch item
+    device      float*          m_locals_pass1_out              [[buffer(9)]],     // Local max scores
+    device      float*          s_locals_pass1_out              [[buffer(10)]],     // Local sum-exponentials
+    device      half*           o_partials_pass1_out            [[buffer(11)]],     // Unnormalized partial V-accumulations
     uint        actual_simd_width                               [[threads_per_simdgroup]],
     threadgroup float* tg_mem                                   [[threadgroup(0)]],
     uint3       tg_pos_in_grid                                  [[threadgroup_position_in_grid]],

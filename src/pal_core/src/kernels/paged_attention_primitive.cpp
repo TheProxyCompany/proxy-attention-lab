@@ -18,11 +18,8 @@
 // ============================================================================
 
 #include "pal_core/paged_attention_primitive.hpp"
-
-// PAL utilities
-#include "pal_core/kernel_utils/memory_layout.hpp"
 #include "pal_core/metal/dispatch.hpp"
-#include "pal_core/kernel_utils/param_builder.hpp"
+#include "kernels/paged_attention_types.h"
 
 // Standard library
 #include <cmath>
@@ -45,156 +42,24 @@
 #include <mlx/backend/metal/metal.h>
 #include "pal_core/metal/metal_loader.hpp"
 
+// Define half type for half precision (K, V tiles)
+using half = short;
+
 #include <mlx/utils.h>
-
-#include "shaders/paged_attention_types.h"
-
 namespace mx = mlx::core;
 
 namespace pal::cpp {
 
-// Define BatchLogicalPage structure for work items
-struct BatchLogicalPage {
-    uint32_t batch_item_idx;
-    uint32_t logical_page_idx_in_sequence;
-};
-
-static std::tuple<mx::array, size_t> create_work_items_buffer(const PagedAttentionParams& params, const mx::array& sequence_lengths) {
-    std::vector<BatchLogicalPage> active_work_items;
-    // Get sequence lengths array data
-    const int32_t* sequence_lengths_ptr = sequence_lengths.data<int32_t>();
-
-    spdlog::debug("[create_work_items_buffer] num_sequences_in_batch: {}, tokens_per_page: {}",
-                  params.num_sequences_in_batch, params.tokens_per_page);
-
-    // Iterate through batch items and their logical pages
-    for (uint32_t b_idx = 0; b_idx < params.num_sequences_in_batch; ++b_idx) {
-        int32_t seq_len = sequence_lengths_ptr[b_idx];
-        if (seq_len > 0) {
-            // Calculate number of logical pages for this sequence
-            uint32_t num_logical_pages = (seq_len + params.tokens_per_page - 1) / params.tokens_per_page;
-            spdlog::debug("[create_work_items_buffer] Batch {}: seq_len={}, num_logical_pages={}",
-                          b_idx, seq_len, num_logical_pages);
-            // Add all logical pages for this batch item
-            for (uint32_t lp_idx = 0; lp_idx < num_logical_pages; ++lp_idx) {
-                active_work_items.push_back({b_idx, lp_idx});
-            }
-        } else {
-            spdlog::debug("[create_work_items_buffer] Batch {}: seq_len={} (skipped)", b_idx, seq_len);
-        }
-    }
-
-    // Create work_items_buffer mx::array
-    std::vector<uint32_t> flat_work_items_data;
-    flat_work_items_data.reserve(active_work_items.size() * 2);
-    for (const auto& item : active_work_items) {
-        flat_work_items_data.push_back(item.batch_item_idx);
-        flat_work_items_data.push_back(item.logical_page_idx_in_sequence);
-    }
-
-    spdlog::debug("[create_work_items_buffer] Total active_work_items: {}", active_work_items.size());
-
-    // Create work_items_buffer from the flat data
-    mx::array work_items_buffer(
-        flat_work_items_data.data(),
-        {static_cast<int>(active_work_items.size()), 2},
-        mx::uint32
-    );
-
-    spdlog::debug("[create_work_items_buffer] work_items_buffer created with shape [{}, {}]",
-                  work_items_buffer.shape(0), work_items_buffer.shape(1));
-
-    return std::make_tuple(work_items_buffer, active_work_items.size());
-}
+static std::tuple<mx::array, size_t> create_work_items_buffer(
+    const PagedAttentionParams& params,
+    const mx::array& sequence_lengths
+);
 
 static mx::array create_query_starts_buffer(
     uint32_t num_sequences_in_batch,
     const mx::array& sequence_lengths_arr,
     mx::StreamOrDevice s
-) {
-    if (num_sequences_in_batch == 0) {
-        return mx::array({}, mx::uint32);
-    }
-
-    std::vector<uint32_t> query_starts_cpu(num_sequences_in_batch);
-    uint32_t current_offset = 0;
-    const int32_t* sequence_lengths_ptr = sequence_lengths_arr.data<int32_t>();
-
-    for (uint32_t b_idx = 0; b_idx < num_sequences_in_batch; ++b_idx) {
-        query_starts_cpu[b_idx] = current_offset;
-        if (b_idx < sequence_lengths_arr.size()) { // Safety check
-             current_offset += static_cast<uint32_t>(std::max(0, sequence_lengths_ptr[b_idx]));
-        }
-    }
-
-    return mx::array(query_starts_cpu.data(), {static_cast<int>(num_sequences_in_batch)}, mx::uint32);
-}
-
-
-CoreDims extract_dims(const std::vector<mx::array>& inputs) {
-    // Extract early for CoreDims population
-    CoreDims extracted_dims_;
-    const auto& q = inputs[0];
-    const auto& k_pool = inputs[1];
-    extracted_dims_.tokens_per_page = k_pool.shape(1);
-    extracted_dims_.num_kv_heads = k_pool.shape(2);
-    extracted_dims_.head_dim = k_pool.shape(3);
-
-    if (q.ndim() == 3) {
-        extracted_dims_.num_q_heads = q.shape(1);
-        extracted_dims_.query_token_count = q.shape(0); // Number of "token rows" or "item groups"
-        extracted_dims_.num_items_to_process = extracted_dims_.query_token_count * extracted_dims_.num_q_heads; // Total Q-Head items
-    } else if (q.ndim() == 2) {
-        extracted_dims_.num_q_heads = 1; // Implicitly 1 for 2D queries
-        extracted_dims_.query_token_count = q.shape(0); // Number of query items/tokens
-        extracted_dims_.num_items_to_process = extracted_dims_.query_token_count;
-    } else if (q.ndim() == 1) {
-        extracted_dims_.num_q_heads = 1; // Implicitly 1
-        extracted_dims_.query_token_count = q.shape(0); // Number of query items/tokens
-        extracted_dims_.num_items_to_process = extracted_dims_.query_token_count;
-    }
-
-    return extracted_dims_;
-}
-
-// Parameter builder for paged attention
-class PagedAttentionParamBuilder : public KernelParamBuilder<PagedAttentionParams> {
-public:
-    PagedAttentionParamBuilder(const CoreDims& dims,
-                              const mx::array& k_pool_arr,
-                              const mx::array& page_table_arr,
-                              bool is_prefill)
-        : dims_(dims), k_pool_arr_(k_pool_arr),
-          page_table_arr_(page_table_arr), is_prefill_(is_prefill) {}
-
-    PagedAttentionParams build(MTL::Device* device) override {
-        PagedAttentionParams params;
-
-        params.num_q_heads = dims_.num_q_heads;
-        params.num_kv_heads = dims_.num_kv_heads;
-        params.head_dim = dims_.head_dim;
-        params.tokens_per_page = dims_.tokens_per_page;
-        params.log_exp_min_clamp = kLogFp16DenormMinVal;
-        params.max_logical_blocks_per_seq = page_table_arr_.shape(1);
-        params.num_sequences_in_batch = page_table_arr_.shape(0);
-        params.num_physical_pages_in_pool = k_pool_arr_.shape(0);
-        params.num_active_batch_logical_pages = 1;  // Placeholder
-        params.query_token_count_total = dims_.query_token_count;
-        params.pass2_token_block_size = PASS2_TOKEN_BLOCK_SIZE;
-        params.pass2_qhead_block_size = PASS2_QHEAD_BLOCK_SIZE;
-
-        // Calculate inv_sqrt_head_dim
-        params.inv_sqrt_head_dim = 1.0f / std::sqrt(static_cast<float>(params.head_dim));
-
-        return params;
-    }
-
-private:
-    const CoreDims& dims_;
-    const mx::array& k_pool_arr_;
-    const mx::array& page_table_arr_;
-    bool is_prefill_;
-};
+);
 
 PagedAttentionPrimitive::PagedAttentionPrimitive(
     mx::StreamOrDevice stream_or_device,
@@ -223,18 +88,33 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx:
 
     auto& s = stream();
     auto& d = mlx::core::metal::device(s.device);
+
     CoreDims core_dims = extract_dims(inputs);
+    PagedAttentionParams params;
 
-    auto use_2pass_kernel = core_dims.num_items_to_process > MIN_ITEMS_FOR_2PASS; // MIN_ITEMS_FOR_2PASS = 512
+    params.num_q_heads = core_dims.num_q_heads;
+    params.num_kv_heads = core_dims.num_kv_heads;
+    params.head_dim = core_dims.head_dim;
+    params.tokens_per_page = core_dims.tokens_per_page;
+    params.query_token_count_total = core_dims.query_token_count;
+    params.max_logical_blocks_per_seq = inputs[3].shape(1);
+    params.num_sequences_in_batch = inputs[3].shape(0);
+    params.num_physical_pages_in_pool = inputs[1].shape(0);
 
-    PagedAttentionParamBuilder param_builder(core_dims, inputs[1], inputs[3], use_2pass_kernel);
-    PagedAttentionParams params = param_builder.build(d.mtl_device());
+    params.log_exp_min_clamp = kLogFp16DenormMinVal;
+    params.pass2_token_block_size = PASS2_TOKEN_BLOCK_SIZE;
+    params.pass2_qhead_block_size = PASS2_QHEAD_BLOCK_SIZE;
+    params.inv_sqrt_head_dim = 1.0f / std::sqrt(static_cast<float>(core_dims.head_dim));
+    params.num_active_batch_logical_pages = 1;
+
+    auto used_fused = should_use_fused_kernel(core_dims, params);
+    spdlog::debug("[PAL Primitive] num_items_to_process: {}, used_fused: {}", core_dims.num_items_to_process, used_fused);
 
     // Dispatch to appropriate implementation
-    if (use_2pass_kernel) {
-        _eval_gpu_2pass(s, d, inputs, out, core_dims, params);
-    } else {
+    if (used_fused) {
         _eval_gpu_fused(s, d, inputs, out, core_dims, params);
+    } else {
+        _eval_gpu_2pass(s, d, inputs, out, core_dims, params);
     }
 }
 
@@ -262,7 +142,7 @@ void PagedAttentionPrimitive::_eval_gpu_fused(
     );
 
     // Calculate memory layout
-    auto memory_layout = kernel_utils::calculate_attention_memory_layout(
+    auto memory_layout = AttentionMemoryLayout::calculate_attention_memory_layout(
         params,
         thread_config.threads_per_group,
         thread_config.execution_width,
@@ -326,13 +206,13 @@ void PagedAttentionPrimitive::_eval_gpu_2pass(
                   params.tokens_per_page, params.num_q_heads, params.num_kv_heads, params.head_dim);
 
     // Calculate memory layout
-    auto memory_layout = kernel_utils::calculate_attention_memory_layout(
+    auto memory_layout = AttentionMemoryLayout::calculate_attention_memory_layout(
         params,
         final_threads_per_tg,
         actual_simd_width,
-        true  // is_prefill
+        true  // use_2pass_kernel
     );
-    spdlog::debug("[PAL Prefill Debug] TGMem Assertion Check: Calculated layout total_bytes = {}", memory_layout.total_bytes);
+    spdlog::debug("[PAL 2PASS Debug] TGMem Assertion Check: Calculated layout total_bytes = {}", memory_layout.total_bytes);
     if (memory_layout.total_bytes > metal_device_ptr->maxThreadgroupMemoryLength()) {
         throw std::runtime_error("[PAL Primitive] Prefill TGMem budget EXCEEDED with tile_size: " + std::to_string(tile_size));
     }
@@ -340,17 +220,17 @@ void PagedAttentionPrimitive::_eval_gpu_2pass(
     // Create work items buffer and update params BEFORE allocating arrays
     auto [work_items_buffer, num_active_batch_logical_pages_val] = create_work_items_buffer(params, inputs[4]);
     params.num_active_batch_logical_pages = num_active_batch_logical_pages_val;
-    spdlog::debug("[PAL Prefill Debug] params.num_active_batch_logical_pages SET to: {}", params.num_active_batch_logical_pages);
+    spdlog::debug("[PAL 2PASS Debug] params.num_active_batch_logical_pages SET to: {}", params.num_active_batch_logical_pages);
 
     mx::array query_starts_buffer = create_query_starts_buffer(
         params.num_sequences_in_batch,
         inputs[4],
         stream
     );
-    spdlog::debug("[PAL Prefill Debug] query_starts_buffer created. Shape: [{}]", query_starts_buffer.shape(0));
+    spdlog::debug("[PAL 2PASS Debug] query_starts_buffer created. Shape: [{}]", query_starts_buffer.shape(0));
 
     // Before allocating intermediate arrays
-    spdlog::debug("[PAL Prefill Debug] Allocating intermediate arrays with: query_token_count_total={}, num_q_heads={}, num_active_batch_logical_pages={}",
+    spdlog::debug("[PAL 2PASS Debug] Allocating intermediate arrays with: query_token_count_total={}, num_q_heads={}, num_active_batch_logical_pages={}",
                   params.query_token_count_total, params.num_q_heads, params.num_active_batch_logical_pages);
 
     // intermediate arrays for Pass 1 outputs
@@ -375,9 +255,9 @@ void PagedAttentionPrimitive::_eval_gpu_2pass(
     grid.depth = 1;
 
     // Before Pass 1 dispatch
-    spdlog::debug("[PAL Prefill Debug] Pass 1 Grid: width={}, height={}, depth={}",
+    spdlog::debug("[PAL 2PASS Debug] Pass 1 Grid: width={}, height={}, depth={}",
                   grid.width, grid.height, grid.depth);
-    spdlog::debug("[PAL Prefill Debug] Passing params to Pass 1 with num_active_batch_logical_pages = {}",
+    spdlog::debug("[PAL 2PASS Debug] Passing params to Pass 1 with num_active_batch_logical_pages = {}",
                   params.num_active_batch_logical_pages);
 
     // Setup compute encoder
@@ -389,11 +269,12 @@ void PagedAttentionPrimitive::_eval_gpu_2pass(
     compute_encoder.set_input_array(inputs[2], 2);
     compute_encoder.set_input_array(inputs[3], 3);
     compute_encoder.set_input_array(inputs[4], 4);
-    compute_encoder.set_input_array(inputs[5], 5);
-    compute_encoder.set_input_array(inputs[6], 6);
-    compute_encoder.set_bytes(&params, sizeof(PagedAttentionParams), 7);
-    compute_encoder.set_input_array(work_items_buffer, 8);
-    compute_encoder.set_input_array(query_starts_buffer, 9);
+    // we don't need query_to_seq_map_in for 2 pass, so skip it
+    // we then map inputs[6] -> buffer(5)
+    compute_encoder.set_input_array(inputs[6], 5);
+    compute_encoder.set_bytes(&params, sizeof(PagedAttentionParams), 6);
+    compute_encoder.set_input_array(work_items_buffer, 7);
+    compute_encoder.set_input_array(query_starts_buffer, 8);
 
     // set intermediate outputs for prefill Pass 1
     mx::array m_locals_pass1_out = mx::array(m_s_shape, mx::float32, nullptr, {});
@@ -414,9 +295,9 @@ void PagedAttentionPrimitive::_eval_gpu_2pass(
     device.add_temporary(s_locals_pass1_out, stream.index);
     device.add_temporary(o_partials_pass1_out, stream.index);
 
-    compute_encoder.set_output_array(m_locals_pass1_out, 10);
-    compute_encoder.set_output_array(s_locals_pass1_out, 11);
-    compute_encoder.set_output_array(o_partials_pass1_out, 12);
+    compute_encoder.set_output_array(m_locals_pass1_out, 9);
+    compute_encoder.set_output_array(s_locals_pass1_out, 10);
+    compute_encoder.set_output_array(o_partials_pass1_out, 11);
 
     // Dispatch kernel
     metal::MetalDispatcher::dispatch_kernel(
@@ -454,35 +335,35 @@ void PagedAttentionPrimitive::_eval_gpu_2pass(
 
     // Component 1: M_item_shared_scalar (float)
     current_offset_for_calc += sizeof(float);
-    current_offset_for_calc = kernel_utils::AttentionMemoryLayout::align_size(current_offset_for_calc); // Align after each logical block
+    current_offset_for_calc = AttentionMemoryLayout::align_size(current_offset_for_calc); // Align after each logical block
 
     // Component 2: S_item_shared_scalar (float)
     current_offset_for_calc += sizeof(float);
-    current_offset_for_calc = kernel_utils::AttentionMemoryLayout::align_size(current_offset_for_calc);
+    current_offset_for_calc = AttentionMemoryLayout::align_size(current_offset_for_calc);
 
     // Component 3: S_item_kahan_c_shared (float)
     current_offset_for_calc += sizeof(float);
-    current_offset_for_calc = kernel_utils::AttentionMemoryLayout::align_size(current_offset_for_calc);
+    current_offset_for_calc = AttentionMemoryLayout::align_size(current_offset_for_calc);
 
     // Component 4: O_item_shared_accumulator[params.head_dim] (float array)
     current_offset_for_calc += params.head_dim * sizeof(float);
-    current_offset_for_calc = kernel_utils::AttentionMemoryLayout::align_size(current_offset_for_calc);
+    current_offset_for_calc = AttentionMemoryLayout::align_size(current_offset_for_calc);
 
     // Component 5: Scratch for M-Reduction (simdgroup_m_scratch[NumSIMDgroups_Pass2])
     current_offset_for_calc += num_simd_groups_pass2 * sizeof(float);
-    current_offset_for_calc = kernel_utils::AttentionMemoryLayout::align_size(current_offset_for_calc);
+    current_offset_for_calc = AttentionMemoryLayout::align_size(current_offset_for_calc);
 
     // Component 6: Scratch for S-Reduction (simdgroup_s_scratch[NumSIMDgroups_Pass2])
     current_offset_for_calc += num_simd_groups_pass2 * sizeof(float);
-    current_offset_for_calc = kernel_utils::AttentionMemoryLayout::align_size(current_offset_for_calc);
+    current_offset_for_calc = AttentionMemoryLayout::align_size(current_offset_for_calc);
 
     // Component 7: Scratch for O-Reduction (simdgroup_o_partials[NumSIMDgroups_Pass2][params.head_dim])
     current_offset_for_calc += num_simd_groups_pass2 * params.head_dim * sizeof(float);
-    current_offset_for_calc = kernel_utils::AttentionMemoryLayout::align_size(current_offset_for_calc);
+    current_offset_for_calc = AttentionMemoryLayout::align_size(current_offset_for_calc);
 
     // Component 8: Final Guard Padding (optional but good practice)
-    current_offset_for_calc += pal::cpp::kernel_utils::kFinalMemoryPaddingGuardBytes;
-    pass2_tg_mem_bytes = kernel_utils::AttentionMemoryLayout::align_size(current_offset_for_calc);
+    current_offset_for_calc += kFinalMemoryPaddingGuardBytes;
+    pass2_tg_mem_bytes = AttentionMemoryLayout::align_size(current_offset_for_calc);
 
     // Set intermediate input arrays from Pass 1
     spdlog::debug("[dispatch_prefill_pass2] m_locals_in shape: [{}, {}, {}]",
@@ -573,21 +454,21 @@ size_t PagedAttentionPrimitive::calculate_per_gqa_group_compute_scratch(
 
     // Component 1: Potential TGMem for V-sum accumulators (one per active SIMD group in the GQA group)
     per_gqa_group_compute_scratch += number_of_simd_groups * head_dimension * sizeof(float);
-    per_gqa_group_compute_scratch = kernel_utils::AttentionMemoryLayout::align_size(per_gqa_group_compute_scratch);
+    per_gqa_group_compute_scratch = AttentionMemoryLayout::align_size(per_gqa_group_compute_scratch);
 
     // Component 2: Potential TGMem for M/L stats (one pair per active SIMD group)
     per_gqa_group_compute_scratch += number_of_simd_groups * 2 * sizeof(float);
-    per_gqa_group_compute_scratch = kernel_utils::AttentionMemoryLayout::align_size(per_gqa_group_compute_scratch);
+    per_gqa_group_compute_scratch = AttentionMemoryLayout::align_size(per_gqa_group_compute_scratch);
 
     // Component 3: General TG-wide reduction scratch
     per_gqa_group_compute_scratch += threads_per_group * sizeof(float);
-    per_gqa_group_compute_scratch = kernel_utils::AttentionMemoryLayout::align_size(per_gqa_group_compute_scratch);
+    per_gqa_group_compute_scratch = AttentionMemoryLayout::align_size(per_gqa_group_compute_scratch);
 
     // Component 4: Small constant safety/alignment buffer
-    per_gqa_group_compute_scratch += pal::cpp::kernel_utils::kFinalMemoryPaddingGuardBytes;
-    per_gqa_group_compute_scratch = kernel_utils::AttentionMemoryLayout::align_size(per_gqa_group_compute_scratch);
+    per_gqa_group_compute_scratch += kFinalMemoryPaddingGuardBytes;
+    per_gqa_group_compute_scratch = AttentionMemoryLayout::align_size(per_gqa_group_compute_scratch);
 
-    spdlog::debug("[PAL Prefill Debug] Calculated per_gqa_group_compute_scratch = {} bytes for D_s calculation", per_gqa_group_compute_scratch);
+    spdlog::debug("[PAL 2PASS Debug] Calculated per_gqa_group_compute_scratch = {} bytes for D_s calculation", per_gqa_group_compute_scratch);
 
     return per_gqa_group_compute_scratch;
 }
@@ -599,7 +480,7 @@ uint32_t PagedAttentionPrimitive::calculate_symmetric_tile_depth(
     size_t max_threadgroup_memory_bytes,
     size_t per_gqa_group_compute_scratch_bytes
 ) {
-    constexpr size_t S_h = sizeof(short);  // 2 bytes for half precision (K, V tiles)
+    constexpr size_t S_h = sizeof(half);  // 2 bytes for half precision (K, V tiles)
     constexpr size_t S_f = sizeof(float); // 4 bytes for single precision (Q tile, accumulators)
 
     if (num_kv_heads == 0) { // Avoid division by zero
@@ -613,7 +494,7 @@ uint32_t PagedAttentionPrimitive::calculate_symmetric_tile_depth(
     // This includes accumulators and stats for one GQA group's worth of Q-heads
     // actively computing against a K/V tile, plus other general scratch.
     size_t fixed_overhead_bytes = per_gqa_group_compute_scratch_bytes;
-    fixed_overhead_bytes = kernel_utils::AttentionMemoryLayout::align_size(fixed_overhead_bytes);
+    fixed_overhead_bytes = AttentionMemoryLayout::align_size(fixed_overhead_bytes);
 
     spdlog::debug("[calculate_symmetric_tile_depth] Max TGMem: {} bytes, Fixed Overhead: {} bytes",
                   max_threadgroup_memory_bytes, fixed_overhead_bytes);
@@ -690,10 +571,10 @@ std::tuple<uint32_t, uint32_t, uint32_t> PagedAttentionPrimitive::get_optimal_ti
     uint32_t max_threads_device = kernel_state->maxTotalThreadsPerThreadgroup();
     uint32_t final_threads_per_tg = std::min(desired_threads_per_tg, max_threads_device);
     final_threads_per_tg = ((final_threads_per_tg + actual_simd_width - 1) / actual_simd_width) * actual_simd_width;
-    spdlog::debug("[PAL Prefill Debug] final_threads_per_tg = {}", final_threads_per_tg);
+    spdlog::debug("[PAL Debug] final_threads_per_tg = {}", final_threads_per_tg);
 
     uint32_t total_simd_groups_in_tg = final_threads_per_tg / actual_simd_width;
-    spdlog::debug("[PAL Prefill Debug] total_simd_groups_in_tg = {}", total_simd_groups_in_tg);
+    spdlog::debug("[PAL Debug] total_simd_groups_in_tg = {}", total_simd_groups_in_tg);
 
     size_t per_gqa_group_compute_scratch = calculate_per_gqa_group_compute_scratch(
         head_dimension,
@@ -710,9 +591,222 @@ std::tuple<uint32_t, uint32_t, uint32_t> PagedAttentionPrimitive::get_optimal_ti
         per_gqa_group_compute_scratch
     );
 
-    spdlog::debug("[PAL Prefill Debug] D_s = {}", D_s);
+    spdlog::debug("[PAL Debug] D_s = {}", D_s);
 
     return std::make_tuple(D_s, final_threads_per_tg, actual_simd_width);
   }
+
+
+AttentionMemoryLayout AttentionMemoryLayout::calculate_attention_memory_layout(
+    const PagedAttentionParams& params,
+    size_t threads_per_group,
+    size_t actual_simd_lanes_per_group,
+    bool use_2pass_kernel
+) {
+    uint32_t query_heads_per_kv_group = std::max(1u, params.num_q_heads / params.num_kv_heads);
+    const uint32_t num_simd_groups_in_tg = (threads_per_group + actual_simd_lanes_per_group - 1) / actual_simd_lanes_per_group;
+    size_t partial_reduce_scratch = threads_per_group * sizeof(float);
+    size_t simd_reduced_maxes_scratch = num_simd_groups_in_tg * sizeof(float);
+    size_t simd_reduced_sum_exps_scratch = num_simd_groups_in_tg * sizeof(float);
+    size_t global_stats_scratch = num_simd_groups_in_tg * 2 * sizeof(float); // Max 2 floats per SIMD group for M/L
+    size_t kahan_comp_scratch = num_simd_groups_in_tg * sizeof(float); // Kahan compensation per SIMD group
+    size_t simd_v_sums_scratch = num_simd_groups_in_tg * params.head_dim * sizeof(float);
+
+    AttentionMemoryLayout layout;
+    uintptr_t current_offset_bytes = 0;
+
+    if (use_2pass_kernel) {
+        // --- 2 pass kernel with symmetric QKV tiling  ---
+
+        // 1. Q_shmem_block: Stores D_s Q-vectors, each for query_heads_per_kv_group heads, as float.
+        layout.q_shmem_bytes = params.tokens_per_page * query_heads_per_kv_group * params.head_dim * sizeof(float);
+        current_offset_bytes = AttentionMemoryLayout::align_size(layout.q_shmem_bytes);
+
+        // 2. K_tile: Stores D_s K-vectors as half.
+        layout.k_tile_bytes = params.tokens_per_page * params.head_dim * sizeof(half);
+        current_offset_bytes = AttentionMemoryLayout::align_size(current_offset_bytes + layout.k_tile_bytes);
+
+        // 3. V_tile: Stores D_s V-vectors as half.
+        layout.v_tile_bytes = params.tokens_per_page * params.head_dim * sizeof(half);
+        current_offset_bytes = AttentionMemoryLayout::align_size(current_offset_bytes + layout.v_tile_bytes);
+
+        // Component 1: V-sum accumulator space (matches Component 1 from _eval_gpu_2pass)
+        // The kernel allocates V_Sum_Accumulators_Area for total_simd_groups_in_tg_metal
+        current_offset_bytes = AttentionMemoryLayout::align_size(current_offset_bytes + simd_v_sums_scratch);
+
+        // Component 2: M/L stats space (matches Component 2 from _eval_gpu_2pass)
+        // Each SIMD group needs space for M and L stats
+        current_offset_bytes = AttentionMemoryLayout::align_size(current_offset_bytes + global_stats_scratch);
+
+        // Component 3: General reduction scratch (matches Component 3 from _eval_gpu_2pass)
+        layout.partial_reduce_scratch_bytes = partial_reduce_scratch;
+        current_offset_bytes = AttentionMemoryLayout::align_size(current_offset_bytes + layout.partial_reduce_scratch_bytes);
+
+        // Zero out other decode-specific items
+        layout.simd_reduced_maxes_bytes = 0;
+        layout.simd_reduced_adjusted_sum_exps_bytes = 0;
+        layout.global_stats_bytes = 0;
+        layout.s_global_compensation_bytes = 0;
+        layout.simd_v_chunk_sums_bytes = 0;
+        layout.page_table_slice_bytes = 0;
+
+    } else {
+        // --- FUSED PATH ---
+
+        // 1. Q_shmem: For one Q-vector, as float.
+        layout.q_shmem_bytes = params.head_dim * sizeof(float);
+        current_offset_bytes = AttentionMemoryLayout::align_size(layout.q_shmem_bytes);
+
+        // 2. K_tile: Uses params.tokens_per_page for depth.
+        layout.k_tile_bytes = params.tokens_per_page * params.head_dim * sizeof(half);
+        current_offset_bytes = AttentionMemoryLayout::align_size(current_offset_bytes + layout.k_tile_bytes);
+
+        // 3. V_tile: Uses params.tokens_per_page for depth.
+        layout.v_tile_bytes = params.tokens_per_page * params.head_dim * sizeof(half);
+        current_offset_bytes = AttentionMemoryLayout::align_size(current_offset_bytes + layout.v_tile_bytes);
+
+        // 4. Fixed Scratch components for Decode (as originally designed for it)
+        layout.partial_reduce_scratch_bytes = partial_reduce_scratch;
+        current_offset_bytes = AttentionMemoryLayout::align_size(current_offset_bytes + layout.partial_reduce_scratch_bytes);
+
+        layout.simd_reduced_maxes_bytes = simd_reduced_maxes_scratch;
+        current_offset_bytes = AttentionMemoryLayout::align_size(current_offset_bytes + layout.simd_reduced_maxes_bytes);
+
+        layout.simd_reduced_adjusted_sum_exps_bytes = simd_reduced_sum_exps_scratch;
+        current_offset_bytes = AttentionMemoryLayout::align_size(current_offset_bytes + layout.simd_reduced_adjusted_sum_exps_bytes);
+
+        layout.global_stats_bytes = 2 * sizeof(float);
+        current_offset_bytes = AttentionMemoryLayout::align_size(current_offset_bytes + layout.global_stats_bytes);
+
+        layout.s_global_compensation_bytes = 1 * sizeof(float);
+        current_offset_bytes = AttentionMemoryLayout::align_size(current_offset_bytes + layout.s_global_compensation_bytes);
+
+        layout.simd_v_chunk_sums_bytes = simd_v_sums_scratch;
+        current_offset_bytes = AttentionMemoryLayout::align_size(current_offset_bytes + layout.simd_v_chunk_sums_bytes);
+
+        layout.page_table_slice_bytes = params.max_logical_blocks_per_seq * sizeof(uint32_t);
+        current_offset_bytes = AttentionMemoryLayout::align_size(current_offset_bytes + layout.page_table_slice_bytes);
+    }
+
+    // --- Final Guard and Total ---
+    layout.final_guard_bytes = kFinalMemoryPaddingGuardBytes;
+    current_offset_bytes = AttentionMemoryLayout::align_size(current_offset_bytes + layout.final_guard_bytes);
+    layout.total_bytes = current_offset_bytes;
+
+    spdlog::debug("[Memory Layout {}] Q_shmem: {}, K_tile: {}, V_tile: {}, ReduceScratch: {}, Total: {} bytes",
+                  use_2pass_kernel ? "2pass" : "Fused",
+                  layout.q_shmem_bytes, layout.k_tile_bytes, layout.v_tile_bytes,
+                  layout.partial_reduce_scratch_bytes, layout.total_bytes);
+
+    return layout;
+}
+
+static std::tuple<mx::array, size_t> create_work_items_buffer(const PagedAttentionParams& params, const mx::array& sequence_lengths) {
+    std::vector<std::tuple<uint32_t, uint32_t>> active_work_items;
+    // Get sequence lengths array data
+    const int32_t* sequence_lengths_ptr = sequence_lengths.data<int32_t>();
+
+    spdlog::debug("[create_work_items_buffer] num_sequences_in_batch: {}, tokens_per_page: {}",
+                  params.num_sequences_in_batch, params.tokens_per_page);
+
+    // Iterate through batch items and their logical pages
+    for (uint32_t b_idx = 0; b_idx < params.num_sequences_in_batch; ++b_idx) {
+        int32_t seq_len = sequence_lengths_ptr[b_idx];
+        if (seq_len > 0) {
+            // Calculate number of logical pages for this sequence
+            uint32_t num_logical_pages = (seq_len + params.tokens_per_page - 1) / params.tokens_per_page;
+            spdlog::debug("[create_work_items_buffer] Batch {}: seq_len={}, num_logical_pages={}",
+                          b_idx, seq_len, num_logical_pages);
+            // Add all logical pages for this batch item
+            for (uint32_t lp_idx = 0; lp_idx < num_logical_pages; ++lp_idx) {
+                active_work_items.push_back(std::make_tuple(b_idx, lp_idx));
+            }
+        } else {
+            spdlog::debug("[create_work_items_buffer] Batch {}: seq_len={} (skipped)", b_idx, seq_len);
+        }
+    }
+
+    // Create work_items_buffer mx::array
+    std::vector<uint32_t> flat_work_items_data;
+    flat_work_items_data.reserve(active_work_items.size() * 2);
+    for (const auto& item : active_work_items) {
+        flat_work_items_data.push_back(std::get<0>(item));
+        flat_work_items_data.push_back(std::get<1>(item));
+    }
+
+    spdlog::debug("[create_work_items_buffer] Total active_work_items: {}", active_work_items.size());
+
+    // Create work_items_buffer from the flat data
+    mx::array work_items_buffer(
+        flat_work_items_data.data(),
+        {static_cast<int>(active_work_items.size()), 2},
+        mx::uint32
+    );
+
+    spdlog::debug("[create_work_items_buffer] work_items_buffer created with shape [{}, {}]",
+                  work_items_buffer.shape(0), work_items_buffer.shape(1));
+
+    return std::make_tuple(work_items_buffer, active_work_items.size());
+}
+
+static mx::array create_query_starts_buffer(
+    uint32_t num_sequences_in_batch,
+    const mx::array& sequence_lengths_arr,
+    mx::StreamOrDevice s
+) {
+    if (num_sequences_in_batch == 0) {
+        return mx::array({}, mx::uint32);
+    }
+
+    std::vector<uint32_t> query_starts_cpu(num_sequences_in_batch);
+    uint32_t current_offset = 0;
+    const int32_t* sequence_lengths_ptr = sequence_lengths_arr.data<int32_t>();
+
+    for (uint32_t b_idx = 0; b_idx < num_sequences_in_batch; ++b_idx) {
+        query_starts_cpu[b_idx] = current_offset;
+        if (b_idx < sequence_lengths_arr.size()) { // Safety check
+             current_offset += static_cast<uint32_t>(std::max(0, sequence_lengths_ptr[b_idx]));
+        }
+    }
+
+    return mx::array(query_starts_cpu.data(), {static_cast<int>(num_sequences_in_batch)}, mx::uint32);
+}
+
+
+CoreDims extract_dims(const std::vector<mx::array>& inputs) {
+    // Extract early for CoreDims population
+    CoreDims extracted_dims_;
+    const auto& q = inputs[0];
+    const auto& k_pool = inputs[1];
+    extracted_dims_.tokens_per_page = k_pool.shape(1);
+    extracted_dims_.num_kv_heads = k_pool.shape(2);
+    extracted_dims_.head_dim = k_pool.shape(3);
+
+    if (q.ndim() == 3) {
+        extracted_dims_.num_q_heads = q.shape(1);
+        extracted_dims_.query_token_count = q.shape(0); // Number of "token rows" or "item groups"
+        extracted_dims_.num_items_to_process = extracted_dims_.query_token_count * extracted_dims_.num_q_heads; // Total Q-Head items
+    } else if (q.ndim() == 2) {
+        extracted_dims_.num_q_heads = 1; // Implicitly 1 for 2D queries
+        extracted_dims_.query_token_count = q.shape(0); // Number of query items/tokens
+        extracted_dims_.num_items_to_process = extracted_dims_.query_token_count;
+    } else if (q.ndim() == 1) {
+        extracted_dims_.num_q_heads = 1; // Implicitly 1
+        extracted_dims_.query_token_count = q.shape(0); // Number of query items/tokens
+        extracted_dims_.num_items_to_process = extracted_dims_.query_token_count;
+    }
+
+    return extracted_dims_;
+}
+
+bool PagedAttentionPrimitive::should_use_fused_kernel(
+    const CoreDims& core_dims,
+    const PagedAttentionParams& params
+) {
+    bool use_fused_kernel = true;
+    // TODO: implement this
+
+    return use_fused_kernel;
+}
 
 }  // namespace pal::cpp
