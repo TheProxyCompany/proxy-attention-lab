@@ -21,6 +21,23 @@
 
 using namespace metal;
 
+/* ---------------------------------------------------------------------
+ * New tuning constants & tiny helpers
+ * -------------------------------------------------------------------*/
+constant uint K_STRIP = 64;                     // 64-wide head-dim slice
+
+/* warp shuffle helpers (Metal has no simd_reduce_add) */
+inline float warp_sum(float v, uint simd_size) {
+    for (uint off = simd_size >> 1; off > 0; off >>= 1)
+        v += simd_shuffle_down(v, off);
+    return v;
+}
+inline float warp_max(float v, uint simd_size) {
+    for (uint off = simd_size >> 1; off > 0; off >>= 1)
+        v = max(v, simd_shuffle_down(v, off));
+    return v;
+}
+
 /**
  * paged_attn_fused_kernel
  * -----------------
@@ -135,18 +152,12 @@ using namespace metal;
 
     // --- 6.1/10: Stage Q-Vector into Shared Memory ---
     // Use scalar loads to avoid misalignment issues
-    threadgroup float4* q_vec_f4 = reinterpret_cast<threadgroup float4*>(q_shmem);
-
-    for (uint chunk = local_thread_idx; chunk < chunks_per_row; chunk += tg_dim.x) {
-        // Scalar loads from global memory to avoid alignment issues
-        uint base_offset_global_q = chunk * 4;
-        half qh0 = q_vector_item_ptr[base_offset_global_q + 0];
-        half qh1 = q_vector_item_ptr[base_offset_global_q + 1];
-        half qh2 = q_vector_item_ptr[base_offset_global_q + 2];
-        half qh3 = q_vector_item_ptr[base_offset_global_q + 3];
-
-        float4 q_float_chunk = float4(qh0, qh1, qh2, qh3) * params.inv_sqrt_head_dim;
-        q_vec_f4[chunk] = q_float_chunk;
+    /* ---- Q-vector stage: half4 → float4 once, store pre-scaled ---- */
+    threadgroup float4* q_vec_f4 =
+        reinterpret_cast<threadgroup float4*>(q_shmem);
+    for (uint c = local_thread_idx; c < chunks_per_row; c += tg_dim.x) {
+        half4 h = reinterpret_cast<device const half4*>(q_vector_item_ptr)[c];
+        q_vec_f4[c] = float4(h) * params.inv_sqrt_head_dim;
     }
     // All threads read q_shmem in later steps, ensure writes complete across the group
     threadgroup_barrier(mem_flags::mem_threadgroup);
