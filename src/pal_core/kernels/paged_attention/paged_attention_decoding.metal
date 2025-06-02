@@ -210,7 +210,7 @@ using namespace metal;
             device const half* k_vector_global_ptr = fetch_kv_pointer(
                 /*is_k_vector=*/true,
                 /*absolute_hist_pos=*/hist_tile_start + row_idx_in_tile,
-                /*kv_head_idx=*/target_kv_head_idx_item,
+                /*kv_head_idx=*/target_kv_head_idx,
                 k_cache_pool_in,
                 v_cache_pool_in, // Passed but not used by fetch_kv_pointer for K
                 tg_page_table_slice,
@@ -246,7 +246,7 @@ using namespace metal;
             device const half* v_vector_global_ptr = fetch_kv_pointer(
                 /*is_k_vector=*/false, // Now fetching V
                 /*absolute_hist_pos=*/hist_tile_start + row_idx_in_tile,
-                /*kv_head_idx=*/target_kv_head_idx_item,
+                /*kv_head_idx=*/target_kv_head_idx,
                 k_cache_pool_in, // Passed but not used by fetch_kv_pointer for V
                 v_cache_pool_in,
                 tg_page_table_slice,
