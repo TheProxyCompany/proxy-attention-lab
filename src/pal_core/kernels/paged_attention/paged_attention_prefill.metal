@@ -129,7 +129,7 @@ using namespace metal;
             dst_k_vector_h4_ptr[chunk_idx] = src_k_vector_h4_ptr[chunk_idx];
         }
     }
-    simdgroup_barrier(mem_flags::mem_threadgroup);
+    // simdgroup_barrier(mem_flags::mem_threadgroup);
 
     // Load V-tile
     for (uint token_idx_on_page = 0; token_idx_on_page < D_s; ++token_idx_on_page) {
@@ -144,7 +144,7 @@ using namespace metal;
             dst_v_vector_h4_ptr[chunk_idx] = src_v_vector_h4_ptr[chunk_idx];
         }
     }
-    simdgroup_barrier(mem_flags::mem_threadgroup); // K_tile and V_tile (depth D_s) are now loaded.
+    // simdgroup_barrier(mem_flags::mem_threadgroup); // K_tile and V_tile (depth D_s) are now loaded.
 
     // E. Query Block Iteration and Loading
     uint seq_len_for_this_batch_item = (uint)sequence_lengths_in[assigned_batch_item_idx];

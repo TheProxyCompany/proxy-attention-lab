@@ -187,16 +187,16 @@ using namespace metal;
         acc_tile_local_fp32[i_acc] = 0.0f; // Initialize FP32 accumulator
     }
 
+    const uint simd_size_const = actual_simd_width; // Use the new argument
+    const uint threads_pg_const = tg_dim.x;          // Total threads launched for this group
+    const uint num_sg_const = max(1u, (threads_pg_const + simd_size_const - 1) / simd_size_const);
+    const uint chunks_per_row_const = params.head_dim / 4;
     // --- 10/10: Main Attention Computation (Fused Pass) ---
     for (uint hist_tile_start = 0; hist_tile_start < item_effective_history_length; hist_tile_start += params.tokens_per_page) {
         uint current_hist_tile_actual_len = min(params.tokens_per_page, item_effective_history_length - hist_tile_start);
-        // --- Load K-vectors into K_tile ---
-        const uint simd_size_const = actual_simd_width; // Use the new argument
-        const uint threads_pg_const = tg_dim.x;          // Total threads launched for this group
-        const uint num_sg_const = max(1u, (threads_pg_const + simd_size_const - 1) / simd_size_const);
-        const uint rows_in_tile_const = current_hist_tile_actual_len;
-        const uint chunks_per_row_const = params.head_dim / 4;
 
+        // --- Load K-vectors into K_tile ---
+        const uint rows_in_tile_const = current_hist_tile_actual_len;
         // Each SIMD group cooperatively loads one or more rows assigned to it
         for (uint row_idx_in_tile = simd_group_id; // SIMD group 'simd_group_id' starts with this row
              row_idx_in_tile < rows_in_tile_const;
@@ -218,18 +218,15 @@ using namespace metal;
             threadgroup half4* dst_row_h4_ptr = reinterpret_cast<threadgroup half4*>(k_tile_row_base_ptr);
 
             // 1C. Cooperative lane-striped copy (or zero-fill) by this SIMD group for this row
-            if (k_vector_global_ptr != nullptr) {
-                // Lanes within this SIMD group load chunks of the K-vector for 'row_idx_in_tile'
-                for (uint chunk_idx_in_row = simd_lane_id; // Lane 'simd_lane_id' starts with this chunk
-                     chunk_idx_in_row < chunks_per_row_const;
-                     chunk_idx_in_row += simd_size_const) {
+            for (uint chunk_idx_in_row = simd_lane_id; // Lane 'simd_lane_id' starts with this chunk
+                 chunk_idx_in_row < chunks_per_row_const;
+                 chunk_idx_in_row += simd_size_const) {
 
-                    // Vectorized load - since head_dim is validated to be multiple of 4
-                    device const half4* k_vec_h4_ptr = reinterpret_cast<device const half4*>(k_vector_global_ptr);
-                    half4 h4_val_from_global = k_vec_h4_ptr[chunk_idx_in_row];
+                // Vectorized load - since head_dim is validated to be multiple of 4
+                device const half4* k_vec_h4_ptr = reinterpret_cast<device const half4*>(k_vector_global_ptr);
+                half4 h4_val_from_global = k_vec_h4_ptr[chunk_idx_in_row];
 
-                    dst_row_h4_ptr[chunk_idx_in_row] = h4_val_from_global;  // Store to K_tile
-                }
+                dst_row_h4_ptr[chunk_idx_in_row] = h4_val_from_global;  // Store to K_tile
             }
         } // end for row_idx_in_tile
 
@@ -254,18 +251,15 @@ using namespace metal;
             threadgroup half4* dst_row_h4_ptr = reinterpret_cast<threadgroup half4*>(v_tile_row_base_ptr);
 
             // 1C. Cooperative lane-striped copy (or zero-fill) by this SIMD group for this row
-            if (v_vector_global_ptr != nullptr) {
-                // Lanes within this SIMD group load chunks of the V-vector for 'row_idx_in_tile'
-                for (uint chunk_idx_in_row = simd_lane_id;
-                     chunk_idx_in_row < chunks_per_row_const;
-                     chunk_idx_in_row += simd_size_const) {
+            for (uint chunk_idx_in_row = simd_lane_id;
+                    chunk_idx_in_row < chunks_per_row_const;
+                    chunk_idx_in_row += simd_size_const) {
 
-                    // Vectorized load - since head_dim is validated to be multiple of 4
-                    device const half4* v_vec_h4_ptr = reinterpret_cast<device const half4*>(v_vector_global_ptr);
-                    half4 h4_val_from_global = v_vec_h4_ptr[chunk_idx_in_row];
+                // Vectorized load - since head_dim is validated to be multiple of 4
+                device const half4* v_vec_h4_ptr = reinterpret_cast<device const half4*>(v_vector_global_ptr);
+                half4 h4_val_from_global = v_vec_h4_ptr[chunk_idx_in_row];
 
-                    dst_row_h4_ptr[chunk_idx_in_row] = h4_val_from_global;  // Store to V_tile
-                }
+                dst_row_h4_ptr[chunk_idx_in_row] = h4_val_from_global;  // Store to V_tile
             }
         } // end for row_idx_in_tile
 
@@ -278,24 +272,14 @@ using namespace metal;
         }
 
         // --- 10.1.2/10: History Tile - Local Max (m_local_tile) Reduction ---
-        float current_thread_score_for_max_reduction = thread_score_val;
-
-        tg_partial_reduce_scratch[local_thread_idx] = current_thread_score_for_max_reduction;
-        // No barrier needed: each thread only reads its own index for simd_max
-
+        tg_partial_reduce_scratch[local_thread_idx] = thread_score_val;
         float simd_max_m_tile_val = simd_max(tg_partial_reduce_scratch[local_thread_idx]);
         if (simd_lane_id == 0) { tg_simd_reduce_scratch[simd_group_id] = simd_max_m_tile_val; }
-        // Thread 0 later reads all per-simd-group maxes from tg_simd_reduce_scratch
-        // All simdgroup partial sums must be visible before thread 0 reduces
         threadgroup_barrier(mem_flags::mem_threadgroup); // Ensure G_simd_reduced_maxes written
 
         float m_local_tile_val = -INFINITY;
         if (local_thread_idx == 0) {
-            if (current_hist_tile_actual_len == 0) {
-                // Empty tile: contribute nothing
-                m_local_tile_val = -INFINITY;
-            } else {
-                // Start with first SIMD‑group max, then fold the rest
+            if (current_hist_tile_actual_len > 0) {
                 m_local_tile_val = tg_simd_reduce_scratch[0];
                 for (uint sg_idx = 1; sg_idx < num_simd_groups; ++sg_idx) {
                     m_local_tile_val = max(m_local_tile_val, tg_simd_reduce_scratch[sg_idx]);
@@ -358,10 +342,6 @@ using namespace metal;
         float scale_for_acc_iter_atomic = tg_simd_reduce_scratch[0]; // This is scale_f from update_softmax_stats_kahan
 
         if (scale_for_acc_iter_atomic != 1.0f) {
-            // Rescale previously accumulated V-values.
-            // If m_global increased due to the current tile's m_local_tile,
-            // previous contributions to acc_tile_local_fp32 were effectively based on an older, smaller m_global.
-            // This scale_for_acc_iter_atomic adjusts them to the new m_global for consistent normalization.
             for (uint d = 0; d < params.head_dim; d += 4) {
                 float4 acc_chunk = float4(acc_tile_local_fp32[d],
                                         (d + 1 < params.head_dim) ? acc_tile_local_fp32[d+1] : 0.0f,
