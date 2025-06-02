@@ -106,7 +106,14 @@ def test_pal_latency_vs_seq_len(benchmark, seq_len_val):
     # Define benchmark function that evaluates the result
     def operation_to_benchmark():
         out = paged_attention(
-            queries, k_cache_pool, v_cache_pool, page_table, sequence_lengths, query_to_seq_map, query_token_offset
+            queries,
+            k_cache_pool,
+            v_cache_pool,
+            page_table,
+            sequence_lengths,
+            query_to_seq_map,
+            query_token_offset,
+            use_fused_kernel=False,
         )
         mx.eval(out)
         return out
@@ -333,7 +340,7 @@ def test_pal_decode_latency_vs_history_len(benchmark, history_len_val):
 
     # Define benchmark function that evaluates the result
     def operation_to_benchmark():
-        out = paged_attention(queries, k_hist, v_hist, pt, slens_hist, q_map, q_off)
+        out = paged_attention(queries, k_hist, v_hist, pt, slens_hist, q_map, q_off, use_fused_kernel=True)
         mx.eval(out)
         return out
 

@@ -38,6 +38,7 @@ mx::array paged_attention(
     const mx::array& sequence_lengths,
     const mx::array& query_to_seq_map,
     const mx::array& query_token_offset,
+    bool use_fused_kernel,
     mx::StreamOrDevice stream_or_device
   ) {
   spdlog::debug("[PAL Ops] pal::cpp::paged_attention C++ operation called.");
@@ -74,7 +75,8 @@ mx::array paged_attention(
       num_q_heads,
       num_kv_heads,
       head_dim,
-      tokens_per_page
+      tokens_per_page,
+      use_fused_kernel
     );
 
   spdlog::debug("[PAL Ops] PagedAttentionPrimitive instance created.");

@@ -97,6 +97,7 @@ def test_fetch_k_vector_from_multiple_kv_heads() -> None:
         py_sequence_lengths,
         py_query_to_seq_map,
         py_query_token_offset,
+        use_fused_kernel=False,
     )
     mx.eval(output_arr)
 
@@ -213,6 +214,7 @@ def test_mqa_kv_head_selection() -> None:
         py_sequence_lengths,
         py_query_to_seq_map,
         py_query_token_offset,
+        use_fused_kernel=False,
     )
     mx.eval(output_arr)
 
@@ -305,6 +307,7 @@ def test_mqa_multi_token_kv_head_selection_2d_query() -> None:
         py_sequence_lengths,
         py_query_to_seq_map,
         py_query_token_offset,
+        use_fused_kernel=False,
     )
     mx.eval(output_arr)
 

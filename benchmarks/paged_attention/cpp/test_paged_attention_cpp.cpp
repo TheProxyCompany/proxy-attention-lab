@@ -191,7 +191,8 @@ static void BM_PAL_LatencyVsSeqLen(benchmark::State& state) {
             page_table,
             sequence_lengths,
             query_to_seq_map,
-            query_token_offset
+            query_token_offset,
+            false /* use_fused_kernel */
         );
         out.eval();
     }
@@ -329,7 +330,8 @@ static void BM_PAL_DecodeLatencyVsHistoryLen(benchmark::State& state) {
             page_table,
             sequence_lengths,
             query_to_seq_map,
-            query_token_offset
+            query_token_offset,
+            true /* use_fused_kernel */
         );
         out.eval();
     }

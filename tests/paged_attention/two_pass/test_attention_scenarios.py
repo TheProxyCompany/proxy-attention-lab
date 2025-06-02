@@ -83,6 +83,7 @@ def test_max_score_over_history_in_one_block() -> None:
         py_sequence_lengths,
         py_query_to_seq_map,
         py_query_token_offset,
+        use_fused_kernel=False,
     )
     mx.eval(output_arr)
 
@@ -232,6 +233,7 @@ def test_max_score_over_multi_block_history() -> None:
         py_sequence_lengths,
         py_query_to_seq_map,
         py_query_token_offset,
+        use_fused_kernel=False,
     )
     mx.eval(output_arr)
 
@@ -361,6 +363,7 @@ def test_zero_history_returns_zero_score() -> None:
         py_sequence_lengths,
         py_query_to_seq_map,
         py_query_token_offset,
+        use_fused_kernel=False,
     )
     mx.eval(output_arr)
 
@@ -504,6 +507,7 @@ def test_history_limited_by_sequence_length() -> None:
         py_sequence_lengths,
         py_query_to_seq_map,
         py_query_token_offset,
+        use_fused_kernel=False,
     )
     mx.eval(output_arr)
 
@@ -656,6 +660,7 @@ def test_history_scan_stops_at_page_table_limit() -> None:
         py_sequence_lengths,
         py_query_to_seq_map,
         py_query_token_offset,
+        use_fused_kernel=False,
     )
     mx.eval(output_arr)
 

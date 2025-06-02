@@ -159,6 +159,7 @@ def test_full_attention_in_one_block_prefill() -> None:  # Renamed for clarity
         py_sequence_lengths,
         py_query_to_seq_map,
         py_query_token_offset,
+        use_fused_kernel=False,
         # CRITICAL: Testing prefill path
     )
     mx.eval(output_arr)

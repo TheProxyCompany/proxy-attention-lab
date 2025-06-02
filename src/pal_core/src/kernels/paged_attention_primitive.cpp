@@ -66,12 +66,14 @@ PagedAttentionPrimitive::PagedAttentionPrimitive(
     int num_q_heads,
     int num_kv_heads,
     int head_dim,
-    int tokens_per_page
+    int tokens_per_page,
+    bool use_fused_kernel
 ) : mx::UnaryPrimitive(mx::to_stream(stream_or_device)),
       num_q_heads_(num_q_heads),
       num_kv_heads_(num_kv_heads),
       head_dim_(head_dim),
-      tokens_per_page_(tokens_per_page){ }
+      tokens_per_page_(tokens_per_page),
+      use_fused_kernel_(use_fused_kernel) { }
 
 void PagedAttentionPrimitive::eval_cpu(const std::vector<mx::array>& inputs, mx::array& out) {
     std::ostringstream oss;
@@ -107,11 +109,10 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx:
     params.inv_sqrt_head_dim = 1.0f / std::sqrt(static_cast<float>(core_dims.head_dim));
     params.num_active_batch_logical_pages = 1;
 
-    auto used_fused = should_use_fused_kernel(core_dims, params);
-    spdlog::debug("[PAL Primitive] num_items_to_process: {}, used_fused: {}", core_dims.num_items_to_process, used_fused);
+    spdlog::debug("[PAL Primitive] num_items_to_process: {}, use_fused_kernel: {}", core_dims.num_items_to_process, use_fused_kernel_);
 
     // Dispatch to appropriate implementation
-    if (used_fused) {
+    if (use_fused_kernel_) {
         _eval_gpu_fused(s, d, inputs, out, core_dims, params);
     } else {
         _eval_gpu_2pass(s, d, inputs, out, core_dims, params);
@@ -801,12 +802,9 @@ CoreDims extract_dims(const std::vector<mx::array>& inputs) {
 
 bool PagedAttentionPrimitive::should_use_fused_kernel(
     const CoreDims& core_dims,
-    const PagedAttentionParams& params
+    const std::vector<mx::array>& inputs
 ) {
-    bool use_fused_kernel = true;
-    // TODO: implement this
-
-    return use_fused_kernel;
+    return true;
 }
 
 }  // namespace pal::cpp

@@ -175,6 +175,7 @@ def test_pal_vs_sdpa_equivalency_mha(batch_size, seq_len, num_heads, head_dim, d
         pal_sequence_lengths,
         pal_query_to_seq_map,
         pal_query_token_offset,
+        use_fused_kernel=False,
         # explicitly use prefill mode
     )
     mx.eval(pal_output)

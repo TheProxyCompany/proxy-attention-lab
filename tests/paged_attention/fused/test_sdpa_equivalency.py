@@ -208,6 +208,7 @@ def test_pal_decode_vs_sdpa_equivalency(batch_size, history_len, num_heads, head
         pal_sequence_lengths,
         pal_query_to_seq_map,
         pal_query_token_offset,
+        use_fused_kernel=True,
         # explicitly use decode mode
     )
     mx.eval(pal_output)

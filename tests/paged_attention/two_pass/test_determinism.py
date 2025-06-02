@@ -156,6 +156,7 @@ def test_paged_attention_determinism_prefill() -> None:  # Renamed for clarity
         py_sequence_lengths,
         py_query_to_seq_map,
         py_query_token_offset,
+        use_fused_kernel=False,
         # Explicitly prefill
     )
     mx.eval(output1)
@@ -169,6 +170,7 @@ def test_paged_attention_determinism_prefill() -> None:  # Renamed for clarity
         py_sequence_lengths,
         py_query_to_seq_map,
         py_query_token_offset,
+        use_fused_kernel=False,
         # Explicitly prefill
     )
     mx.eval(output2)

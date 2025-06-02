@@ -27,6 +27,7 @@ def paged_attention(
     sequence_lengths: mx.array,
     query_to_seq_map: mx.array,
     query_token_offset: mx.array,
+    use_fused_kernel: bool,
     stream: mx.Stream | mx.Device | None = None,
 ) -> mx.array:
     """Performs paged attention using the custom C++ primitive and Metal kernel.
@@ -49,6 +50,7 @@ def paged_attention(
             Shape: [TotalQueryTokens]
         query_token_offset: Logical offset of each query token within its sequence.
             Shape: [TotalQueryTokens]
+        use_fused_kernel: Whether to use the fused kernel
         stream: Optional stream or device for the operation.
 
     Returns:
@@ -68,5 +70,6 @@ def paged_attention(
         sequence_lengths,
         query_to_seq_map,
         query_token_offset,
+        use_fused_kernel,
         stream=stream,
     )
