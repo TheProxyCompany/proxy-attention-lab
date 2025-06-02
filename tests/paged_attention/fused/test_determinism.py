@@ -21,13 +21,23 @@ identical inputs produce bit-for-bit identical outputs.
 import logging
 
 import mlx.core as mx
+import pytest
 
 from proxy_attention_lab import paged_attention
 
 logger = logging.getLogger(__name__)
 
 
-def test_paged_attention_determinism() -> None:
+@pytest.mark.parametrize("history_length", [16, 64, 128, 1024, 2048, 4096])
+@pytest.mark.parametrize("num_queries_tokens", [4, 16])
+@pytest.mark.parametrize("tokens_per_page", [16, 32, 64])
+@pytest.mark.parametrize("num_sequences_in_batch", [1, 2, 4])
+def test_paged_attention_determinism(
+    history_length,
+    num_queries_tokens,
+    tokens_per_page,
+    num_sequences_in_batch,
+) -> None:
     """Test that paged_attention output is deterministic for identical inputs.
 
     This test configures a moderately complex scenario, calls paged_attention twice
@@ -35,16 +45,10 @@ def test_paged_attention_determinism() -> None:
     identical.
     """
     # --- Configuration ---
-    # Use a configuration that exercises various aspects of the kernel
-    num_queries_tokens = 4  # Corresponds to num_items_to_process if 2D, or num_tokens if 3D
-    num_q_heads = 2
-    head_dim = 64  # A common head dimension
-
-    num_total_pages = 4
-    tokens_per_page = 16  # Smaller to force more paging if seq_len is long
-    num_kv_heads = 2  # MHA scenario
-
-    num_sequences_in_batch = 2
+    num_q_heads = 32
+    num_kv_heads = 16
+    head_dim = 128
+    num_total_pages = history_length // tokens_per_page
     max_logical_blocks_per_seq = (tokens_per_page * 2) // tokens_per_page  # e.g., 2 blocks
 
     # Seed for reproducibility of input data generation
@@ -136,8 +140,18 @@ def test_paged_attention_determinism() -> None:
     assert output1.shape == output2.shape, f"Output shapes differ: {output1.shape} vs {output2.shape}"
     assert output1.dtype == output2.dtype, f"Output dtypes differ: {output1.dtype} vs {output2.dtype}"
 
-    assert mx.array_equal(output1, output2), (
-        "Paged attention output is not deterministic. Outputs differ between two identical calls."
+    # For debugging, print if they are not equal
+    if not mx.array_equal(output1, output2).item():
+        logger.error("Non-deterministic output detected!")
+        logger.error(f"Output 1 sample: {output1[0, : min(output1.shape[1], 4)] if output1.size > 0 else 'empty'}")
+        logger.error(f"Output 2 sample: {output2[0, : min(output2.shape[1], 4)] if output2.size > 0 else 'empty'}")
+        mean_diff = mx.mean(mx.abs(output1 - output2)).item()
+        logger.error(f"Mean difference: {mean_diff:.3f}")
+        max_diff = mx.max(mx.abs(output1 - output2)).item()
+        logger.error(f"Max difference: {max_diff:.3f}")
+
+    assert mx.array_equal(output1, output2).item(), (
+        "Paged attention prefill output is not deterministic. Outputs differ between two identical calls."
     )
 
     logger.info("  Result: Outputs are identical - determinism verified.")

@@ -154,7 +154,7 @@ void PagedAttentionPrimitive::_eval_gpu_fused(
     metal::DispatchGrid grid;
     grid.width = core_dims.num_items_to_process;
     grid.height = 1;
-    grid.depth = params.num_sequences_in_batch;
+    grid.depth = 1;
 
     // Setup compute encoder
     auto& compute_encoder = device.get_command_encoder(stream.index);

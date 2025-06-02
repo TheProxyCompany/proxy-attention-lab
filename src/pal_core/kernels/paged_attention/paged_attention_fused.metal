@@ -221,7 +221,6 @@ using namespace metal;
             // 1B. Destination row base pointer in K_tile (threadgroup memory)
             threadgroup half* k_tile_row_base_ptr = K_tile + (row_idx_in_tile * params.head_dim);
             threadgroup half4* dst_row_h4_ptr = reinterpret_cast<threadgroup half4*>(k_tile_row_base_ptr);
-
             // 1C. Cooperative lane-striped copy by this SIMD group for this row
             for (uint chunk_idx_in_row = simd_lane_id; // Lane 'simd_lane_id' starts with this chunk
                  chunk_idx_in_row < chunks_per_row;
@@ -233,6 +232,7 @@ using namespace metal;
                 dst_row_h4_ptr[chunk_idx_in_row] = h4_val_from_global;  // Store to K_tile
             }
         } // end for row_idx_in_tile
+        threadgroup_barrier(mem_flags::mem_threadgroup);
 
         // Each SIMD group cooperatively loads one or more rows assigned to it
         for (uint row_idx_in_tile = simd_group_id; // SIMD group 'simd_group_id' starts with this row
@@ -273,7 +273,6 @@ using namespace metal;
 
         // --- 10.1.1/10: History Tile - Score Calculation (no stashing in fused path) ---
         float thread_score_val = 0; // Default to a state that would lead to zero contribution
-
         if (local_thread_idx < current_hist_tile_actual_len) {
             threadgroup const half* k_vector_from_tile_h = K_tile + (local_thread_idx * params.head_dim);
             // The helper assumes it's always called for a full head_dim that's a multiple of 4.
@@ -283,6 +282,7 @@ using namespace metal;
                 float4 kv = float4(*((threadgroup const half4*)(k_vector_from_tile_h + d)));
                 thread_score_val += dot(qv, kv);
             }
+            threadgroup_barrier(mem_flags::mem_threadgroup);
         }
 
         // --- 10.1.2/10: History Tile - Local Max (m_local_tile) Reduction ---
@@ -386,7 +386,7 @@ using namespace metal;
 
         // --- 10.1.6/10: History Tile - Weighted V Accumulation (Fused Path) ---
         if (local_thread_idx < current_hist_tile_actual_len) {
-
+            threadgroup_barrier(mem_flags::mem_threadgroup);
             threadgroup const half* v_vector_from_tile_h = V_tile + (local_thread_idx * params.head_dim);
 
             float weight_term = thread_exp_val;
@@ -414,7 +414,6 @@ using namespace metal;
     } // End history tiling loop
 
     // --- 10.2/10: Final Normalization & Output Write (Fused Path) ---
-    // Use the threadgroup shared final s_global value from g_global_stats_ptr
     float s_global_final = (*tg_global_stats).y;
     float inv_s_global = (s_global_final > kEpsilonForZeroGuard) ? fast::divide(1.0f, s_global_final) : 0.0f;
 
