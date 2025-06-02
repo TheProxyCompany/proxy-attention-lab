@@ -208,14 +208,14 @@ inline float warp_max(float v, uint simd_size) {
     for (uint hist_tile_start = 0; hist_tile_start < item_effective_history_length; hist_tile_start += params.tokens_per_page) {
         uint current_hist_tile_actual_len = min(params.tokens_per_page, item_effective_history_length - hist_tile_start);
 
-        // --- Load K-vectors into K_tile ---
+        // --- Load K and V vectors into K_tile and V_tile ---
         const uint rows_in_tile_const = current_hist_tile_actual_len;
         // Each SIMD group cooperatively loads one or more rows assigned to it
         for (uint row_idx_in_tile = simd_group_id; // SIMD group 'simd_group_id' starts with this row
              row_idx_in_tile < rows_in_tile_const;
              row_idx_in_tile += num_simd_groups) { // Strides by number of SIMD groups
 
-            // 1A. Inline KV pointer calculation for K-vector
+            // 1A. Inline KV pointer calculation (same for K and V)
             uint absolute_hist_pos = hist_tile_start + row_idx_in_tile;
             uint logical_block_idx = absolute_hist_pos / params.tokens_per_page;
 
@@ -227,56 +227,28 @@ inline float warp_max(float v, uint simd_size) {
                                 kv_head_offset;
 
             device const half* k_vector_global_ptr = k_cache_pool_in + total_offset;
+            device const half* v_vector_global_ptr = v_cache_pool_in + total_offset;
 
-
-            // 1B. Destination row base pointer in K_tile (threadgroup memory)
+            // 1B. Destination row base pointers in K_tile and V_tile (threadgroup memory)
             threadgroup half* k_tile_row_base_ptr = K_tile + (row_idx_in_tile * params.head_dim);
-            threadgroup half4* dst_row_h4_ptr = reinterpret_cast<threadgroup half4*>(k_tile_row_base_ptr);
-            // 1C. Cooperative lane-striped copy by this SIMD group for this row
+            threadgroup half* v_tile_row_base_ptr = V_tile + (row_idx_in_tile * params.head_dim);
+            threadgroup half4* k_dst_row_h4_ptr = reinterpret_cast<threadgroup half4*>(k_tile_row_base_ptr);
+            threadgroup half4* v_dst_row_h4_ptr = reinterpret_cast<threadgroup half4*>(v_tile_row_base_ptr);
+
+            // 1C. Cooperative lane-striped copy by this SIMD group for both K and V
             for (uint chunk_idx_in_row = simd_lane_id; // Lane 'simd_lane_id' starts with this chunk
                  chunk_idx_in_row < chunks_per_row;
                  chunk_idx_in_row += actual_simd_width) {
 
                 // Vectorized load - since head_dim is validated to be multiple of 4
                 device const half4* k_vec_h4_ptr = reinterpret_cast<device const half4*>(k_vector_global_ptr);
-                half4 h4_val_from_global = k_vec_h4_ptr[chunk_idx_in_row];
-                dst_row_h4_ptr[chunk_idx_in_row] = h4_val_from_global;  // Store to K_tile
-            }
-        } // end for row_idx_in_tile
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-
-        // Each SIMD group cooperatively loads one or more rows assigned to it
-        for (uint row_idx_in_tile = simd_group_id; // SIMD group 'simd_group_id' starts with this row
-             row_idx_in_tile < rows_in_tile_const;
-             row_idx_in_tile += num_simd_groups) { // Strides by number of SIMD groups
-
-            // 1A. Inline KV pointer calculation for V-vector
-            uint absolute_hist_pos = hist_tile_start + row_idx_in_tile;
-            uint logical_block_idx = absolute_hist_pos / params.tokens_per_page;
-
-            uint token_slot_in_page = absolute_hist_pos % params.tokens_per_page;
-            uint physical_page_id = tg_page_table_slice[logical_block_idx];
-
-            ulong total_offset = (ulong)physical_page_id * (ulong)per_page_stride +
-                                 (ulong)token_slot_in_page * (ulong)per_token_stride +
-                                 kv_head_offset;
-
-            device const half* v_vector_global_ptr = v_cache_pool_in + total_offset;
-
-            // 1B. Destination row base pointer in V_tile (threadgroup memory)
-            threadgroup half* v_tile_row_base_ptr = V_tile + (row_idx_in_tile * params.head_dim);
-            threadgroup half4* dst_row_h4_ptr = reinterpret_cast<threadgroup half4*>(v_tile_row_base_ptr);
-
-            // 1C. Cooperative lane-striped copy by this SIMD group for this row
-            for (uint chunk_idx_in_row = simd_lane_id;
-                    chunk_idx_in_row < chunks_per_row;
-                    chunk_idx_in_row += actual_simd_width) {
-
-                // Vectorized load - since head_dim is validated to be multiple of 4
                 device const half4* v_vec_h4_ptr = reinterpret_cast<device const half4*>(v_vector_global_ptr);
-                half4 h4_val_from_global = v_vec_h4_ptr[chunk_idx_in_row];
 
-                dst_row_h4_ptr[chunk_idx_in_row] = h4_val_from_global;  // Store to V_tile
+                half4 k_h4_val = k_vec_h4_ptr[chunk_idx_in_row];
+                half4 v_h4_val = v_vec_h4_ptr[chunk_idx_in_row];
+
+                k_dst_row_h4_ptr[chunk_idx_in_row] = k_h4_val;  // Store to K_tile
+                v_dst_row_h4_ptr[chunk_idx_in_row] = v_h4_val;  // Store to V_tile
             }
         } // end for row_idx_in_tile
         // make sure all threads have loaded the K/V vectors into K_tile and V_tile
@@ -296,20 +268,16 @@ inline float warp_max(float v, uint simd_size) {
         }
 
         // --- 10.1.2/10: History Tile - Local Max (m_local_tile) Reduction ---
-        tg_partial_reduce_scratch[local_thread_idx] = thread_score_val;
-        float simd_max_m_tile_val = simd_max(tg_partial_reduce_scratch[local_thread_idx]);
-        if (simd_lane_id == 0) { tg_simd_reduce_scratch[simd_group_id] = simd_max_m_tile_val; }
-        threadgroup_barrier(mem_flags::mem_threadgroup); // Ensure G_simd_reduced_maxes written
-
-        float m_local_tile_val = -INFINITY;
-        if (local_thread_idx == 0) {
-            if (current_hist_tile_actual_len > 0) {
-                m_local_tile_val = tg_simd_reduce_scratch[0];
-                for (uint sg_idx = 1; sg_idx < num_simd_groups; ++sg_idx) {
-                    m_local_tile_val = max(m_local_tile_val, tg_simd_reduce_scratch[sg_idx]);
-                }
-            }
-            tg_simd_reduce_scratch[0] = m_local_tile_val;
+        /* warp max via shuffle */
+        float m_local_tile_val = warp_max(thread_score_val, actual_simd_width);
+        if (simd_lane_id == 0) tg_partial_reduce_scratch[simd_group_id] = m_local_tile_val;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (simd_group_id == 0) {
+            float v = (local_thread_idx < num_simd_groups)
+                      ? tg_partial_reduce_scratch[local_thread_idx]
+                      : -INFINITY;
+            m_local_tile_val = warp_max(v, actual_simd_width);
+            if (local_thread_idx == 0) tg_simd_reduce_scratch[0] = m_local_tile_val;
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
         m_local_tile_val = tg_simd_reduce_scratch[0];
@@ -324,21 +292,18 @@ inline float warp_max(float v, uint simd_size) {
         }
 
         // --- 10.1.4/10: History Tile - Local Sum (d_local_tile) Reduction ---
-        float thread_s_val_for_reduction = thread_exp_val;
-        // Perform SIMD reduction directly on register values (no barrier needed)
-        float simd_sum_d_tile_val = simd_sum(thread_s_val_for_reduction);
-        // Write results to G_simd_reduced_maxes for final reduction by thread0
-        if (simd_lane_id == 0) { tg_simd_reduce_scratch[simd_group_id] = simd_sum_d_tile_val; }
-        threadgroup_barrier(mem_flags::mem_threadgroup); // Ensure G_simd_reduced_maxes written
-
-        float d_local_tile_total_val = 0.0f;
-        if (local_thread_idx == 0) {
-            for (uint sg_idx = 0; sg_idx < num_simd_groups; ++sg_idx) {
-                d_local_tile_total_val += tg_simd_reduce_scratch[sg_idx];
-            }
-            tg_simd_exp_sums_scratch[0] = d_local_tile_total_val;
+        /* warp sum via shuffle */
+        float d_local_tile_total_val = warp_sum(thread_exp_val, actual_simd_width);
+        if (simd_lane_id == 0)
+            tg_simd_exp_sums_scratch[simd_group_id] = d_local_tile_total_val;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (simd_group_id == 0) {
+            float v = (local_thread_idx < num_simd_groups)
+                      ? tg_simd_exp_sums_scratch[local_thread_idx]
+                      : 0.0f;
+            d_local_tile_total_val = warp_sum(v, actual_simd_width);
+            if (local_thread_idx == 0) tg_simd_exp_sums_scratch[0] = d_local_tile_total_val;
         }
-        // Share d_local_tile_total_val with all threads
         threadgroup_barrier(mem_flags::mem_threadgroup);
         d_local_tile_total_val = tg_simd_exp_sums_scratch[0];
 
@@ -400,22 +365,18 @@ inline float warp_max(float v, uint simd_size) {
             float exp_term = precise::exp(max(m_local_tile_val - m_global_current_iter_atomic, params.log_exp_min_clamp));
             float final_p_attn_weight_numerator = weight_term * exp_term;
 
-            for (uint d_idx = 0; d_idx < params.head_dim; d_idx += 4) {
-                // Explicitly construct float4 from half values in V_tile
-                float4 v_chunk_fp32 = float4(
-                    (d_idx + 0 < params.head_dim) ? float(v_vector_from_tile_h[d_idx + 0]) : 0.0f,
-                    (d_idx + 1 < params.head_dim) ? float(v_vector_from_tile_h[d_idx + 1]) : 0.0f,
-                    (d_idx + 2 < params.head_dim) ? float(v_vector_from_tile_h[d_idx + 2]) : 0.0f,
-                    (d_idx + 3 < params.head_dim) ? float(v_vector_from_tile_h[d_idx + 3]) : 0.0f
-                );
-
-                v_chunk_fp32 *= final_p_attn_weight_numerator; // Multiply as floats
-
-                // Accumulate into FP32 accumulator
-                acc_tile_local_fp32[d_idx]     += v_chunk_fp32.x;
-                if (d_idx + 1 < params.head_dim) acc_tile_local_fp32[d_idx + 1] += v_chunk_fp32.y;
-                if (d_idx + 2 < params.head_dim) acc_tile_local_fp32[d_idx + 2] += v_chunk_fp32.z;
-                if (d_idx + 3 < params.head_dim) acc_tile_local_fp32[d_idx + 3] += v_chunk_fp32.w;
+            // Use vectorized half4 loads and float4 accumulation
+            threadgroup const half4* v_vec_h4_ptr = reinterpret_cast<threadgroup const half4*>(v_vector_from_tile_h);
+            thread float4* acc_f4_ptr = reinterpret_cast<thread float4*>(acc_tile_local_fp32);
+            
+            for (uint chunk_idx = 0; chunk_idx < chunks_per_row; chunk_idx++) {
+                // Load half4 and convert to float4
+                half4 v_h4 = v_vec_h4_ptr[chunk_idx];
+                float4 v_chunk_fp32 = float4(v_h4);
+                
+                // Apply weight and accumulate
+                v_chunk_fp32 *= final_p_attn_weight_numerator;
+                acc_f4_ptr[chunk_idx] += v_chunk_fp32;
             }
         }
     } // End history tiling loop
@@ -441,10 +402,10 @@ inline float warp_max(float v, uint simd_size) {
         if (i+3 < params.head_dim) chunk_to_write.w = acc_tile_local_fp32[i+3];
 
         float4 reduced_simd_group_final_chunk;
-        reduced_simd_group_final_chunk.x = simd_sum(chunk_to_write.x);
-        reduced_simd_group_final_chunk.y = simd_sum(chunk_to_write.y);
-        reduced_simd_group_final_chunk.z = simd_sum(chunk_to_write.z);
-        reduced_simd_group_final_chunk.w = simd_sum(chunk_to_write.w);
+        reduced_simd_group_final_chunk.x = warp_sum(chunk_to_write.x, actual_simd_width);
+        reduced_simd_group_final_chunk.y = warp_sum(chunk_to_write.y, actual_simd_width);
+        reduced_simd_group_final_chunk.z = warp_sum(chunk_to_write.z, actual_simd_width);
+        reduced_simd_group_final_chunk.w = warp_sum(chunk_to_write.w, actual_simd_width);
 
         if (simd_lane_id == 0) {
             tg_simd_v_chunk_sums[simd_group_id] = reduced_simd_group_final_chunk;
