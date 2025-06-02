@@ -40,6 +40,8 @@ struct CoreDims {
     size_t query_token_count{0};
 };
 
+static CoreDims extract_dims(const std::vector<mx::array>& inputs);
+
 /**
  * @brief Custom primitive implementation for paged attention operations.
  *
@@ -69,8 +71,10 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
     bool is_prefill = true
   );
 
+  static constexpr size_t DECODE_SIMD_GROUPS_PER_TG_FACTOR = 2; // wip
+
   static constexpr uint32_t SIMD_GROUPS_PER_GQA_GROUP_FACTOR_PREFILL_PASS_1 = 6; // hand tuned; 4-6 seems to be the sweet spot
-  static constexpr uint32_t SIMD_GROUPS_PER_THREADGROUP_PASS2 = 8; // wip
+  static constexpr uint32_t SIMD_GROUPS_PER_THREADGROUP_PASS2 = 8; // hand tuned; 8 is the sweet spot
 
   /**
    * @brief Evaluates the primitive on CPU.

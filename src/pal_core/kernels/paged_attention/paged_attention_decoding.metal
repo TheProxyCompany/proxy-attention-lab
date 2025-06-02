@@ -48,12 +48,6 @@ using namespace metal;
     uint        simd_lane_id                        [[thread_index_in_simdgroup]],
     uint        simd_group_id                       [[simdgroup_index_in_threadgroup]]
 ) {
-
-    // Early exit for degenerate case where head_dim is zero
-    if (params.head_dim == 0) {
-        return;
-    }
-
     uint global_item_idx = tg_pos_in_grid.x;    // Identifies the query-head item
     uint local_thread_idx = local_idx_in_tg;    // Thread ID within this group
     const uint num_simd_groups = max(1u, (tg_dim.x + actual_simd_width - 1) / actual_simd_width);
@@ -108,14 +102,14 @@ using namespace metal;
     threadgroup half* K_tile = (threadgroup half*)current_offset;
 
     // Update current_offset for the next section (V_tile) using params.head_dim for K_tile's size
-    current_offset += params.tile_size_T_runtime * params.head_dim * sizeof(half);
+    current_offset += params.tokens_per_page * params.head_dim * sizeof(half);
     current_offset = (current_offset + kAlignmentMask) & ~kAlignmentMask;
 
     // V_tile for caching V-vectors in threadgroup memory
     threadgroup half* V_tile = (threadgroup half*)current_offset;
 
     // Update current_offset for page-table slice after V_tile
-    current_offset += params.tile_size_T_runtime * params.head_dim * sizeof(half);
+    current_offset += params.tokens_per_page * params.head_dim * sizeof(half);
     current_offset = (current_offset + kAlignmentMask) & ~kAlignmentMask;
 
     // Threadgroup buffer for current sequence's page-table slice
@@ -155,6 +149,7 @@ using namespace metal;
         q_vec_f4[chunk] = q_float_chunk;
     }
     // All threads read q_shmem in later steps, ensure writes complete across the group
+    threadgroup_barrier(mem_flags::mem_threadgroup);
 
     // --- 7/10: History & Sequence Length Setup ---
     uint token_idx_for_sideband_lookup;
@@ -170,6 +165,7 @@ using namespace metal;
         uint flat_idx = item_seq_idx_in_batch * params.max_logical_blocks_per_seq + blk;
         tg_page_table_slice[blk] = page_table_in[flat_idx];
     }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
 
     int item_signed_query_token_offset = query_token_offset_in[token_idx_for_sideband_lookup];
 
@@ -192,8 +188,8 @@ using namespace metal;
     }
 
     // --- 10/10: Main Attention Computation (Fused Pass) ---
-    for (uint hist_tile_start = 0; hist_tile_start < item_effective_history_length; hist_tile_start += params.tile_size_T_runtime) {
-        uint current_hist_tile_actual_len = min(params.tile_size_T_runtime, item_effective_history_length - hist_tile_start);
+    for (uint hist_tile_start = 0; hist_tile_start < item_effective_history_length; hist_tile_start += params.tokens_per_page) {
+        uint current_hist_tile_actual_len = min(params.tokens_per_page, item_effective_history_length - hist_tile_start);
         // --- Load K-vectors into K_tile ---
         const uint simd_size_const = actual_simd_width; // Use the new argument
         const uint threads_pg_const = tg_dim.x;          // Total threads launched for this group

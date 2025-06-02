@@ -98,6 +98,14 @@ def test_paged_attention_determinism() -> None:
     # --- Call paged_attention the first time ---
     logger.info(f"Test: {test_paged_attention_determinism.__name__}")
     logger.info("  First call to paged_attention...")
+    mx.eval(py_queries)
+    mx.eval(py_k_cache_pool)
+    mx.eval(py_v_cache_pool)
+    mx.eval(py_page_table)
+    mx.eval(py_sequence_lengths)
+    mx.eval(py_query_to_seq_map)
+    mx.eval(py_query_token_offset)
+
     output1 = paged_attention(
         py_queries,
         py_k_cache_pool,

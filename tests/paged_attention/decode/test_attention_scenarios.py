@@ -646,12 +646,16 @@ def test_history_scan_stops_at_page_table_limit() -> None:
     # 3. V-Cache Pool with values to verify that these are aggregated correctly
     py_v_cache_pool = mx.zeros_like(py_k_cache_pool)
     # Set up V-cache with values to verify correct aggregation
-    py_v_cache_pool[0, 0, 0, :] = mx.array([10.0, 20.0, 30.0, 40.0], dtype=mx.float16)  # Position 0
-    py_v_cache_pool[0, 1, 0, :] = mx.array([50.0, 60.0, 70.0, 80.0], dtype=mx.float16)  # Position 1 (highest score)
-    py_v_cache_pool[0, 2, 0, :] = mx.array([5.0, 6.0, 7.0, 8.0], dtype=mx.float16)  # Position 2
-    # Positions 3-4 should NOT be accessed due to sequence length limit
-    py_v_cache_pool[0, 3, 0, :] = mx.array([100.0, 200.0, 300.0, 400.0], dtype=mx.float16)  # Position 3
-    py_v_cache_pool[1, 0, 0, :] = mx.array([500.0, 600.0, 700.0, 800.0], dtype=mx.float16)  # Position 4
+    # Position mapping: physical_page = logical_block_idx, slot = hist_pos % cfg_tokens_per_page
+    py_v_cache_pool[0, 0, 0, :] = mx.array([10.0, 20.0, 30.0, 40.0], dtype=mx.float16)  # Position 0 (page 0, slot 0)
+    py_v_cache_pool[0, 1, 0, :] = mx.array([50.0, 60.0, 70.0, 80.0], dtype=mx.float16)  # Position 1 (page 0, slot 1)
+    py_v_cache_pool[1, 0, 0, :] = mx.array(
+        [500.0, 600.0, 700.0, 800.0], dtype=mx.float16
+    )  # Position 2 (page 1, slot 0) - highest K score
+    py_v_cache_pool[1, 1, 0, :] = mx.array(
+        [100.0, 200.0, 300.0, 400.0], dtype=mx.float16
+    )  # Position 3 (page 1, slot 1)
+    # Position 4 would be in logical block 2 (beyond page table limit) - not set
 
     # 4. Page Table: Maps logical blocks 0,1 to physical pages 0,1
     # Limited to max_logical_blocks_per_seq_in_pagetable = 2

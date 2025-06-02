@@ -21,10 +21,7 @@ AttentionMemoryLayout calculate_attention_memory_layout(
     uintptr_t current_offset_bytes = 0;
 
     // Number of query heads per kv group
-    uint32_t query_heads_per_kv_group = 1;
-    if (params.num_kv_heads > 0) {
-        query_heads_per_kv_group = std::max(1u, params.num_q_heads / params.num_kv_heads);
-    }
+    uint32_t query_heads_per_kv_group = std::max(1u, params.num_q_heads / params.num_kv_heads);
     // This num_simd_groups is based on actual launched threads_per_group,
     // which should be query_heads_per_kv_group * actual_simd_lanes_per_group for prefill.
     const uint32_t num_simd_groups_in_tg = (threads_per_group + actual_simd_lanes_per_group - 1) / actual_simd_lanes_per_group;
@@ -44,8 +41,6 @@ AttentionMemoryLayout calculate_attention_memory_layout(
     // --- Conditional Logic for Prefill vs. Decode ---
     if (is_prefill) {
         // --- PREFILL PATH (Symmetric QKV Tiling) ---
-        // params.tokens_per_page is D_s (symmetric depth)
-        // params.tile_size_T_runtime is also D_s
 
         // 1. Q_shmem_block: Stores D_s Q-vectors, each for query_heads_per_kv_group heads, as float.
         layout.q_shmem_bytes = params.tokens_per_page * query_heads_per_kv_group * params.head_dim * sizeof(float);
@@ -80,20 +75,18 @@ AttentionMemoryLayout calculate_attention_memory_layout(
         layout.page_table_slice_bytes = 0;
 
     } else {
-        // --- DECODE PATH (Original Logic) ---
-        // params.tokens_per_page is the TPP_Opt from PIE for decode cache structure.
-        // params.tile_size_T_runtime is the calculated K/V tile depth for decode kernel.
+        // --- DECODE PATH ---
 
         // 1. Q_shmem: For one Q-vector, as float.
         layout.q_shmem_bytes = params.head_dim * sizeof(float);
         current_offset_bytes = AttentionMemoryLayout::align_size(layout.q_shmem_bytes);
 
-        // 2. K_tile: Uses params.tile_size_T_runtime for depth.
-        layout.k_tile_bytes = params.tile_size_T_runtime * params.head_dim * sizeof(half);
+        // 2. K_tile: Uses params.tokens_per_page for depth.
+        layout.k_tile_bytes = params.tokens_per_page * params.head_dim * sizeof(half);
         current_offset_bytes = AttentionMemoryLayout::align_size(current_offset_bytes + layout.k_tile_bytes);
 
-        // 3. V_tile: Uses params.tile_size_T_runtime for depth.
-        layout.v_tile_bytes = params.tile_size_T_runtime * params.head_dim * sizeof(half);
+        // 3. V_tile: Uses params.tokens_per_page for depth.
+        layout.v_tile_bytes = params.tokens_per_page * params.head_dim * sizeof(half);
         current_offset_bytes = AttentionMemoryLayout::align_size(current_offset_bytes + layout.v_tile_bytes);
 
         // 4. Fixed Scratch components for Decode (as originally designed for it)
@@ -106,11 +99,10 @@ AttentionMemoryLayout calculate_attention_memory_layout(
         layout.simd_reduced_adjusted_sum_exps_bytes = simd_reduced_sum_exps_scratch;
         current_offset_bytes = AttentionMemoryLayout::align_size(current_offset_bytes + layout.simd_reduced_adjusted_sum_exps_bytes);
 
-        // For decode, num_simd_groups_in_tg is likely 1 or 2. global_stats and s_global_comp are small.
-        layout.global_stats_bytes = 2 * sizeof(float); // Per TG, not per SIMD group for decode's online softmax
+        layout.global_stats_bytes = 2 * sizeof(float);
         current_offset_bytes = AttentionMemoryLayout::align_size(current_offset_bytes + layout.global_stats_bytes);
 
-        layout.s_global_compensation_bytes = 1 * sizeof(float); // Per TG
+        layout.s_global_compensation_bytes = 1 * sizeof(float);
         current_offset_bytes = AttentionMemoryLayout::align_size(current_offset_bytes + layout.s_global_compensation_bytes);
 
         layout.simd_v_chunk_sums_bytes = simd_v_sums_scratch;

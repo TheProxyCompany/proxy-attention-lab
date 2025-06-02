@@ -22,8 +22,6 @@
 // PAL utilities
 #include "pal_core/kernel_utils/kernel_constants.hpp"
 #include "pal_core/kernel_utils/memory_layout.hpp"
-#include "pal_core/kernel_utils/validation.hpp"
-#include "pal_core/kernel_utils/tiling.hpp"
 #include "pal_core/metal/dispatch.hpp"
 #include "pal_core/kernel_utils/param_builder.hpp"
 
@@ -137,172 +135,31 @@ static mx::array create_query_starts_buffer(
 }
 
 
-// Paged attention specific validator
-class PagedAttentionValidator : public kernel_utils::KernelValidator {
-public:
-    // Constructor to store the prefill mode
-    explicit PagedAttentionValidator(bool is_prefill) : is_prefill_(is_prefill) {}
-
-    CoreDims validate_and_extract_dims(const std::vector<mx::array>& inputs) {
-        if (inputs.size() != 7) {
-            throw std::invalid_argument(
-                format_error("PAL Primitive", "Expected 7 inputs, received " + std::to_string(inputs.size())));
-        }
-        // Extract early for CoreDims population
-        const auto& k_pool = inputs[1];
-        kernel_utils::ValidationUtils::check_ndim(k_pool, 4, "k_pool");
-        extracted_dims_.tokens_per_page = k_pool.shape(1);
-        extracted_dims_.num_kv_heads = k_pool.shape(2);
-        extracted_dims_.head_dim = k_pool.shape(3);
-
-        // Now call the main validation logic
-        validate(inputs);
-        return extracted_dims_;
-    }
-
-    void validate(const std::vector<mx::array>& inputs) override {
-        const auto& q = inputs[0];
-        const auto& k_pool = inputs[1];
-        const auto& v_pool = inputs[2];
-        const auto& page_table = inputs[3];
-        const auto& sequence_lengths = inputs[4];
-        const auto& query_to_seq_map = inputs[5];
-        const auto& query_token_offset = inputs[6];
-
-        // --- Common Validations ---
-        kernel_utils::ValidationUtils::check_dtype(page_table, mx::uint32, "page_table");
-        kernel_utils::ValidationUtils::check_dtype(sequence_lengths, mx::int32, "sequence_lengths");
-        kernel_utils::ValidationUtils::check_dtype(query_to_seq_map, mx::int32, "query_to_seq_map");
-        kernel_utils::ValidationUtils::check_dtype(query_token_offset, mx::int32, "query_token_offset");
-
-        // K/V Pool validation (ndim check already done for CoreDims, check V-pool matches K-pool)
-        kernel_utils::ValidationUtils::check_ndim(v_pool, 4, "v_pool");
-        if (v_pool.shape() != k_pool.shape()) {
-            throw std::invalid_argument(format_error("PAL Primitive", "K-pool and V-pool shapes must match."));
-        }
-        // extracted_dims_ for tokens_per_page, num_kv_heads, head_dim are from k_pool.
-
-        kernel_utils::ValidationUtils::check_divisibility(
-            extracted_dims_.head_dim,
-            kernels::paged_attention::HEAD_DIM_VECTORIZATION,
-            "head_dim"
-        );
-
-        // Query format validation (populates num_q_heads, num_items_to_process, query_token_count in extracted_dims_)
-        validate_query_format(q); // This uses extracted_dims_.head_dim
-
-        // Page table validation
-        kernel_utils::ValidationUtils::check_ndim(page_table, 2, "page_table");
-        if (sequence_lengths.ndim() != 1) {
-             throw std::invalid_argument(format_error("PAL Primitive", "sequence_lengths must be a 1D array."));
-        }
-        if (page_table.shape(0) != sequence_lengths.size()) {
-            throw std::invalid_argument(format_error("PAL Primitive", "page_table batch dimension must match size of sequence_lengths."));
-        }
-
-
-        // --- Mode-Specific Validations ---
-        if (is_prefill_) {
-            spdlog::debug("[PAL Validate] Prefill mode specific input validation...");
-            size_t total_tokens_from_seq_lengths = 0;
-            const int32_t* sl_ptr = sequence_lengths.data<int32_t>();
-            for (int i = 0; i < sequence_lengths.size(); ++i) {
-                if (sl_ptr[i] < 0) {
-                    throw std::invalid_argument(format_error("PAL Prefill", "Sequence lengths cannot be negative."));
-                }
-                total_tokens_from_seq_lengths += static_cast<size_t>(sl_ptr[i]);
-            }
-
-            if (extracted_dims_.query_token_count != total_tokens_from_seq_lengths) {
-                std::ostringstream oss;
-                oss << "For prefill mode, total query tokens from 'queries' input (" << extracted_dims_.query_token_count
-                    << ") must equal the sum of 'sequence_lengths' (" << total_tokens_from_seq_lengths
-                    << "). 'queries' must contain all tokens for all sequences, batched contiguously.";
-                throw std::invalid_argument(format_error("PAL Prefill", oss.str()));
-            }
-
-            // query_to_seq_map and query_token_offset must also match this total token count.
-            if (query_to_seq_map.size() != extracted_dims_.query_token_count) {
-                 throw std::invalid_argument(format_error("PAL Prefill", "query_to_seq_map size must match total query tokens."));
-            }
-            if (query_token_offset.size() != extracted_dims_.query_token_count) {
-                 throw std::invalid_argument(format_error("PAL Prefill", "query_token_offset size must match total query tokens."));
-            }
-
-        } else { // Decode Mode
-            spdlog::debug("[PAL Validate] Decode mode specific input validation...");
-            // In decode, query_token_count is the number of individual queries being decoded (e.g., batch_size if one token per seq).
-            // query_to_seq_map and query_token_offset must match this count.
-            if (query_to_seq_map.size() != extracted_dims_.query_token_count) {
-                 std::ostringstream oss;
-                 oss << "For decode mode, query_to_seq_map size (" << query_to_seq_map.size()
-                     << ") must match number of query items (" << extracted_dims_.query_token_count << ").";
-                 throw std::invalid_argument(format_error("PAL Decode", oss.str()));
-            }
-            if (query_token_offset.size() != extracted_dims_.query_token_count) {
-                 std::ostringstream oss;
-                 oss << "For decode mode, query_token_offset size (" << query_token_offset.size()
-                     << ") must match number of query items (" << extracted_dims_.query_token_count << ").";
-                 throw std::invalid_argument(format_error("PAL Decode", oss.str()));
-            }
-
-            // Check that sequence indices in query_to_seq_map are valid
-            const int32_t* q_to_s_ptr = query_to_seq_map.data<int32_t>();
-            uint32_t num_sequences_in_batch_val = sequence_lengths.size();
-            for (size_t i = 0; i < query_to_seq_map.size(); ++i) {
-                if (q_to_s_ptr[i] < 0 || static_cast<uint32_t>(q_to_s_ptr[i]) >= num_sequences_in_batch_val) {
-                    std::ostringstream oss;
-                    oss << "For decode mode, query_to_seq_map contains invalid sequence index " << q_to_s_ptr[i]
-                        << " at query item " << i << ". Valid range [0, " << num_sequences_in_batch_val - 1 << "].";
-                    throw std::out_of_range(format_error("PAL Decode", oss.str()));
-                }
-            }
-        }
-
-        spdlog::debug("[PAL Primitive Validate] Input validation complete.");
-    }
-
-private:
+CoreDims extract_dims(const std::vector<mx::array>& inputs) {
+    // Extract early for CoreDims population
     CoreDims extracted_dims_;
-    bool is_prefill_;
+    const auto& q = inputs[0];
+    const auto& k_pool = inputs[1];
+    extracted_dims_.tokens_per_page = k_pool.shape(1);
+    extracted_dims_.num_kv_heads = k_pool.shape(2);
+    extracted_dims_.head_dim = k_pool.shape(3);
 
-    void validate_query_format(const mx::array& q) {
-        if (q.ndim() == 3) {
-            // For 3D queries, q.shape(0) is number of tokens per q_head group if prefill, or num individual query items if decode
-            // q.shape(1) is num_q_heads
-            // q.shape(2) is head_dim
-            if (q.shape(2) != static_cast<int>(extracted_dims_.head_dim)) {
-                throw std::invalid_argument(format_error("PAL Primitive", "3D Query HeadDim mismatch with K-pool head_dim."));
-            }
-            extracted_dims_.num_q_heads = q.shape(1);
-            extracted_dims_.query_token_count = q.shape(0); // Number of "token rows" or "item groups"
-            extracted_dims_.num_items_to_process = extracted_dims_.query_token_count * extracted_dims_.num_q_heads; // Total Q-Head items
-        } else if (q.ndim() == 2) {
-            // For 2D queries, q.shape(0) is number of query items/tokens
-            // q.shape(1) is head_dim
-            if (q.shape(1) != static_cast<int>(extracted_dims_.head_dim)) {
-                throw std::invalid_argument(format_error("PAL Primitive", "2D Query HeadDim mismatch with K-pool head_dim."));
-            }
-            extracted_dims_.num_q_heads = 1; // Implicitly 1 for 2D queries
-            extracted_dims_.query_token_count = q.shape(0); // Number of query items/tokens
-            extracted_dims_.num_items_to_process = extracted_dims_.query_token_count;
-        } else if (q.ndim() == 1) {
-            // For 1D queries, q.shape(0) is number of query items/tokens, head_dim must be 1
-            if (extracted_dims_.head_dim != 1) {
-                throw std::invalid_argument(format_error("PAL Primitive", "1D Query requires K-pool head_dim to be 1."));
-            }
-            extracted_dims_.num_q_heads = 1; // Implicitly 1
-            extracted_dims_.query_token_count = q.shape(0); // Number of query items/tokens
-            extracted_dims_.num_items_to_process = extracted_dims_.query_token_count;
-        } else {
-            throw std::invalid_argument(format_error("PAL Primitive", "Query 'q' ndim (" + std::to_string(q.ndim()) + ") not supported."));
-        }
-
-        if (extracted_dims_.num_items_to_process == 0 && q.size() > 0) { // Or check extracted_dims_.query_token_count
-            throw std::invalid_argument(format_error("PAL Primitive", "Number of items/tokens to process is 0 but query array is not empty."));
-        }
+    if (q.ndim() == 3) {
+        extracted_dims_.num_q_heads = q.shape(1);
+        extracted_dims_.query_token_count = q.shape(0); // Number of "token rows" or "item groups"
+        extracted_dims_.num_items_to_process = extracted_dims_.query_token_count * extracted_dims_.num_q_heads; // Total Q-Head items
+    } else if (q.ndim() == 2) {
+        extracted_dims_.num_q_heads = 1; // Implicitly 1 for 2D queries
+        extracted_dims_.query_token_count = q.shape(0); // Number of query items/tokens
+        extracted_dims_.num_items_to_process = extracted_dims_.query_token_count;
+    } else if (q.ndim() == 1) {
+        extracted_dims_.num_q_heads = 1; // Implicitly 1
+        extracted_dims_.query_token_count = q.shape(0); // Number of query items/tokens
+        extracted_dims_.num_items_to_process = extracted_dims_.query_token_count;
     }
-};
+
+    return extracted_dims_;
+}
 
 // Parameter builder for paged attention
 class PagedAttentionParamBuilder : public KernelParamBuilder<PagedAttentionParams> {
@@ -333,9 +190,6 @@ public:
         // Calculate inv_sqrt_head_dim
         params.inv_sqrt_head_dim = 1.0f / std::sqrt(static_cast<float>(params.head_dim));
 
-        // Calculate tile size
-        calculate_tile_size(params, device);
-
         return params;
     }
 
@@ -344,51 +198,6 @@ private:
     const mx::array& k_pool_arr_;
     const mx::array& page_table_arr_;
     bool is_prefill_;
-
-    void calculate_tile_size(PagedAttentionParams& params, MTL::Device* device) {
-        if (is_prefill_) {
-            params.tile_size_T_runtime = params.tokens_per_page;
-        } else {
-            // For decode mode, use existing tile size calculation logic
-            // Calculate fixed memory usage with zero tile size
-            PagedAttentionParams params_for_sizing = params;
-            params_for_sizing.tile_size_T_runtime = 0;
-
-            auto fixed_layout = kernel_utils::calculate_attention_memory_layout(
-                params_for_sizing,
-                kernels::DEFAULT_THREADS_PER_GROUP,
-                kernels::SIMD_WIDTH,
-                false  // is_prefill
-            );
-
-            // Get memory constraints
-            auto constraints = get_memory_constraints(device, fixed_layout.total_bytes);
-
-            // Calculate bytes per token for tiling
-            size_t bytes_per_token = 2 * params.head_dim * sizeof(half);
-
-            // Use tiling utility to calculate optimal tile size
-            tiling::TileRequirements requirements{
-                .bytes_per_element = bytes_per_token,
-                .alignment = kernels::paged_attention::TILE_SIZE_ALIGNMENT,
-                .min_size = kernels::paged_attention::MIN_TILE_SIZE_SOFT,
-                .max_size = kernels::paged_attention::MAX_TILE_SIZE_PRACTICAL,
-                .preferred_size = (params.head_dim <= 256) ? 64u :
-                                kernels::paged_attention::MIN_TILE_SIZE_SOFT
-            };
-
-            auto tile_config = tiling::calculate_optimal_tile_size(
-                constraints.available_memory(), requirements);
-
-            if (!tile_config.is_valid()) {
-                throw std::runtime_error(
-                    "[PAL Primitive] head_dim/tokens_per_page combination leaves no "
-                    "scratch space for a single KV token.");
-            }
-
-            params.tile_size_T_runtime = tile_config.tile_size;
-        }
-    }
 };
 
 PagedAttentionPrimitive::PagedAttentionPrimitive(
@@ -444,17 +253,17 @@ void PagedAttentionPrimitive::_eval_gpu_decode(
     }
 
     // Validate inputs and extract dimensions
-    PagedAttentionValidator validator(/* is_prefill */ false);
-    CoreDims core_dims = validator.validate_and_extract_dims(inputs);
+    CoreDims core_dims = extract_dims(inputs);
 
     // Build parameters for decode
     PagedAttentionParamBuilder param_builder(core_dims, inputs[1], inputs[3], false);
     PagedAttentionParams params = param_builder.build(device.mtl_device());
 
     // Calculate thread configuration
+    size_t desired_threads_per_tg = kernel_state->threadExecutionWidth() * DECODE_SIMD_GROUPS_PER_TG_FACTOR;
     auto thread_config = metal::MetalDispatcher::calculate_optimal_threads(
         kernel_state,
-        kernels::DEFAULT_THREADS_PER_GROUP
+        desired_threads_per_tg
     );
 
     // Calculate memory layout
@@ -509,8 +318,7 @@ void PagedAttentionPrimitive::_eval_gpu_prefill(
     }
 
     // Validate inputs and extract dimensions
-    PagedAttentionValidator validator(/*is_prefill*/ true);
-    CoreDims core_dims = validator.validate_and_extract_dims(inputs);
+    CoreDims core_dims = extract_dims(inputs);
 
     auto [tile_size, final_threads_per_tg, actual_simd_width] = get_optimal_tile_size_and_thread_info(
         core_dims.head_dim,
@@ -523,10 +331,6 @@ void PagedAttentionPrimitive::_eval_gpu_prefill(
     // Build parameters for prefill
     PagedAttentionParamBuilder param_builder(core_dims, inputs[1], inputs[3], true);
     PagedAttentionParams params = param_builder.build(metal_device_ptr);
-
-    // Set both tokens_per_page and tile_size_T_runtime to tile_size for prefill
-    params.tokens_per_page = tile_size;
-    params.tile_size_T_runtime = tile_size; // K/V tile depth is tile_size
     spdlog::debug("[PAL Prefill] Final params: tokens_per_page={}, num_q_heads={}, num_kv_heads={}, head_dim={}",
                   params.tokens_per_page, params.num_q_heads, params.num_kv_heads, params.head_dim);
 

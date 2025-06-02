@@ -264,8 +264,16 @@ static void BM_PAL_DecodeLatencyVsHistoryLen(benchmark::State& state) {
     int num_q_heads = params.num_q_heads;
     int num_kv_heads = params.num_kv_heads;
     int head_dim = params.head_dim;
-    int tokens_per_page = params.tokens_per_page;
     mx::Dtype dtype = params.dtype;
+
+    auto info = pal::cpp::PagedAttentionPrimitive::get_optimal_tile_size_and_thread_info(
+        head_dim,
+        num_q_heads,
+        num_kv_heads
+    );
+
+    params.tokens_per_page = std::get<0>(info);
+    int tokens_per_page = params.tokens_per_page;
 
     // Setup input tensors for decode scenario
     int num_tokens = batch_size;  // One token per sequence for decode
