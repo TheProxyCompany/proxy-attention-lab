@@ -318,7 +318,7 @@ using namespace metal;
         float simd_sum_d_tile_val = simd_sum(thread_s_val_for_reduction);
         // Write results to G_simd_reduced_maxes for final reduction by thread0
         if (simd_lane_id == 0) { tg_simd_reduce_scratch[simd_group_id] = simd_sum_d_tile_val; }
-        simdgroup_barrier(mem_flags::mem_threadgroup); // Ensure G_simd_reduced_maxes written
+        threadgroup_barrier(mem_flags::mem_threadgroup); // Ensure G_simd_reduced_maxes written
 
         float d_local_tile_total_val = 0.0f;
         if (local_thread_idx == 0) {

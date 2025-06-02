@@ -288,7 +288,7 @@ void PagedAttentionPrimitive::_eval_gpu_2pass(
     o_partials_pass1_out.set_data(mx::allocator::malloc(o_partials_pass1_out.nbytes()));
 
     // Initialize intermediate arrays
-    // costs roughly 8ms of cpu time.
+    // costs ~10-20ms of cpu time. <- yuck, i cringe everytime. need to fix this.
     std::fill_n(m_locals_pass1_out.data<float>(), m_locals_pass1_out.size(), -std::numeric_limits<float>::infinity());
     std::fill_n(s_locals_pass1_out.data<float>(), s_locals_pass1_out.size(), 0.0f);
 
