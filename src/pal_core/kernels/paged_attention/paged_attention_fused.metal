@@ -282,7 +282,6 @@ using namespace metal;
                 float4 kv = float4(*((threadgroup const half4*)(k_vector_from_tile_h + d)));
                 thread_score_val += dot(qv, kv);
             }
-            threadgroup_barrier(mem_flags::mem_threadgroup);
         }
 
         // --- 10.1.2/10: History Tile - Local Max (m_local_tile) Reduction ---
@@ -315,13 +314,11 @@ using namespace metal;
 
         // --- 10.1.4/10: History Tile - Local Sum (d_local_tile) Reduction ---
         float thread_s_val_for_reduction = thread_exp_val;
-
         // Perform SIMD reduction directly on register values (no barrier needed)
         float simd_sum_d_tile_val = simd_sum(thread_s_val_for_reduction);
-
         // Write results to G_simd_reduced_maxes for final reduction by thread0
         if (simd_lane_id == 0) { tg_simd_reduce_scratch[simd_group_id] = simd_sum_d_tile_val; }
-        threadgroup_barrier(mem_flags::mem_threadgroup); // Ensure G_simd_reduced_maxes written
+        simdgroup_barrier(mem_flags::mem_threadgroup); // Ensure G_simd_reduced_maxes written
 
         float d_local_tile_total_val = 0.0f;
         if (local_thread_idx == 0) {
@@ -386,7 +383,6 @@ using namespace metal;
 
         // --- 10.1.6/10: History Tile - Weighted V Accumulation (Fused Path) ---
         if (local_thread_idx < current_hist_tile_actual_len) {
-            threadgroup_barrier(mem_flags::mem_threadgroup);
             threadgroup const half* v_vector_from_tile_h = V_tile + (local_thread_idx * params.head_dim);
 
             float weight_term = thread_exp_val;
