@@ -106,14 +106,7 @@ def test_pal_latency_vs_seq_len(benchmark, seq_len_val):
     # Define benchmark function that evaluates the result
     def operation_to_benchmark():
         out = paged_attention(
-            queries,
-            k_cache_pool,
-            v_cache_pool,
-            page_table,
-            sequence_lengths,
-            query_to_seq_map,
-            query_token_offset,
-            is_prefill=True,  # explicitly use prefill mode for this benchmark
+            queries, k_cache_pool, v_cache_pool, page_table, sequence_lengths, query_to_seq_map, query_token_offset
         )
         mx.eval(out)
         return out
@@ -340,16 +333,7 @@ def test_pal_decode_latency_vs_history_len(benchmark, history_len_val):
 
     # Define benchmark function that evaluates the result
     def operation_to_benchmark():
-        out = paged_attention(
-            queries,
-            k_hist,
-            v_hist,
-            pt,
-            slens_hist,
-            q_map,
-            q_off,
-            is_prefill=False,  # explicitly use decode mode for this benchmark
-        )
+        out = paged_attention(queries, k_hist, v_hist, pt, slens_hist, q_map, q_off)
         mx.eval(out)
         return out
 
@@ -392,13 +376,7 @@ def test_mlx_decode_latency_vs_history_len(benchmark, history_len_val):
 
     # Define benchmark function that evaluates the result
     def operation_to_benchmark():
-        output = mx.fast.scaled_dot_product_attention(
-            queries,
-            keys,
-            values,
-            scale=scale,
-            mask=causal_mask,
-        )
+        output = mx.fast.scaled_dot_product_attention(queries, keys, values, scale=scale, mask=causal_mask)
         mx.eval(output)
         return output
 

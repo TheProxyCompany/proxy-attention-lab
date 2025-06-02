@@ -65,4 +65,7 @@ static_assert(sizeof(PagedAttentionParams) == 64, "C++ sizeof(PagedAttentionPara
 
 #else // __METAL_VERSION__ (Metal side)
 static_assert(sizeof(PagedAttentionParams) == 64, "Metal sizeof(PagedAttentionParams) expected to be 64 bytes.");
+constant static const uint kAlignmentBytes = 64;
+constant static const uint kAlignmentMask = kAlignmentBytes - 1;
+constant static const float kEpsilonForZeroGuard = 1e-9f;
 #endif

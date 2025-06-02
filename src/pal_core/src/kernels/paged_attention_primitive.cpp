@@ -20,7 +20,6 @@
 #include "pal_core/paged_attention_primitive.hpp"
 
 // PAL utilities
-#include "pal_core/kernel_utils/kernel_constants.hpp"
 #include "pal_core/kernel_utils/memory_layout.hpp"
 #include "pal_core/metal/dispatch.hpp"
 #include "pal_core/kernel_utils/param_builder.hpp"
@@ -36,9 +35,6 @@
 #include <unordered_set>
 #include <algorithm>
 #include <spdlog/spdlog.h>
-
-// Define half type for memory calculations (matching Metal's half type)
-using half = short;
 
 // MLX and Metal includes
 #include <mlx/allocator.h>
@@ -178,14 +174,14 @@ public:
         params.num_kv_heads = dims_.num_kv_heads;
         params.head_dim = dims_.head_dim;
         params.tokens_per_page = dims_.tokens_per_page;
-        params.log_exp_min_clamp = kernels::paged_attention::kLogFp16DenormMinVal;
+        params.log_exp_min_clamp = kLogFp16DenormMinVal;
         params.max_logical_blocks_per_seq = page_table_arr_.shape(1);
         params.num_sequences_in_batch = page_table_arr_.shape(0);
         params.num_physical_pages_in_pool = k_pool_arr_.shape(0);
         params.num_active_batch_logical_pages = 1;  // Placeholder
         params.query_token_count_total = dims_.query_token_count;
-        params.pass2_token_block_size = kernels::paged_attention::PREFILL_PASS2_TOKEN_BLOCK_SIZE;
-        params.pass2_qhead_block_size = kernels::paged_attention::PREFILL_PASS2_QHEAD_BLOCK_SIZE;
+        params.pass2_token_block_size = PASS2_TOKEN_BLOCK_SIZE;
+        params.pass2_qhead_block_size = PASS2_QHEAD_BLOCK_SIZE;
 
         // Calculate inv_sqrt_head_dim
         params.inv_sqrt_head_dim = 1.0f / std::sqrt(static_cast<float>(params.head_dim));
@@ -205,14 +201,12 @@ PagedAttentionPrimitive::PagedAttentionPrimitive(
     int num_q_heads,
     int num_kv_heads,
     int head_dim,
-    int tokens_per_page,
-    bool is_prefill
+    int tokens_per_page
 ) : mx::UnaryPrimitive(mx::to_stream(stream_or_device)),
       num_q_heads_(num_q_heads),
       num_kv_heads_(num_kv_heads),
       head_dim_(head_dim),
-      tokens_per_page_(tokens_per_page),
-      is_prefill_(is_prefill) { }
+      tokens_per_page_(tokens_per_page){ }
 
 void PagedAttentionPrimitive::eval_cpu(const std::vector<mx::array>& inputs, mx::array& out) {
     std::ostringstream oss;
@@ -229,38 +223,39 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx:
 
     auto& s = stream();
     auto& d = mlx::core::metal::device(s.device);
+    CoreDims core_dims = extract_dims(inputs);
+
+    auto use_2pass_kernel = core_dims.num_items_to_process > MIN_ITEMS_FOR_2PASS; // MIN_ITEMS_FOR_2PASS = 512
+
+    PagedAttentionParamBuilder param_builder(core_dims, inputs[1], inputs[3], use_2pass_kernel);
+    PagedAttentionParams params = param_builder.build(d.mtl_device());
 
     // Dispatch to appropriate implementation
-    if (is_prefill_) {
-        _eval_gpu_prefill(s, d, inputs, out);
+    if (use_2pass_kernel) {
+        _eval_gpu_2pass(s, d, inputs, out, core_dims, params);
     } else {
-        _eval_gpu_decode(s, d, inputs, out);
+        _eval_gpu_fused(s, d, inputs, out, core_dims, params);
     }
 }
 
-void PagedAttentionPrimitive::_eval_gpu_decode(
+void PagedAttentionPrimitive::_eval_gpu_fused(
     const mlx::core::Stream& stream,
     mlx::core::metal::Device& device,
     const std::vector<mx::array>& inputs,
-    mx::array& out
+    mx::array& out,
+    const CoreDims& core_dims,
+    PagedAttentionParams& params
 ) {
     // Prepare Metal kernel and command encoder
     const std::string library_name = "pal";
-    const std::string kernel_name = "paged_attn_decode_kernel";
+    const std::string kernel_name = "paged_attn_fused_kernel";
     auto kernel_state = device.get_kernel(kernel_name, library_name);
     if (!kernel_state) {
         throw std::runtime_error("[PAL Primitive] Failed to load kernel: " + kernel_name);
     }
 
-    // Validate inputs and extract dimensions
-    CoreDims core_dims = extract_dims(inputs);
-
-    // Build parameters for decode
-    PagedAttentionParamBuilder param_builder(core_dims, inputs[1], inputs[3], false);
-    PagedAttentionParams params = param_builder.build(device.mtl_device());
-
     // Calculate thread configuration
-    size_t desired_threads_per_tg = kernel_state->threadExecutionWidth() * DECODE_SIMD_GROUPS_PER_TG_FACTOR;
+    size_t desired_threads_per_tg = kernel_state->threadExecutionWidth() * FUSED_SIMD_GROUPS_PER_THREADGROUP;
     auto thread_config = metal::MetalDispatcher::calculate_optimal_threads(
         kernel_state,
         desired_threads_per_tg
@@ -271,7 +266,7 @@ void PagedAttentionPrimitive::_eval_gpu_decode(
         params,
         thread_config.threads_per_group,
         thread_config.execution_width,
-        false  // is_prefill
+        false  // use_2pass_kernel
     );
 
     // Calculate dispatch grid for decode
@@ -303,22 +298,21 @@ void PagedAttentionPrimitive::_eval_gpu_decode(
     );
 }
 
-void PagedAttentionPrimitive::_eval_gpu_prefill(
+void PagedAttentionPrimitive::_eval_gpu_2pass(
     const mlx::core::Stream& stream,
     mlx::core::metal::Device& device,
     const std::vector<mx::array>& inputs,
-    mx::array& out
+    mx::array& out,
+    const CoreDims& core_dims,
+    PagedAttentionParams& params
 ) {
     auto* metal_device_ptr = device.mtl_device();
 
     const std::string library_name = "pal";
-    auto kernel_state = device.get_kernel("paged_attn_prefill_pass1_kernel", library_name);
+    auto kernel_state = device.get_kernel("paged_attn_pass1_kernel", library_name);
     if (!kernel_state) {
-        throw std::runtime_error("[PAL Primitive] Failed to load kernel: paged_attn_prefill_pass1_kernel");
+        throw std::runtime_error("[PAL Primitive] Failed to load kernel: paged_attn_pass1_kernel");
     }
-
-    // Validate inputs and extract dimensions
-    CoreDims core_dims = extract_dims(inputs);
 
     auto [tile_size, final_threads_per_tg, actual_simd_width] = get_optimal_tile_size_and_thread_info(
         core_dims.head_dim,
@@ -328,9 +322,6 @@ void PagedAttentionPrimitive::_eval_gpu_prefill(
         kernel_state
     );
 
-    // Build parameters for prefill
-    PagedAttentionParamBuilder param_builder(core_dims, inputs[1], inputs[3], true);
-    PagedAttentionParams params = param_builder.build(metal_device_ptr);
     spdlog::debug("[PAL Prefill] Final params: tokens_per_page={}, num_q_heads={}, num_kv_heads={}, head_dim={}",
                   params.tokens_per_page, params.num_q_heads, params.num_kv_heads, params.head_dim);
 
@@ -348,20 +339,8 @@ void PagedAttentionPrimitive::_eval_gpu_prefill(
 
     // Create work items buffer and update params BEFORE allocating arrays
     auto [work_items_buffer, num_active_batch_logical_pages_val] = create_work_items_buffer(params, inputs[4]);
-
-    spdlog::debug("[PAL Prefill Debug] After create_work_items_buffer: num_active_batch_logical_pages_val = {}",
-                  num_active_batch_logical_pages_val);
-    spdlog::debug("[PAL Prefill Debug] work_items_buffer shape: [{}, {}]",
-                  work_items_buffer.shape(0), work_items_buffer.shape(1));
-
     params.num_active_batch_logical_pages = num_active_batch_logical_pages_val;
-    spdlog::debug("[PAL Prefill Debug] params.num_active_batch_logical_pages SET to: {}",
-                  params.num_active_batch_logical_pages);
-
-    if (params.num_active_batch_logical_pages == 0) {
-        spdlog::warn("[PAL Prefill] No active batch logical pages to process. Skipping prefill kernel launches and zeroing output.");
-        return; // Exit _eval_gpu_prefill early
-    }
+    spdlog::debug("[PAL Prefill Debug] params.num_active_batch_logical_pages SET to: {}", params.num_active_batch_logical_pages);
 
     mx::array query_starts_buffer = create_query_starts_buffer(
         params.num_sequences_in_batch,
@@ -446,9 +425,9 @@ void PagedAttentionPrimitive::_eval_gpu_prefill(
         memory_layout.total_bytes
     );
 
-    kernel_state = device.get_kernel("paged_attn_prefill_pass2_kernel", library_name);
+    kernel_state = device.get_kernel("paged_attn_pass2_kernel", library_name);
     if (!kernel_state) {
-        throw std::runtime_error("[PAL Primitive] Failed to load Pass 2 kernel: paged_attn_prefill_pass2_kernel");
+        throw std::runtime_error("[PAL Primitive] Failed to load Pass 2 kernel: paged_attn_pass2_kernel");
     }
 
     compute_encoder.set_compute_pipeline_state(kernel_state);
@@ -465,7 +444,7 @@ void PagedAttentionPrimitive::_eval_gpu_prefill(
     pass2_grid.depth = 1;
 
     // Calculate thread configuration
-    size_t desired_threads_per_tg = kernel_state->threadExecutionWidth() * SIMD_GROUPS_PER_THREADGROUP_PASS2;
+    size_t desired_threads_per_tg = kernel_state->threadExecutionWidth() * PASS2_SIMD_GROUPS_PER_THREADGROUP;
     auto thread_config = metal::MetalDispatcher::calculate_optimal_threads(kernel_state, desired_threads_per_tg);
     size_t num_simd_groups_pass2 = thread_config.threads_per_group / kernel_state->threadExecutionWidth();
 
@@ -515,16 +494,12 @@ void PagedAttentionPrimitive::_eval_gpu_prefill(
     spdlog::debug("[dispatch_prefill_pass2] work_items_buffer shape: [{}, {}]",
                   work_items_buffer.shape(0), work_items_buffer.shape(1));
 
-
     // Set input arrays
     compute_encoder.set_input_array(m_locals_pass1_out, 0);
     compute_encoder.set_input_array(s_locals_pass1_out, 1);
     compute_encoder.set_input_array(o_partials_pass1_out, 2);
-    compute_encoder.set_input_array(work_items_buffer, 3);
-    // Set parameters
-    compute_encoder.set_bytes(&params, sizeof(PagedAttentionParams), 4);
-    // Set output array
-    compute_encoder.set_output_array(out, 5);
+    compute_encoder.set_bytes(&params, sizeof(PagedAttentionParams), 3);
+    compute_encoder.set_output_array(out, 4);
 
     metal::MetalDispatcher::dispatch_kernel(
         compute_encoder, pass2_grid,
@@ -586,7 +561,7 @@ void PagedAttentionPrimitive::print(std::ostream& os) {
        << ", num_kv_heads=" << num_kv_heads_
        << ", head_dim=" << head_dim_
        << ", tokens_per_page=" << tokens_per_page_
-       << ", is_prefill=" << (is_prefill_ ? "true" : "false") << ")";
+       << ")";
 }
 
 size_t PagedAttentionPrimitive::calculate_per_gqa_group_compute_scratch(
@@ -624,7 +599,7 @@ uint32_t PagedAttentionPrimitive::calculate_symmetric_tile_depth(
     size_t max_threadgroup_memory_bytes,
     size_t per_gqa_group_compute_scratch_bytes
 ) {
-    constexpr size_t S_h = sizeof(half);  // 2 bytes for half precision (K, V tiles)
+    constexpr size_t S_h = sizeof(short);  // 2 bytes for half precision (K, V tiles)
     constexpr size_t S_f = sizeof(float); // 4 bytes for single precision (Q tile, accumulators)
 
     if (num_kv_heads == 0) { // Avoid division by zero
@@ -674,7 +649,7 @@ uint32_t PagedAttentionPrimitive::calculate_symmetric_tile_depth(
     }
 
     spdlog::debug("[calculate_symmetric_tile_depth] Final symmetric depth (D_s): {}", symmetric_depth);
-    return std::min(kernels::paged_attention::MAX_TILE_SIZE_PRACTICAL, symmetric_depth);
+    return std::min(MAX_TILE_SIZE_PRACTICAL, symmetric_depth);
 }
 
 std::tuple<uint32_t, uint32_t, uint32_t> PagedAttentionPrimitive::get_optimal_tile_size_and_thread_info(
@@ -711,7 +686,7 @@ std::tuple<uint32_t, uint32_t, uint32_t> PagedAttentionPrimitive::get_optimal_ti
         N_q_per_kv = std::max(1u, num_query_heads / num_kv_heads);
     }
 
-    uint32_t desired_threads_per_tg = actual_simd_width * N_q_per_kv * SIMD_GROUPS_PER_GQA_GROUP_FACTOR_PREFILL_PASS_1;
+    uint32_t desired_threads_per_tg = actual_simd_width * N_q_per_kv * PASS1_SIMD_GROUPS_PER_GQA_GROUP;
     uint32_t max_threads_device = kernel_state->maxTotalThreadsPerThreadgroup();
     uint32_t final_threads_per_tg = std::min(desired_threads_per_tg, max_threads_device);
     final_threads_per_tg = ((final_threads_per_tg + actual_simd_width - 1) / actual_simd_width) * actual_simd_width;

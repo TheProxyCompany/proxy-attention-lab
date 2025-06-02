@@ -27,7 +27,6 @@ def paged_attention(
     sequence_lengths: mx.array,
     query_to_seq_map: mx.array,
     query_token_offset: mx.array,
-    is_prefill: bool,
     stream: mx.Stream | mx.Device | None = None,
 ) -> mx.array:
     """Performs paged attention using the custom C++ primitive and Metal kernel.
@@ -50,9 +49,6 @@ def paged_attention(
             Shape: [TotalQueryTokens]
         query_token_offset: Logical offset of each query token within its sequence.
             Shape: [TotalQueryTokens]
-        is_prefill: Whether to perform prefill or decoding.
-            - When True (prefill mode): One threadgroup processes all heads for a query token
-            - When False (decode mode): One threadgroup processes one query-token-head pair
         stream: Optional stream or device for the operation.
 
     Returns:
@@ -72,6 +68,5 @@ def paged_attention(
         sequence_lengths,
         query_to_seq_map,
         query_token_offset,
-        is_prefill=is_prefill,
         stream=stream,
     )

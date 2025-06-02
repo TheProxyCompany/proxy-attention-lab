@@ -31,6 +31,17 @@ namespace mx = mlx::core;
 
 namespace pal::cpp {
 
+static constexpr size_t MIN_ITEMS_FOR_2PASS = 512; // wip
+
+static constexpr size_t FUSED_SIMD_GROUPS_PER_THREADGROUP = 2; // wip
+static constexpr uint32_t PASS1_SIMD_GROUPS_PER_GQA_GROUP = 6; // hand tuned; 4-6 seems to be the sweet spot
+static constexpr uint32_t PASS2_SIMD_GROUPS_PER_THREADGROUP = 8; // hand tuned; 8 is the sweet spot
+
+static constexpr float kLogFp16DenormMinVal = -88.0f;
+static constexpr uint32_t PASS2_TOKEN_BLOCK_SIZE = 16;
+static constexpr uint32_t PASS2_QHEAD_BLOCK_SIZE = 8;
+static constexpr uint32_t MAX_TILE_SIZE_PRACTICAL = 256;
+
 struct CoreDims {
     uint32_t head_dim{0};
     uint32_t num_q_heads{0};
@@ -60,21 +71,14 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
    * @param num_kv_heads Number of key/value heads in the attention mechanism
    * @param head_dim Hidden dimension size per attention head
    * @param tokens_per_page Number of tokens stored in each memory page
-   * @param is_prefill Whether to perform prefill or decoding
    */
   explicit PagedAttentionPrimitive(
     mx::StreamOrDevice stream,
     int num_q_heads = 0,
     int num_kv_heads = 0,
     int head_dim = 0,
-    int tokens_per_page = 0,
-    bool is_prefill = true
+    int tokens_per_page = 0
   );
-
-  static constexpr size_t DECODE_SIMD_GROUPS_PER_TG_FACTOR = 2; // wip
-
-  static constexpr uint32_t SIMD_GROUPS_PER_GQA_GROUP_FACTOR_PREFILL_PASS_1 = 6; // hand tuned; 4-6 seems to be the sweet spot
-  static constexpr uint32_t SIMD_GROUPS_PER_THREADGROUP_PASS2 = 8; // hand tuned; 8 is the sweet spot
 
   /**
    * @brief Evaluates the primitive on CPU.
@@ -121,8 +125,7 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
     return (this->num_q_heads_ == other_pa.num_q_heads_ &&
             this->num_kv_heads_ == other_pa.num_kv_heads_ &&
             this->head_dim_ == other_pa.head_dim_ &&
-            this->tokens_per_page_ == other_pa.tokens_per_page_ &&
-            this->is_prefill_ == other_pa.is_prefill_);
+            this->tokens_per_page_ == other_pa.tokens_per_page_);
   }
 
   /**
@@ -157,7 +160,6 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
   int num_kv_heads_;
   int head_dim_;
   int tokens_per_page_;
-  bool is_prefill_;
 
   /**
    * @brief Implements vector-Jacobian product for backpropagation.
@@ -197,17 +199,22 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
       const std::vector<int>& axes) override;
 
   // Helper methods for decode and prefill paths
-  void _eval_gpu_decode(
+  void _eval_gpu_fused(
     const mx::Stream& stream,
     mlx::core::metal::Device& device,
     const std::vector<mx::array>& inputs,
-    mx::array& out
+    mx::array& out,
+    const CoreDims& core_dims,
+    PagedAttentionParams& params
   );
-  void _eval_gpu_prefill(
+
+  void _eval_gpu_2pass(
     const mx::Stream& stream,
     mlx::core::metal::Device& device,
     const std::vector<mx::array>& inputs,
-    mx::array& out
+    mx::array& out,
+    const CoreDims& core_dims,
+    PagedAttentionParams& params
   );
 
   static uint32_t calculate_symmetric_tile_depth(
@@ -225,6 +232,5 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
   );
 
 };
-
 
 }  // namespace pal::cpp

@@ -17,8 +17,7 @@
 // ============================================================================
 
 #include <metal_stdlib>
-#include <metal_atomic>
-#include "paged_attention.h.metal"
+#include "paged_attention_types.h"
 
 using namespace metal;
 
@@ -31,10 +30,10 @@ using namespace metal;
 
 
 /**
- * paged_attn_prefill_kernel
- * Pass 1 of the page-centric prefill architecture.
+ * paged_attn_pass1_kernel
+ * Pass 1 of the page-centric 2pass architecture.
  */
-[[kernel]] void paged_attn_prefill_pass1_kernel(
+[[kernel]] void paged_attn_pass1_kernel(
     device      const half*     queries_in                      [[buffer(0)]],
     device      const half*     k_cache_pool_in                 [[buffer(1)]],
     device      const half*     v_cache_pool_in                 [[buffer(2)]],
@@ -146,6 +145,11 @@ using namespace metal;
     }
     // simdgroup_barrier(mem_flags::mem_threadgroup); // K_tile and V_tile (depth D_s) are now loaded.
 
+    // Calculate the number of SIMD groups per GQA stream
+    const uint simd_groups_per_gqa_stream = total_simd_groups_in_tg_metal / N_q_per_kv;
+    const uint gqa_stream_idx_for_this_simd_group = simd_group_id / simd_groups_per_gqa_stream;
+    const uint sub_simd_group_idx_within_stream = simd_group_id % simd_groups_per_gqa_stream;
+
     // E. Query Block Iteration and Loading
     uint seq_len_for_this_batch_item = (uint)sequence_lengths_in[assigned_batch_item_idx];
     // Iterate over the Q-BLOCKs for this batch item (process D_s tokens (params.tokens_per_page) at once)
@@ -154,13 +158,6 @@ using namespace metal;
         q_block_start_local_idx += D_s /* params.tokens_per_page is D_s */) {
 
         uint num_queries_in_this_block = min(D_s, seq_len_for_this_batch_item - q_block_start_local_idx);
-
-        // Calculate the number of SIMD groups per GQA stream
-        const uint simd_groups_per_gqa_stream = total_simd_groups_in_tg_metal / N_q_per_kv;
-
-        uint gqa_stream_idx_for_this_simd_group = simd_group_id / simd_groups_per_gqa_stream;
-        uint sub_simd_group_idx_within_stream = simd_group_id % simd_groups_per_gqa_stream;
-
         if (gqa_stream_idx_for_this_simd_group < N_q_per_kv) { // Check if this SIMD group is part of an active GQA stream
 
             uint target_q_head_local_offset_in_gqa_group = gqa_stream_idx_for_this_simd_group;
@@ -205,7 +202,6 @@ using namespace metal;
         // --- START: Zero V_Sum_Accumulators_Area ONCE PER Q_BLOCK ---
         uint total_floats_in_v_acc_area = total_simd_groups_in_tg_metal * params.head_dim;
         uint num_float4s_to_zero = total_floats_in_v_acc_area / 4;
-        uint remainder_floats = total_floats_in_v_acc_area % 4;
 
         // Vectorized zeroing using float4
         threadgroup float4* v_acc_area_f4_ptr = (threadgroup float4*)V_Sum_Accumulators_Area;
@@ -322,12 +318,6 @@ using namespace metal;
                 page_sum_exp_norm_by_page_max = t_kahan;
                 // --- END F.3.d: Online Softmax Update ---
 
-                // F.3.e. V-Aggregation
-                if (current_score_exp_contribution < kEpsilonForZeroGuard) {
-                    // Skip this V-vector if the current score's exp contribution is effectively zero.
-                    continue;
-                }
-
                 threadgroup const half* v_vec_hist_ptr = V_tile + (k_idx_in_tile * params.head_dim);
                 // Each lane (simd_lane_id) processes different chunks of the head_dim.
                 for (uint h_chunk_idx = simd_lane_id;
@@ -386,22 +376,16 @@ using namespace metal;
 
 
 /**
- * paged_attn_prefill_kernel
- * Pass 2 of the page-centric prefill architecture.
+ * paged_attn_pass2_kernel
+ * Pass 2 of the page-centric 2pass architecture.
  */
-[[kernel]] void paged_attn_prefill_pass2_kernel(
-    // Pass 1 output buffers
-    device      const float* m_pass1_results        [[buffer(0)]],  // Local max scores per page
-    device      const float* s_pass1_results        [[buffer(1)]],  // Local sum-exponentials per page
-    device      const half*  o_pass1_results        [[buffer(2)]],  // Unnormalized partial V-accumulations
-    // Active work items buffer
-    device      const uint2* active_work_item_pairs [[buffer(3)]],  // Active (batch_item, logical_page) pairs
-    // Parameters
-    constant    const PagedAttentionParams& params  [[buffer(4)]],
-    // Final output buffer
-    device      half* final_output_buffer           [[buffer(5)]],
-    // Thread/grid identifiers
-    uint actual_simd_width                          [[threads_per_simdgroup]],
+[[kernel]] void paged_attn_pass2_kernel(
+    device      const float* m_pass1_results        [[buffer(0)]], // Local max scores per page
+    device      const float* s_pass1_results        [[buffer(1)]], // Local sum-exponentials per page
+    device      const half*  o_pass1_results        [[buffer(2)]], // Unnormalized partial V-accumulations
+    constant    const PagedAttentionParams& params  [[buffer(3)]], // Parameters
+    device      half* final_output_buffer           [[buffer(4)]], // Final output buffer
+    uint        actual_simd_width                   [[threads_per_simdgroup]],
     threadgroup float* tg_mem                       [[threadgroup(0)]],
     uint3       tg_pos_in_grid                      [[threadgroup_position_in_grid]],
     uint3       tg_dim                              [[threads_per_threadgroup]],
@@ -465,6 +449,7 @@ using namespace metal;
     const uint items_in_qhead_dim = params.pass2_qhead_block_size;
 
     const uint items_in_flat_dim = items_in_token_dim * items_in_qhead_dim;
+    const uint chunked_head_dim_size = params.head_dim / 4; // For K/V (half4)
 
     // A single loop that iterates through all items in the TG's 2D block.
     // Each iteration of this loop processes ONE (QueryToken, QHead) item cooperatively by the whole TG.
@@ -489,9 +474,6 @@ using namespace metal;
             *S_item_shared_scalar = 0.0f;
             *S_item_kahan_c_shared = 0.0f;
         }
-
-        // All threads in the TG cooperatively zero out the shared array accumulators.
-        // Each thread zeros a slice of the array.
 
         // Zero O_item_shared_accumulator[params.head_dim]
         for (uint i = local_idx_in_tg; i < params.head_dim; i += tg_dim.x) {
@@ -570,9 +552,9 @@ using namespace metal;
         uint end_page_for_this_sg = start_page_for_this_sg + pages_per_sg_base + (simd_group_id < pages_remainder_sg ? 1 : 0);
 
         for (uint page_idx = start_page_for_this_sg; page_idx < end_page_for_this_sg; ++page_idx) {
-            float m_local_p_this_page;
-            float s_local_p_this_page;
-            float rescale_factor_this_page;
+            float m_local_p_this_page = 0.0f;
+            float s_local_p_this_page = 0.0f;
+            float rescale_factor_this_page = 0.0f;
 
             if (simd_lane_id == 0) {
                 // Lane 0 calculates the flat index for m_pass1_results and s_pass1_results
@@ -623,7 +605,7 @@ using namespace metal;
                             rescale_factor_this_page,
                             my_sg_o_partial_accumulator[h_offset_in_head]);
                 }
-            } // End if (rescale_factor_this_page >= kEpsilonForZeroGuard)
+            } // End rescale
         }
         // --- After this loop, this SIMDgroup 'simd_group_id' has processed all its assigned pages. ---
         if (simd_lane_id == 0) {
@@ -665,24 +647,15 @@ using namespace metal;
 
         // --- Phase D: Normalization and Write ---
         float S_final_val = *S_item_shared_scalar;
-        float inv_S_final = 0.0f;
-
-        if (S_final_val > kSmallDenominatorThreshold) {
-            inv_S_final = 1.0f / S_final_val;
-        }
+        float inv_S_final = fast::divide(1.0f, S_final_val);
 
         ulong output_item_flat_idx = (ulong)current_master_query_idx * params.num_q_heads + current_target_q_head_idx;
         ulong base_offset_global_output = output_item_flat_idx * params.head_dim;
         device half* final_out_ptr_for_item_base = final_output_buffer + base_offset_global_output;
 
-        const uint elements_per_vector_write = 4; // for half4
-        uint num_vector_writes = params.head_dim / elements_per_vector_write;
+        for (uint vec_idx = local_idx_in_tg; vec_idx < chunked_head_dim_size; vec_idx += tg_dim.x) {
 
-        for (uint vec_idx = local_idx_in_tg;
-              vec_idx < num_vector_writes;
-              vec_idx += tg_dim.x) {
-
-            uint h_start_idx = vec_idx * elements_per_vector_write;
+            uint h_start_idx = vec_idx * 4;
 
             // Read 4 float components from O_item_shared_accumulator
             float4 o_chunk_float = float4(O_item_shared_accumulator[h_start_idx + 0],

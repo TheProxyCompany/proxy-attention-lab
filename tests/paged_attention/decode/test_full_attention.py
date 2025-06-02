@@ -115,7 +115,6 @@ def test_full_attention_in_one_block() -> None:
         py_sequence_lengths,
         py_query_to_seq_map,
         py_query_token_offset,
-        is_prefill=False,
     )
     mx.eval(output_arr)
 

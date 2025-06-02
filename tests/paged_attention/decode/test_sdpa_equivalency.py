@@ -23,7 +23,6 @@ non-paged).
 import logging
 
 import mlx.core as mx
-import mlx.nn as nn
 import pytest
 
 from proxy_attention_lab import paged_attention
@@ -31,6 +30,7 @@ from proxy_attention_lab import paged_attention
 logger = logging.getLogger(__name__)
 
 tokens_per_page = 64
+
 
 @pytest.mark.parametrize(
     "batch_size, history_len, num_heads, head_dim, dtype",
@@ -208,7 +208,7 @@ def test_pal_decode_vs_sdpa_equivalency(batch_size, history_len, num_heads, head
         pal_sequence_lengths,
         pal_query_to_seq_map,
         pal_query_token_offset,
-        is_prefill=False,  # explicitly use decode mode
+        # explicitly use decode mode
     )
     mx.eval(pal_output)
     logger.info(f"    PAL output shape: {pal_output.shape}")

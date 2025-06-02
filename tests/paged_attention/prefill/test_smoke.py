@@ -116,7 +116,6 @@ def test_paged_attention_smoke() -> None:
             mock_sequence_lengths,
             mock_query_to_seq_map,
             mock_query_token_offset,
-            is_prefill=True,
         )
         mx.eval(out)
 
