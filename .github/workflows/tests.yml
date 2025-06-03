@@ -15,4 +15,4 @@ jobs:
       - name: Python deps
         run: pip install "."
       - name: Unit tests
-        run: pytest tests/ -q -n auto
+        run: pytest tests/ -q

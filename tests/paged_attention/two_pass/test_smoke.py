@@ -18,7 +18,7 @@ import logging
 
 import mlx.core as mx
 
-from proxy_attention_lab import paged_attention
+from proxy_attention_lab import calculate_page_size, paged_attention
 
 logger = logging.getLogger(__name__)
 
@@ -34,30 +34,42 @@ def test_paged_attention_smoke() -> None:
     2. The function produces an output without crashing
     3. The output has the expected dimensions based on input parameters
     4. The output contains valid numerical values (no NaN or Inf)
+
+    NOTE: Refactored to align with prefill input contract where:
+    - queries must contain ALL query tokens for sequences being prefilled
+    - TotalNumQueryTokensInBatch MUST equal sum(sequence_lengths)
+    - query_to_seq_map and query_token_offset must match the contiguous query layout
     """
     logger.info(f"Test: {test_paged_attention_smoke.__name__}")
 
     # Query tensor parameters
-    num_queries = 4
     num_q_heads = 2
+    num_kv_heads = 2
     head_dim = 8
 
-    # KV cache parameters
-    num_total_pages = 2
-    tokens_per_page = 64
-    num_kv_heads = 2
+    # Calculate tokens_per_page using the kernel's expected page size
+    tokens_per_page = calculate_page_size(head_dim, num_q_heads, num_kv_heads)
 
     # Batch parameters
     num_sequences_in_batch = 1  # For this smoke test, keep it simple with one sequence
+
+    # For prefill, we need to provide all query tokens for the sequence
+    # Let's prefill 4 tokens for our single sequence
+    sequence_lengths_list = [4]
+    total_num_query_tokens = sum(sequence_lengths_list)  # = 4
+
+    # KV cache parameters
+    num_total_pages = 2
     max_logical_blocks_per_seq_val = 1  # Sequence uses at most 1 logical block
 
     logger.info("  Test Configuration:")
-    logger.info(f"    Queries: {num_queries} queries, {num_q_heads} heads, {head_dim} dimensions")
+    logger.info(f"    Queries: {total_num_query_tokens} total query tokens, {num_q_heads} heads, {head_dim} dimensions")
     logger.info(f"    KV cache: {num_total_pages} pages, {tokens_per_page} tokens per page, {num_kv_heads} KV heads")
-    logger.info(f"    Batch: {num_sequences_in_batch} sequences, {max_logical_blocks_per_seq_val} blocks per sequence")
+    logger.info(f"    Batch: {num_sequences_in_batch} sequences, sequence_lengths={sequence_lengths_list}")
 
     # Create test inputs with random values
-    mock_queries = mx.random.normal((num_queries, num_q_heads, head_dim)).astype(mx.float16)
+    # For prefill, queries shape is [TotalNumQueryTokensInBatch, NumQHeads, HeadDim]
+    mock_queries = mx.random.normal((total_num_query_tokens, num_q_heads, head_dim)).astype(mx.float16)
     mock_k_cache_pool = mx.random.normal((num_total_pages, tokens_per_page, num_kv_heads, head_dim)).astype(mx.float16)
     mock_v_cache_pool = mx.random.normal((num_total_pages, tokens_per_page, num_kv_heads, head_dim)).astype(mx.float16)
 
@@ -67,10 +79,16 @@ def test_paged_attention_smoke() -> None:
     page_table_content = [[0] * max_logical_blocks_per_seq_val for _ in range(num_sequences_in_batch)]
     mock_page_table = mx.array(page_table_content, dtype=mx.uint32)
 
-    # Metadata arrays
-    mock_sequence_lengths = mx.array([tokens_per_page // 2] * num_sequences_in_batch, dtype=mx.int32)
-    mock_query_to_seq_map = mx.zeros(num_queries, dtype=mx.int32)
-    mock_query_token_offset = mx.arange(num_queries, dtype=mx.int32)
+    # Metadata arrays aligned with prefill contract
+    mock_sequence_lengths = mx.array(sequence_lengths_list, dtype=mx.int32)
+
+    # query_to_seq_map must map each query token to its sequence
+    # For one sequence with 4 tokens: [0, 0, 0, 0]
+    mock_query_to_seq_map = mx.zeros(total_num_query_tokens, dtype=mx.int32)
+
+    # query_token_offset: position of each query within its sequence
+    # For prefill from start: [0, 1, 2, 3]
+    mock_query_token_offset = mx.arange(total_num_query_tokens, dtype=mx.int32)
 
     logger.info("  Input Shapes:")
     logger.info(f"    Queries: {mock_queries.shape}")
@@ -98,13 +116,13 @@ def test_paged_attention_smoke() -> None:
             mock_sequence_lengths,
             mock_query_to_seq_map,
             mock_query_token_offset,
-            is_prefill=False,
+            use_fused_kernel=False,
         )
         mx.eval(out)
 
         # For 3D queries [NumTokens, NumQHeads, HeadDim],
         # output is [NumTokens * NumQHeads, HeadDim] (2D layout)
-        total_items = num_queries * num_q_heads
+        total_items = total_num_query_tokens * num_q_heads
         expected_output_shape = (total_items, head_dim)
 
         logger.info("  Output Verification:")

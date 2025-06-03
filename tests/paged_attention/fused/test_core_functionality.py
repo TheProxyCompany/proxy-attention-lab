@@ -94,7 +94,7 @@ def test_fetch_k_vector_element_for_first_token_of_sequence() -> None:
         py_sequence_lengths,
         py_query_to_seq_map,
         py_query_token_offset,
-        is_prefill=False,
+        use_fused_kernel=True,
     )
     mx.eval(output_arr)
 
@@ -198,7 +198,7 @@ def test_fetch_entire_k_vector_for_specific_token_slot() -> None:
         py_sequence_lengths,
         py_query_to_seq_map,
         py_query_token_offset,
-        is_prefill=False,
+        use_fused_kernel=True,
     )
     mx.eval(output_arr)
 
@@ -303,7 +303,7 @@ def test_fetch_k_vector_from_variable_token_slot_in_first_logical_block() -> Non
         py_sequence_lengths,
         py_query_to_seq_map,
         py_query_token_offset,
-        is_prefill=False,
+        use_fused_kernel=True,
     )
     mx.eval(output_arr)
 
@@ -410,7 +410,7 @@ def test_correct_token_processing_for_2d_queries_variable_offsets() -> None:
         py_sequence_lengths,
         py_query_to_seq_map,
         py_query_token_offset,
-        is_prefill=False,
+        use_fused_kernel=True,
     )
     mx.eval(output_arr)
 
@@ -523,7 +523,7 @@ def test_parallel_online_max_and_sum_exp() -> None:
         py_sequence_lengths,
         py_query_to_seq_map,
         py_query_token_offset,
-        is_prefill=False,
+        use_fused_kernel=True,
     )
     mx.eval(output_arr)
 
@@ -652,7 +652,7 @@ def test_dot_product_q_with_single_k_vector() -> None:
         py_sequence_lengths,
         py_query_to_seq_map,
         py_query_token_offset,
-        is_prefill=False,
+        use_fused_kernel=True,
     )
     mx.eval(output_arr)
 

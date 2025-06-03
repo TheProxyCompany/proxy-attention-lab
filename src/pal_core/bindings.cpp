@@ -83,7 +83,7 @@ NB_MODULE(pal_core, m) {
          const mx::array& sequence_lengths,
          const mx::array& query_to_seq_map,
          const mx::array& query_token_offset,
-         bool is_prefill,
+         bool use_fused_kernel,
          std::optional<mx::StreamOrDevice> stream_or_device) {
         return pal::cpp::paged_attention(
             queries,
@@ -93,7 +93,7 @@ NB_MODULE(pal_core, m) {
             sequence_lengths,
             query_to_seq_map,
             query_token_offset,
-            is_prefill,
+            use_fused_kernel,
             stream_or_device.value_or(mx::StreamOrDevice{}));
       },
       // Arguments for Python
@@ -104,14 +104,15 @@ NB_MODULE(pal_core, m) {
       "sequence_lengths"_a,
       "query_to_seq_map"_a,
       "query_token_offset"_a,
-      nb::kw_only(),  // is_prefill and stream are keyword-only arguments
-      "is_prefill"_a = true,  // default to prefill mode
+      "use_fused_kernel"_a,
+      nb::kw_only(),  // stream is keyword-only argument
       "stream"_a = nb::none(),
       nb::sig("def paged_attention(queries: mlx.core.array, "
               "k_cache_pool: mlx.core.array, v_cache_pool: mlx.core.array, "
               "page_table: mlx.core.array, sequence_lengths: mlx.core.array, "
               "query_to_seq_map: mlx.core.array, query_token_offset: mlx.core.array, "
-              "*, is_prefill: bool = True, stream: mlx.core.Stream | mlx.core.Device | None = None) -> "
+              "use_fused_kernel: bool, "
+              "*, stream: mlx.core.Stream | mlx.core.Device | None = None) -> "
               "mlx.core.array"),
       R"doc(
         Performs paged attention using a custom primitive.
@@ -133,10 +134,7 @@ NB_MODULE(pal_core, m) {
                                               sequence index in the batch.
             query_token_offset (mlx.core.array): Array of logical offsets for each query
                                                 token within its sequence.
-            is_prefill (bool, optional): Whether to perform prefill or decoding. Defaults to True.
-                - When True (prefill mode): Processes full sequence with one threadgroup per query token
-                - When False (decode mode): Processes single token per sequence with one threadgroup
-                                           per query-token-head pair.
+            use_fused_kernel (bool): Whether to use the fused kernel
             stream (mlx.core.Stream | mlx.core.Device | None, optional): Stream or device
                                                                         for the operation.
         Returns:

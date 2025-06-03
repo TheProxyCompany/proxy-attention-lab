@@ -21,13 +21,17 @@ identical inputs produce bit-for-bit identical outputs.
 import logging
 
 import mlx.core as mx
+import pytest
 
 from proxy_attention_lab import paged_attention
 
 logger = logging.getLogger(__name__)
 
 
-def test_paged_attention_determinism() -> None:
+@pytest.mark.parametrize("history_length", [16, 128, 1024, 4096])
+@pytest.mark.parametrize("num_queries_tokens", [4, 16])
+@pytest.mark.parametrize("tokens_per_page", [16, 64])
+def test_paged_attention_determinism(history_length, num_queries_tokens, tokens_per_page) -> None:
     """Test that paged_attention output is deterministic for identical inputs.
 
     This test configures a moderately complex scenario, calls paged_attention twice
@@ -35,16 +39,10 @@ def test_paged_attention_determinism() -> None:
     identical.
     """
     # --- Configuration ---
-    # Use a configuration that exercises various aspects of the kernel
-    num_queries_tokens = 4  # Corresponds to num_items_to_process if 2D, or num_tokens if 3D
-    num_q_heads = 2
-    head_dim = 64  # A common head dimension
-
-    num_total_pages = 4
-    tokens_per_page = 16  # Smaller to force more paging if seq_len is long
-    num_kv_heads = 2  # MHA scenario
-
-    num_sequences_in_batch = 2
+    num_q_heads = 32
+    num_kv_heads = 16
+    head_dim = 128
+    num_total_pages = history_length // tokens_per_page
     max_logical_blocks_per_seq = (tokens_per_page * 2) // tokens_per_page  # e.g., 2 blocks
 
     # Seed for reproducibility of input data generation
@@ -65,20 +63,18 @@ def test_paged_attention_determinism() -> None:
 
     # 3. Page Table: [NumSequencesInBatch, MaxLogicalBlocksPerSeq]
     # Ensure page IDs are valid (0 to num_total_pages - 1)
-    py_page_table = mx.random.randint(
-        0, num_total_pages, [num_sequences_in_batch, max_logical_blocks_per_seq], dtype=mx.uint32
-    )
+    py_page_table = mx.random.randint(0, num_total_pages, [1, max_logical_blocks_per_seq], dtype=mx.uint32)
 
     # 4. Sequence Lengths: [NumSequencesInBatch]
     # Ensure lengths are within reasonable bounds (e.g., up to max_logical_blocks_per_seq * tokens_per_page)
     max_seq_len_possible = max_logical_blocks_per_seq * tokens_per_page
-    py_sequence_lengths = mx.random.randint(1, max_seq_len_possible + 1, [num_sequences_in_batch], dtype=mx.int32)
+    py_sequence_lengths = mx.random.randint(1, max_seq_len_possible + 1, [1], dtype=mx.int32)
 
     # 5. Query to Sequence Map: [NumQueryTokens] (mapping each of the first dim of Q to a sequence)
     # Values from 0 to num_sequences_in_batch - 1
     py_query_to_seq_map = mx.random.randint(
         0,
-        num_sequences_in_batch,
+        1,
         [num_queries_tokens],  # Matches the first dimension of 3D queries
         dtype=mx.int32,
     )
@@ -98,6 +94,14 @@ def test_paged_attention_determinism() -> None:
     # --- Call paged_attention the first time ---
     logger.info(f"Test: {test_paged_attention_determinism.__name__}")
     logger.info("  First call to paged_attention...")
+    mx.eval(py_queries)
+    mx.eval(py_k_cache_pool)
+    mx.eval(py_v_cache_pool)
+    mx.eval(py_page_table)
+    mx.eval(py_sequence_lengths)
+    mx.eval(py_query_to_seq_map)
+    mx.eval(py_query_token_offset)
+
     output1 = paged_attention(
         py_queries,
         py_k_cache_pool,
@@ -106,7 +110,7 @@ def test_paged_attention_determinism() -> None:
         py_sequence_lengths,
         py_query_to_seq_map,
         py_query_token_offset,
-        is_prefill=False,
+        use_fused_kernel=True,
     )
     mx.eval(output1)  # Ensure computation is done
 
@@ -120,7 +124,7 @@ def test_paged_attention_determinism() -> None:
         py_sequence_lengths,
         py_query_to_seq_map,
         py_query_token_offset,
-        is_prefill=False,
+        use_fused_kernel=True,
     )
     mx.eval(output2)  # Ensure computation is done
 
@@ -128,8 +132,18 @@ def test_paged_attention_determinism() -> None:
     assert output1.shape == output2.shape, f"Output shapes differ: {output1.shape} vs {output2.shape}"
     assert output1.dtype == output2.dtype, f"Output dtypes differ: {output1.dtype} vs {output2.dtype}"
 
-    assert mx.array_equal(output1, output2), (
-        "Paged attention output is not deterministic. Outputs differ between two identical calls."
+    # For debugging, print if they are not equal
+    if not mx.array_equal(output1, output2).item():
+        logger.error("Non-deterministic output detected!")
+        logger.error(f"Output 1 sample: {output1[0, : min(output1.shape[1], 4)] if output1.size > 0 else 'empty'}")
+        logger.error(f"Output 2 sample: {output2[0, : min(output2.shape[1], 4)] if output2.size > 0 else 'empty'}")
+        mean_diff = mx.mean(mx.abs(output1 - output2)).item()
+        logger.error(f"Mean difference: {mean_diff:.3f}")
+        max_diff = mx.max(mx.abs(output1 - output2)).item()
+        logger.error(f"Max difference: {max_diff:.3f}")
+
+    assert mx.array_equal(output1, output2).item(), (
+        "Paged attention prefill output is not deterministic. Outputs differ between two identical calls."
     )
 
     logger.info("  Result: Outputs are identical - determinism verified.")

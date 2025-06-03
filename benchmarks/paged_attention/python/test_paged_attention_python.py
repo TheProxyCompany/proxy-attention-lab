@@ -48,6 +48,7 @@ def test_pal_latency_vs_seq_len(benchmark, seq_len_val):
         benchmark: pytest-benchmark fixture for performance measurement
         seq_len_val: sequence length value to test
     """
+    mx.metal.clear_cache()
     # Create test parameters from baseline with specified sequence length
     params = BASELINE_CONFIG.copy()
     params["seq_len"] = seq_len_val
@@ -113,7 +114,7 @@ def test_pal_latency_vs_seq_len(benchmark, seq_len_val):
             sequence_lengths,
             query_to_seq_map,
             query_token_offset,
-            is_prefill=True,  # explicitly use prefill mode for this benchmark
+            use_fused_kernel=False,
         )
         mx.eval(out)
         return out
@@ -143,6 +144,7 @@ def test_mlx_latency_vs_seq_len(benchmark, seq_len_val):
         benchmark: pytest-benchmark fixture for performance measurement
         seq_len_val: sequence length value to test
     """
+    mx.metal.clear_cache()
     # Create parameters with the fixed batch size and specified sequence length
     params = BASELINE_CONFIG.copy()
     params["seq_len"] = seq_len_val
@@ -310,7 +312,10 @@ def setup_sdpa_decode_inputs(params):
     return queries, keys, values, scale, causal_mask
 
 
-@pytest.mark.parametrize("history_len_val", [1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072])
+# benchmarked up to 1048576 tokens
+@pytest.mark.parametrize(
+    "history_len_val", [1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576]
+)
 def test_pal_decode_latency_vs_history_len(benchmark, history_len_val):
     """
     Benchmark paged_attention decode operation performance across different history lengths.
@@ -323,6 +328,7 @@ def test_pal_decode_latency_vs_history_len(benchmark, history_len_val):
         benchmark: pytest-benchmark fixture for performance measurement
         history_len_val: history length value to test (size of existing KV cache)
     """
+    mx.metal.clear_cache()
     # Create test parameters for decode phase
     params = BASELINE_CONFIG.copy()
     params["history_len"] = history_len_val
@@ -340,16 +346,7 @@ def test_pal_decode_latency_vs_history_len(benchmark, history_len_val):
 
     # Define benchmark function that evaluates the result
     def operation_to_benchmark():
-        out = paged_attention(
-            queries,
-            k_hist,
-            v_hist,
-            pt,
-            slens_hist,
-            q_map,
-            q_off,
-            is_prefill=False,  # explicitly use decode mode for this benchmark
-        )
+        out = paged_attention(queries, k_hist, v_hist, pt, slens_hist, q_map, q_off, use_fused_kernel=True)
         mx.eval(out)
         return out
 
@@ -366,7 +363,10 @@ def test_pal_decode_latency_vs_history_len(benchmark, history_len_val):
     assert mx.isfinite(result).all()
 
 
-@pytest.mark.parametrize("history_len_val", [1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072])
+# benchmarked up to 1048576 tokens
+@pytest.mark.parametrize(
+    "history_len_val", [1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576]
+)
 def test_mlx_decode_latency_vs_history_len(benchmark, history_len_val):
     """
     Benchmark MLX scaled_dot_product_attention decode operation performance across different history lengths.
@@ -379,6 +379,7 @@ def test_mlx_decode_latency_vs_history_len(benchmark, history_len_val):
         benchmark: pytest-benchmark fixture for performance measurement
         history_len_val: history length value to test (size of existing KV cache)
     """
+    mx.metal.clear_cache()
     # Create test parameters for decode phase
     params = BASELINE_CONFIG.copy()
     params["history_len"] = history_len_val
@@ -392,13 +393,7 @@ def test_mlx_decode_latency_vs_history_len(benchmark, history_len_val):
 
     # Define benchmark function that evaluates the result
     def operation_to_benchmark():
-        output = mx.fast.scaled_dot_product_attention(
-            queries,
-            keys,
-            values,
-            scale=scale,
-            mask=causal_mask,
-        )
+        output = mx.fast.scaled_dot_product_attention(queries, keys, values, scale=scale, mask=causal_mask)
         mx.eval(output)
         return output
 

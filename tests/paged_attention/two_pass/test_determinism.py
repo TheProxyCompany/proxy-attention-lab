@@ -18,9 +18,9 @@ def test_paged_attention_determinism_prefill() -> None:  # Renamed for clarity
     logger.info(f"Test: {test_paged_attention_determinism_prefill.__name__}")
 
     # --- Configuration ---
-    num_q_heads = 2
-    num_kv_heads = 2  # MHA scenario
-    head_dim = 64
+    num_q_heads = 32
+    num_kv_heads = 16
+    head_dim = 128
     dtype = mx.float16
 
     # Use the PAL helper to get the optimal tokens_per_page (D_s for prefill)
@@ -156,7 +156,8 @@ def test_paged_attention_determinism_prefill() -> None:  # Renamed for clarity
         py_sequence_lengths,
         py_query_to_seq_map,
         py_query_token_offset,
-        is_prefill=True,  # Explicitly prefill
+        use_fused_kernel=False,
+        # Explicitly prefill
     )
     mx.eval(output1)
 
@@ -169,7 +170,8 @@ def test_paged_attention_determinism_prefill() -> None:  # Renamed for clarity
         py_sequence_lengths,
         py_query_to_seq_map,
         py_query_token_offset,
-        is_prefill=True,  # Explicitly prefill
+        use_fused_kernel=False,
+        # Explicitly prefill
     )
     mx.eval(output2)
 

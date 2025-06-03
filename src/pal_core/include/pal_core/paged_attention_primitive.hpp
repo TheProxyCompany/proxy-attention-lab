@@ -25,11 +25,25 @@
 #include <mlx/backend/metal/metal.h>
 #include <mlx/backend/metal/utils.h>
 #include <vector>
-#include "shaders/paged_attention_types.h"
+#include "kernels/paged_attention_types.h"
 
 namespace mx = mlx::core;
 
 namespace pal::cpp {
+
+static constexpr size_t FUSED_SIMD_GROUPS_PER_THREADGROUP = 6; // wip, 6-8 is the sweet spot
+
+static constexpr uint32_t PASS1_SIMD_GROUPS_PER_GQA_GROUP = 6; // hand tuned; 4-6 seems to be the sweet spot
+static constexpr uint32_t PASS2_SIMD_GROUPS_PER_THREADGROUP = 8; // hand tuned; 8 is the sweet spot
+
+static constexpr float kLogFp16DenormMinVal = -88.0f;
+static constexpr uint32_t PASS2_TOKEN_BLOCK_SIZE = 16;
+static constexpr uint32_t PASS2_QHEAD_BLOCK_SIZE = 8;
+static constexpr uint32_t MAX_TILE_SIZE_PRACTICAL = 256;
+
+static constexpr size_t kMemoryAlignmentBytes = 64;
+static constexpr size_t kMemoryAlignmentMask = kMemoryAlignmentBytes - 1;
+static constexpr size_t kFinalMemoryPaddingGuardBytes = 32;
 
 struct CoreDims {
     uint32_t head_dim{0};
@@ -39,6 +53,34 @@ struct CoreDims {
     size_t num_items_to_process{0};
     size_t query_token_count{0};
 };
+
+struct AttentionMemoryLayout {
+    size_t total_bytes{0};
+    size_t q_shmem_bytes{0};
+    size_t partial_reduce_scratch_bytes{0};
+    size_t simd_reduced_maxes_bytes{0};
+    size_t simd_reduced_adjusted_sum_exps_bytes{0};
+    size_t global_stats_bytes{0};
+    size_t s_global_compensation_bytes{0};
+    size_t simd_v_chunk_sums_bytes{0};
+    size_t k_tile_bytes{0};
+    size_t v_tile_bytes{0};
+    size_t page_table_slice_bytes{0};
+    size_t final_guard_bytes{0};
+
+    static size_t align_size(size_t size) {
+        return (size + kMemoryAlignmentMask) & ~kMemoryAlignmentMask;
+    }
+
+    static AttentionMemoryLayout calculate_attention_memory_layout(
+      const PagedAttentionParams& params,
+      size_t threads_per_group,
+      size_t actual_simd_lanes_per_group,
+      bool use_2pass_kernel
+    );
+};
+
+static CoreDims extract_dims(const std::vector<mx::array>& inputs);
 
 /**
  * @brief Custom primitive implementation for paged attention operations.
@@ -58,7 +100,7 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
    * @param num_kv_heads Number of key/value heads in the attention mechanism
    * @param head_dim Hidden dimension size per attention head
    * @param tokens_per_page Number of tokens stored in each memory page
-   * @param is_prefill Whether to perform prefill or decoding
+   * @param use_fused_kernel Whether to use the fused kernel
    */
   explicit PagedAttentionPrimitive(
     mx::StreamOrDevice stream,
@@ -66,11 +108,8 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
     int num_kv_heads = 0,
     int head_dim = 0,
     int tokens_per_page = 0,
-    bool is_prefill = true
+    bool use_fused_kernel = false
   );
-
-  static constexpr uint32_t SIMD_GROUPS_PER_GQA_GROUP_FACTOR_PREFILL_PASS_1 = 6; // hand tuned; 4-6 seems to be the sweet spot
-  static constexpr uint32_t SIMD_GROUPS_PER_THREADGROUP_PASS2 = 8; // wip
 
   /**
    * @brief Evaluates the primitive on CPU.
@@ -117,8 +156,7 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
     return (this->num_q_heads_ == other_pa.num_q_heads_ &&
             this->num_kv_heads_ == other_pa.num_kv_heads_ &&
             this->head_dim_ == other_pa.head_dim_ &&
-            this->tokens_per_page_ == other_pa.tokens_per_page_ &&
-            this->is_prefill_ == other_pa.is_prefill_);
+            this->tokens_per_page_ == other_pa.tokens_per_page_);
   }
 
   /**
@@ -153,7 +191,7 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
   int num_kv_heads_;
   int head_dim_;
   int tokens_per_page_;
-  bool is_prefill_;
+  bool use_fused_kernel_;
 
   /**
    * @brief Implements vector-Jacobian product for backpropagation.
@@ -193,17 +231,22 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
       const std::vector<int>& axes) override;
 
   // Helper methods for decode and prefill paths
-  void _eval_gpu_decode(
+  void _eval_gpu_fused(
     const mx::Stream& stream,
     mlx::core::metal::Device& device,
     const std::vector<mx::array>& inputs,
-    mx::array& out
+    mx::array& out,
+    const CoreDims& core_dims,
+    PagedAttentionParams& params
   );
-  void _eval_gpu_prefill(
+
+  void _eval_gpu_2pass(
     const mx::Stream& stream,
     mlx::core::metal::Device& device,
     const std::vector<mx::array>& inputs,
-    mx::array& out
+    mx::array& out,
+    const CoreDims& core_dims,
+    PagedAttentionParams& params
   );
 
   static uint32_t calculate_symmetric_tile_depth(
@@ -220,7 +263,11 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
     uint32_t threads_per_group
   );
 
-};
+  static bool should_use_fused_kernel(
+    const CoreDims& core_dims,
+    const std::vector<mx::array>& inputs
+  );
 
+};
 
 }  // namespace pal::cpp

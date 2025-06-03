@@ -351,6 +351,7 @@ def plot(df: pd.DataFrame, output_dir: Path, styles: dict[str, str | float] | No
             y_scale="log",
             include_legend=True,
         )
+        plt.subplots_adjust(top=0.9)
         add_complexity_guide(ax_decode, "decode")
 
     # Configure tick formatting

@@ -174,9 +174,17 @@ static void BM_PAL_LatencyVsSeqLen(benchmark::State& state) {
     // Create query token offsets: [num_tokens]
     mx::array query_token_offset = create_query_token_offset(batch_size, seq_len);
 
+    queries = mx::contiguous(queries);
+    k_cache_pool = mx::contiguous(k_cache_pool);
+    v_cache_pool = mx::contiguous(v_cache_pool);
+    page_table = mx::contiguous(page_table);
+    sequence_lengths = mx::contiguous(sequence_lengths);
+    query_to_seq_map = mx::contiguous(query_to_seq_map);
+    query_token_offset = mx::contiguous(query_token_offset);
+
+    queries.eval();
     k_cache_pool.eval();
     v_cache_pool.eval();
-    queries.eval();
     page_table.eval();
     sequence_lengths.eval();
     query_to_seq_map.eval();
@@ -192,7 +200,7 @@ static void BM_PAL_LatencyVsSeqLen(benchmark::State& state) {
             sequence_lengths,
             query_to_seq_map,
             query_token_offset,
-            true // use prefill mode for this benchmark
+            false /* use_fused_kernel */
         );
         out.eval();
     }
@@ -264,8 +272,16 @@ static void BM_PAL_DecodeLatencyVsHistoryLen(benchmark::State& state) {
     int num_q_heads = params.num_q_heads;
     int num_kv_heads = params.num_kv_heads;
     int head_dim = params.head_dim;
-    int tokens_per_page = params.tokens_per_page;
     mx::Dtype dtype = params.dtype;
+
+    auto info = pal::cpp::PagedAttentionPrimitive::get_optimal_tile_size_and_thread_info(
+        head_dim,
+        num_q_heads,
+        num_kv_heads
+    );
+
+    params.tokens_per_page = std::get<0>(info);
+    int tokens_per_page = params.tokens_per_page;
 
     // Setup input tensors for decode scenario
     int num_tokens = batch_size;  // One token per sequence for decode
@@ -305,6 +321,14 @@ static void BM_PAL_DecodeLatencyVsHistoryLen(benchmark::State& state) {
     }
     mx::array query_token_offset = mx::array(offset_data.data(), {batch_size}, mx::int32);
 
+    queries = mx::contiguous(queries);
+    k_cache_pool = mx::contiguous(k_cache_pool);
+    v_cache_pool = mx::contiguous(v_cache_pool);
+    page_table = mx::contiguous(page_table);
+    sequence_lengths = mx::contiguous(sequence_lengths);
+    query_to_seq_map = mx::contiguous(query_to_seq_map);
+    query_token_offset = mx::contiguous(query_token_offset);
+
     queries.eval();
     k_cache_pool.eval();
     v_cache_pool.eval();
@@ -323,7 +347,7 @@ static void BM_PAL_DecodeLatencyVsHistoryLen(benchmark::State& state) {
             sequence_lengths,
             query_to_seq_map,
             query_token_offset,
-            false // use decode mode for this benchmark
+            true /* use_fused_kernel */
         );
         out.eval();
     }

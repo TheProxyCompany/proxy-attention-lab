@@ -118,7 +118,7 @@ def test_v_aggregation_local_accumulation() -> None:
         py_sequence_lengths,
         py_query_to_seq_map,
         py_query_token_offset,
-        is_prefill=False,
+        use_fused_kernel=True,
     )
     mx.eval(output_arr)
 
