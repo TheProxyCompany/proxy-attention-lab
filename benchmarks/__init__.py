@@ -1,3 +1,3 @@
-from benchmarks import analyzer
+"""Benchmarks package for PAL."""
 
-__all__ = ["analyzer"]
+# This package contains benchmark tests and analysis tools
