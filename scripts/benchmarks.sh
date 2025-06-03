@@ -63,9 +63,9 @@ print_usage() {
 Usage: $(basename "$0") [OPTIONS]
 
 Options:
-  --run [all|py|cpp] [kernel]  Run benchmarks. Language defaults to 'all'.
-                               If a kernel name is provided it limits the run
-                               to that kernel.
+  --run [all|py|cpp] [filter]  Run benchmarks. Language defaults to 'all'.
+                               For C++, filter is a regex pattern passed to Google Benchmark.
+                               For Python, filter is the kernel directory name.
   --analyze                    Only analyze existing benchmark results
   --rebuild-only               Only update dependencies and rebuild the project
   --reset                      Clear all existing benchmark results before running
@@ -76,10 +76,13 @@ Combined Options:
   --run ... --reset            Clear all benchmarks before running new ones
 
 Examples:
-  $(basename "$0") --run                  # Rebuild, run all benchmarks
-  $(basename "$0") --run py paged_attention   # Run Python benchmarks for paged_attention
-  $(basename "$0") --run cpp                 # Run all C++ benchmarks
-  $(basename "$0") --analyze                # Only analyze existing data
+  $(basename "$0") --run                          # Rebuild, run all benchmarks
+  $(basename "$0") --run py paged_attention       # Run Python benchmarks for paged_attention
+  $(basename "$0") --run cpp                      # Run all C++ benchmarks
+  $(basename "$0") --run cpp "BatchLatency"       # Run benchmarks matching BatchLatency
+  $(basename "$0") --run cpp "LatencyVsSeqLen"    # Run sequence length benchmarks only
+  $(basename "$0") --run cpp "BatchLatency.*NumSequences"  # Run batch vs num sequences
+  $(basename "$0") --analyze                      # Only analyze existing data
 EOF
 }
 
@@ -300,7 +303,8 @@ run_cpp_benchmarks() {
 
     hr
     if [ -n "${kernel}" ]; then
-        log "Running C++ benchmarks for kernel: ${kernel}"
+        log "Running C++ benchmarks with filter: ${kernel}"
+        # Pass the kernel parameter directly as a regex filter to Google Benchmark
         filter_option="--benchmark_filter=${kernel}"
     else
         log "Running all C++ benchmarks"
@@ -309,15 +313,10 @@ run_cpp_benchmarks() {
     benchmark_start=$(date +%s)
 
     cpp_benchmark_executables=()
-    if [ -n "${kernel}" ]; then
-        while IFS= read -r -d $'\0' file; do
-            cpp_benchmark_executables+=("$file")
-        done < <(find "${BUILD_DIR}/${BENCHMARK_ROOT_DIR}/${kernel}/cpp" -type f -perm -u+x -print0 | sort -z -u)
-    else
-        while IFS= read -r -d $'\0' file; do
-            cpp_benchmark_executables+=("$file")
-        done < <(find "${BUILD_DIR}/${BENCHMARK_ROOT_DIR}" -type f -path "*/cpp/*" -perm -u+x -print0 | sort -z -u)
-    fi
+    # Always search for all C++ benchmark executables, the filter will be applied at runtime
+    while IFS= read -r -d $'\0' file; do
+        cpp_benchmark_executables+=("$file")
+    done < <(find "${BUILD_DIR}/${BENCHMARK_ROOT_DIR}" -type f -path "*/cpp/*" -perm -u+x -print0 | sort -z -u)
 
     if [ ${#cpp_benchmark_executables[@]} -eq 0 ]; then
         log "No C++ benchmark executables found in '${BUILD_DIR}/${BENCHMARK_ROOT_DIR}'."
@@ -524,12 +523,15 @@ main() {
         log "WARNING: Unit tests failed, but continuing..."
     fi
 
-    # Only try to open the image if it exists
-    if [ -f "${BENCHMARK_OUTPUT_ROOT}/latency_vs_seq_len.png" ]; then
-        open "${BENCHMARK_OUTPUT_ROOT}/latency_vs_seq_len.png"
+    # Open all PNG files in the output directory, if any exist
+    shopt -s nullglob
+    png_files=("${BENCHMARK_OUTPUT_ROOT}"/*.png)
+    if [ ${#png_files[@]} -gt 0 ]; then
+        open "${png_files[@]}"
     else
-        log "No latency_vs_seq_len.png found to display"
+        log "No benchmark plots found to display"
     fi
+    shopt -u nullglob
 }
 
 # --- Script Execution ---

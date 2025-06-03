@@ -61,7 +61,13 @@ class PlotterRegistry:
 
                 # Find all PlotterInterface subclasses in the module
                 for name, obj in inspect.getmembers(module):
-                    if inspect.isclass(obj) and issubclass(obj, PlotterInterface) and obj is not PlotterInterface:
+                    if (
+                        inspect.isclass(obj)
+                        and issubclass(obj, PlotterInterface)
+                        and obj is not PlotterInterface
+                        and not inspect.isabstract(obj)
+                        and obj.__module__ == module_name
+                    ):  # Ensure it's defined in this module
                         try:
                             instance = obj()
                             self.register(instance)

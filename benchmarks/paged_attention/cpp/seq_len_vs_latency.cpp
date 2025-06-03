@@ -119,7 +119,7 @@ mx::array create_query_token_offset(int batch_size, int seq_len) {
     return mx::array(offset_data.data(), {batch_size * seq_len}, mx::int32);
 }
 
-static void BM_PAL_LatencyVsSeqLen(benchmark::State& state) {
+static void BM_PAL_PrefillLatencyVsSeqLen(benchmark::State& state) {
     // Create test parameters from baseline with specified sequence length
     BaselineConfig params;
     params.seq_len = state.range(0); // Use the sequence length from benchmark args
@@ -206,7 +206,7 @@ static void BM_PAL_LatencyVsSeqLen(benchmark::State& state) {
     }
 }
 
-static void BM_MLX_SDPA_LatencyVsSeqLen(benchmark::State& state) {
+static void BM_MLX_SDPA_PrefillLatencyVsSeqLen(benchmark::State& state) {
     // Create parameters with the fixed batch size and specified sequence length
     BaselineConfig params;
     params.seq_len = state.range(0); // Use the sequence length from benchmark args
@@ -410,10 +410,10 @@ static void BM_MLX_SDPA_DecodeLatencyVsHistoryLen(benchmark::State& state) {
     }
 }
 
-const int REPETITIONS = 10; // magic number
-const int ITERATIONS = 20; // magic number
+const int REPETITIONS = 3; // magic number
+const int ITERATIONS = 3; // magic number
 
-BENCHMARK(BM_PAL_LatencyVsSeqLen)
+BENCHMARK(BM_PAL_PrefillLatencyVsSeqLen)
    ->Arg(64)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
    ->Arg(256)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
    ->Arg(512)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
@@ -421,7 +421,7 @@ BENCHMARK(BM_PAL_LatencyVsSeqLen)
    ->Arg(2048)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
    ->Arg(4096)->Repetitions(REPETITIONS)->Iterations(ITERATIONS);
 
-BENCHMARK(BM_MLX_SDPA_LatencyVsSeqLen)
+BENCHMARK(BM_MLX_SDPA_PrefillLatencyVsSeqLen)
    ->Arg(64)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
    ->Arg(256)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
    ->Arg(512)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)

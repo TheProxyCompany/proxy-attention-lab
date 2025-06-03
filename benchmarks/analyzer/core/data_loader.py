@@ -30,8 +30,8 @@ class DataLoader:
 
     # Kernel type detection patterns
     KERNEL_PATTERNS: ClassVar[dict[str, list[str]]] = {
-        "fused": ["decode", "fused"],
-        "two_pass": ["prefill", "two_pass", "2pass"],
+        "fused": ["decode", "fused", "batchdecode", "batchlatency"],
+        "two_pass": ["prefill", "two_pass", "2pass", "prefillbatchlatency", "batchprefill"],
     }
 
     def __init__(self, column_mappings: dict[str, str] | None = None):
@@ -121,11 +121,8 @@ class DataLoader:
             # Extract timing information
             for key, mapped_key in self.column_mappings.items():
                 if key in benchmark:
-                    row[mapped_key] = benchmark[key]
-
-            # Convert nanoseconds to milliseconds for C++ benchmarks
-            if "mean_latency" in row:
-                row["mean_latency"] = row["mean_latency"] / 1_000_000  # ns to ms
+                    # Google Benchmark times are in nanoseconds, convert to milliseconds
+                    row[mapped_key] = benchmark[key] / 1_000_000  # Convert ns to ms
 
             # Extract parameters based on benchmark type
             name = benchmark.get("name", "")
@@ -138,16 +135,31 @@ class DataLoader:
                 param_value = int(parts[1])
 
                 # Determine parameter type from benchmark name
-                if "LatencyVsSeqLen" in name:
+                # Check more specific patterns first
+                if "PrefillBatchLatencyVsSeqLen" in name:
+                    # First param is seq_len, second is num_sequences
                     row["sequence_length"] = param_value
-                elif "ThroughputVsBatchSize" in name:
-                    row["batch_size"] = param_value
-                    # For throughput benchmarks, you might pass seq_len as second param
+                    if len(parts) >= 3 and parts[2].isdigit():
+                        row["num_sequences"] = int(parts[2])
+                elif "PrefillBatchLatencyVsNumSequences" in name:
+                    # First param is num_sequences, second is seq_len
+                    row["num_sequences"] = param_value
                     if len(parts) >= 3 and parts[2].isdigit():
                         row["sequence_length"] = int(parts[2])
-                elif "LatencyVsHeadDim" in name:
-                    row["head_dim"] = param_value
-                # Add more patterns as needed
+                elif "BatchLatencyVsNumSequences" in name:
+                    # First param is num_sequences, second is history_length
+                    row["num_sequences"] = param_value
+                    if len(parts) >= 3 and parts[2].isdigit():
+                        row["history_length"] = int(parts[2])
+                elif "BatchLatencyVsHistoryLength" in name:
+                    # First param is history_length, second is num_sequences
+                    row["history_length"] = param_value
+                    if len(parts) >= 3 and parts[2].isdigit():
+                        row["num_sequences"] = int(parts[2])
+                elif "PrefillLatencyVsSeqLen" in name or "LatencyVsSeqLen" in name:
+                    row["sequence_length"] = param_value
+                elif "DecodeLatencyVsHistoryLen" in name:
+                    row["sequence_length"] = param_value  # For compatibility
                 else:
                     # Default to sequence_length for backward compatibility
                     row["sequence_length"] = param_value
@@ -156,7 +168,6 @@ class DataLoader:
 
             # Add group label
             row["group"] = self._create_group_label(row["name"], "cpp")
-
             rows.append(row)
 
         df = pd.DataFrame(rows)
@@ -217,18 +228,21 @@ class DataLoader:
 
     def _create_group_label(self, benchmark_name: str, source: str) -> str:
         """Create a group label for a benchmark."""
-        kernel_type = self._detect_kernel_type(benchmark_name)
-
-        # Extract the base operation name from benchmark name
+        # Simple group labels for better compatibility with plotters
         name_lower = benchmark_name.lower()
-        if "pal" in name_lower:
-            op_name = "pal_paged_attention"
-        elif "mlx" in name_lower:
-            op_name = "mlx_sdpa"
-        else:
-            op_name = "unknown"
 
-        return f"{source}_{op_name}_{kernel_type}"
+        # Check if it's a two-pass benchmark
+        is_two_pass = "twopass" in name_lower or "two_pass" in name_lower
+
+        if "pal" in name_lower:
+            if is_two_pass:
+                return f"{source}_pal_two_pass"
+            else:
+                return f"{source}_pal"
+        elif "mlx" in name_lower:
+            return f"{source}_mlx"
+        else:
+            return f"{source}_unknown"
 
     def _detect_kernel_type(self, benchmark_name: str) -> str:
         """Detect kernel type from benchmark name."""

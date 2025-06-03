@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +13,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.lines import Line2D
 
-from benchmarks.analyzer.core import BenchmarkData, plot_styles, register_plotter
+from benchmarks.analyzer.core import BenchmarkData, plot_styles
 from benchmarks.analyzer.plotters.base import BasePlotter
 
 logger = logging.getLogger(__name__)
@@ -86,7 +87,6 @@ def add_complexity_guide(ax, plot_type: str = "prefill") -> None:
     )
 
 
-@register_plotter
 class LatencyVsSeqLenPlotter(BasePlotter):
     """Plotter for latency vs sequence length visualization."""
 
@@ -153,8 +153,11 @@ class LatencyVsSeqLenPlotter(BasePlotter):
             raise ValueError("'name' column not found in DataFrame")
 
         # Split data into two_pass and fused benchmarks based on kernel types
-        two_pass_names = [name for name, ktype in data.kernel_types.items() if ktype == "two_pass"]
-        fused_names = [name for name, ktype in data.kernel_types.items() if ktype == "fused"]
+        # Exclude batch benchmarks - only include single-sequence benchmarks
+        two_pass_names = [
+            name for name, ktype in data.kernel_types.items() if ktype == "two_pass" and "Batch" not in name
+        ]
+        fused_names = [name for name, ktype in data.kernel_types.items() if ktype == "fused" and "Batch" not in name]
 
         two_pass_df = df[df["name"].isin(two_pass_names)]
         fused_df = df[df["name"].isin(fused_names)]
@@ -388,31 +391,47 @@ class LatencyVsSeqLenPlotter(BasePlotter):
         # Save results as JSON organized by benchmark type
         results = {"latency_vs_seq_len": {"prefill": {}, "decode": {}}}
 
-        # Organize results by kernel type (prefill/decode) and implementation
-        for group, group_df in df.groupby("group"):
-            seq_lat_map = {
-                float(seq_len): float(m_lat)
-                for seq_len, m_lat in zip(group_df["sequence_length"], group_df["mean_latency"], strict=False)
-            }
+        # Process two_pass (prefill) results - only single-sequence benchmarks
+        if not two_pass_df.empty:
+            for group, group_df in two_pass_df.groupby("group"):
+                # Create sorted dictionary by sequence length
+                seq_lat_pairs = [
+                    (float(seq_len), float(m_lat))
+                    for seq_len, m_lat in zip(group_df["sequence_length"], group_df["mean_latency"], strict=False)
+                ]
+                seq_lat_map = OrderedDict(sorted(seq_lat_pairs, key=lambda x: x[0]))
 
-            # Determine if this is prefill (two_pass) or decode (fused)
-            if "two_pass" in str(group).lower():
-                benchmark_type = "prefill"
-            elif "fused" in str(group).lower():
-                benchmark_type = "decode"
-            else:
-                continue
+                # Extract implementation name
+                parts = str(group).split("_")
+                if "pal" in str(group).lower():
+                    impl_name = f"{parts[0]}_pal"
+                elif "mlx" in str(group).lower():
+                    impl_name = f"{parts[0]}_mlx"
+                else:
+                    impl_name = group
 
-            # Extract implementation name (e.g., "cpp_pal_paged_attention" or "cpp_mlx_sdpa")
-            parts = str(group).split("_")
-            if "pal" in str(group).lower():
-                impl_name = f"{parts[0]}_pal"
-            elif "mlx" in str(group).lower():
-                impl_name = f"{parts[0]}_mlx"
-            else:
-                impl_name = group
+                results["latency_vs_seq_len"]["prefill"][impl_name] = seq_lat_map
 
-            results["latency_vs_seq_len"][benchmark_type][impl_name] = seq_lat_map
+        # Process fused (decode) results - only single-sequence benchmarks
+        if not fused_df.empty:
+            for group, group_df in fused_df.groupby("group"):
+                # Create sorted dictionary by sequence length
+                seq_lat_pairs = [
+                    (float(seq_len), float(m_lat))
+                    for seq_len, m_lat in zip(group_df["sequence_length"], group_df["mean_latency"], strict=False)
+                ]
+                seq_lat_map = OrderedDict(sorted(seq_lat_pairs, key=lambda x: x[0]))
+
+                # Extract implementation name
+                parts = str(group).split("_")
+                if "pal" in str(group).lower():
+                    impl_name = f"{parts[0]}_pal"
+                elif "mlx" in str(group).lower():
+                    impl_name = f"{parts[0]}_mlx"
+                else:
+                    impl_name = group
+
+                results["latency_vs_seq_len"]["decode"][impl_name] = seq_lat_map
 
         # Update the main results.json by merging with existing data
         main_results_file = output_dir / "results.json"
