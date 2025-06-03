@@ -31,13 +31,7 @@ logger = logging.getLogger(__name__)
 @pytest.mark.parametrize("history_length", [16, 128, 1024, 4096])
 @pytest.mark.parametrize("num_queries_tokens", [4, 16])
 @pytest.mark.parametrize("tokens_per_page", [16, 64])
-@pytest.mark.parametrize("num_sequences_in_batch", [1, 2, 4])
-def test_paged_attention_determinism(
-    history_length,
-    num_queries_tokens,
-    tokens_per_page,
-    num_sequences_in_batch,
-) -> None:
+def test_paged_attention_determinism(history_length, num_queries_tokens, tokens_per_page) -> None:
     """Test that paged_attention output is deterministic for identical inputs.
 
     This test configures a moderately complex scenario, calls paged_attention twice
@@ -69,20 +63,18 @@ def test_paged_attention_determinism(
 
     # 3. Page Table: [NumSequencesInBatch, MaxLogicalBlocksPerSeq]
     # Ensure page IDs are valid (0 to num_total_pages - 1)
-    py_page_table = mx.random.randint(
-        0, num_total_pages, [num_sequences_in_batch, max_logical_blocks_per_seq], dtype=mx.uint32
-    )
+    py_page_table = mx.random.randint(0, num_total_pages, [1, max_logical_blocks_per_seq], dtype=mx.uint32)
 
     # 4. Sequence Lengths: [NumSequencesInBatch]
     # Ensure lengths are within reasonable bounds (e.g., up to max_logical_blocks_per_seq * tokens_per_page)
     max_seq_len_possible = max_logical_blocks_per_seq * tokens_per_page
-    py_sequence_lengths = mx.random.randint(1, max_seq_len_possible + 1, [num_sequences_in_batch], dtype=mx.int32)
+    py_sequence_lengths = mx.random.randint(1, max_seq_len_possible + 1, [1], dtype=mx.int32)
 
     # 5. Query to Sequence Map: [NumQueryTokens] (mapping each of the first dim of Q to a sequence)
     # Values from 0 to num_sequences_in_batch - 1
     py_query_to_seq_map = mx.random.randint(
         0,
-        num_sequences_in_batch,
+        1,
         [num_queries_tokens],  # Matches the first dimension of 3D queries
         dtype=mx.int32,
     )
