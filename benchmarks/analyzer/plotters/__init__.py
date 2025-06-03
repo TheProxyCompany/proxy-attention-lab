@@ -1,5 +1,6 @@
-"""Plotter modules for benchmark analyzer."""
+"""Plotter modules for benchmark visualization."""
 
-from benchmarks.analyzer.plotters import latency_vs_seq_len
+# Import concrete plotters for registration
+from .latency_vs_seq_len import LatencyVsSeqLenPlotter
 
-__all__ = ["latency_vs_seq_len"]
+__all__ = ["LatencyVsSeqLenPlotter"]

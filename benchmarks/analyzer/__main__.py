@@ -3,15 +3,12 @@
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import sys
 from pathlib import Path
 
-import pandas as pd
-
-from benchmarks.analyzer import plot_utils
-from benchmarks.analyzer.plotters import latency_vs_seq_len
+from benchmarks.analyzer.core import DataLoader, get_registry
+from benchmarks.analyzer.core.plot_styles import get_plot_styles
 
 # Set up logging
 logging.basicConfig(
@@ -20,99 +17,6 @@ logging.basicConfig(
     stream=sys.stdout,
 )
 logger = logging.getLogger(__name__)
-
-
-def process_cpp_file(file_data: dict) -> pd.DataFrame:
-    benchmarks_data = file_data["benchmarks"]
-    results_df = pd.DataFrame(benchmarks_data)
-
-    # Create group labels indicating both the implementation and whether it's a prefill or decode benchmark
-    results_df["group"] = results_df["name"].apply(
-        lambda x: "cpp_pal_paged_attention_decode"
-        if "pal" in x.lower() and "decode" in x.lower()
-        else "cpp_mlx_sdpa_decode"
-        if "mlx" in x.lower() and "decode" in x.lower()
-        else "cpp_pal_paged_attention_prefill"
-        if "pal" in x.lower()
-        else "cpp_mlx_sdpa_prefill"
-    )
-
-    if "param" not in results_df.columns:
-        results_df["param"] = results_df["name"].apply(lambda x: x.split("/")[1])
-
-    # First, extract stddev data from aggregate runs
-    if "aggregate_name" in results_df.columns:
-        # Get stddev values for each param
-        stddev_df = results_df[(results_df["run_type"] == "aggregate") & (results_df["aggregate_name"] == "stddev")][
-            ["param", "group", "real_time", "time_unit"]
-        ].copy()
-        stddev_df = stddev_df.rename(columns={"real_time": "std_latency"})
-
-        # Get median values
-        median_df = results_df[
-            (results_df["run_type"] == "aggregate") & (results_df["aggregate_name"] == "median")
-        ].copy()
-
-        # Merge stddev data with median data
-        results_df = median_df.merge(stddev_df[["param", "group", "std_latency"]], on=["param", "group"], how="left")
-    else:
-        results_df["std_latency"] = 0
-
-    results_df["mean_latency"] = results_df["real_time"]
-    # convert to milliseconds
-    if "time_unit" in results_df.columns:
-        match str(results_df["time_unit"].iloc[0]):
-            case "ns":
-                results_df["mean_latency"] = results_df["mean_latency"] / 1_000_000
-                if "std_latency" in results_df.columns:
-                    results_df["std_latency"] = results_df["std_latency"] / 1_000_000
-            case "us":
-                results_df["mean_latency"] = results_df["mean_latency"] / 1_000
-                if "std_latency" in results_df.columns:
-                    results_df["std_latency"] = results_df["std_latency"] / 1_000
-            case "ms":
-                pass
-
-    results_df["sequence_length"] = results_df["param"].astype(float)
-
-    # Add iterations info
-    if "iterations" in results_df.columns:
-        results_df["iterations"] = results_df["iterations"]
-    else:
-        results_df["iterations"] = results_df.get("repetitions", 1)
-
-    return results_df
-
-
-def process_python_file(file_data: dict) -> pd.DataFrame:
-    benchmarks_data = file_data["benchmarks"]
-    results_df = pd.DataFrame(benchmarks_data)
-
-    # Create group labels indicating both the implementation and whether it's a prefill or decode benchmark
-    results_df["group"] = results_df["name"].apply(
-        lambda x: "python_pal_paged_attention_decode"
-        if "pal" in x.lower() and "decode" in x.lower()
-        else "python_mlx_sdpa_decode"
-        if "mlx" in x.lower() and "decode" in x.lower()
-        else "python_pal_paged_attention_prefill"
-        if "pal" in x.lower()
-        else "python_mlx_sdpa_prefill"
-    )
-
-    results_df["sequence_length"] = results_df["param"].astype(float)
-    results_df["mean_latency"] = results_df["stats"].apply(lambda x: x["mean"] * 1000)  # convert to milliseconds
-    results_df["mean_latency"] = results_df["mean_latency"].astype(float)
-
-    # Extract standard deviation if available
-    if "stats" in results_df.columns:
-        results_df["std_latency"] = results_df["stats"].apply(
-            lambda x: x.get("stddev", 0) * 1000 if isinstance(x, dict) else 0
-        )  # convert to milliseconds
-        results_df["iterations"] = results_df["stats"].apply(
-            lambda x: x.get("iterations", 1) if isinstance(x, dict) else 1
-        )
-
-    return results_df
 
 
 def main() -> None:
@@ -130,54 +34,63 @@ def main() -> None:
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    results_df = pd.DataFrame()
+    # Load benchmark data using the new data loader
+    logger.info("Loading benchmark data from %s", args.results_dir)
+    data_loader = DataLoader()
 
-    # Find JSON files to analyze (excluding previously generated results.json)
-    json_files = [p for p in args.results_dir.glob("*.json") if p.name != "results.json"]
-    if not json_files:
-        logger.error("No JSON files found in %s", args.results_dir)
+    try:
+        benchmark_data = data_loader.load_directory(args.results_dir)
+    except ValueError as e:
+        logger.error(f"Failed to load benchmark data: {e}")
         return
 
-    logger.info("Found %d JSON files to analyze", len(json_files))
-    for json_file in json_files:
-        try:
-            with open(json_file) as f:
-                file_data = json.load(f)
-                if "python" in json_file.name:
-                    # assume any file with "python" in the name is a python benchmark file
-                    benchmarks_data = process_python_file(file_data)
-                else:
-                    # assume any file without "python" in the name is a c++ benchmark file
-                    benchmarks_data = process_cpp_file(file_data)
-                results_df = pd.concat([results_df, benchmarks_data])
-        except Exception as e:
-            logger.error(f"Error processing {json_file}: {e}")
-            continue
+    logger.info(
+        f"Loaded {benchmark_data.metadata['total_benchmarks']} benchmarks from {benchmark_data.metadata['source_file_count']} files"
+    )
+    logger.info(f"Kernel types found: {', '.join(benchmark_data.metadata['kernel_types_found'])}")
+
+    # Get the plotter registry and auto-discover plotters
+    registry = get_registry()
+    plotters_dir = Path(__file__).parent / "plotters"
+    registry.auto_discover(plotters_dir)
+
+    logger.info(f"Available plotters: {', '.join(registry.list_plotters())}")
+
+    # Find compatible plotters for the loaded data
+    compatible_plotters = registry.find_compatible_plotters(benchmark_data)
+
+    if not compatible_plotters:
+        logger.warning("No compatible plotters found for the loaded data")
+        return
 
     # Get styles for plotting
-    styles = plot_utils.get_plot_styles()
+    styles = get_plot_styles()
 
-    # Generate plots and collect filenames
+    # Generate plots and collect results
     logger.info("Generating plots...")
-    plot_filenames: dict[str, str] = {}
+    plot_results = {}
 
-    # Plot latency vs sequence length
-    logger.info("Generating latency vs sequence length plot...")
-    try:
-        seq_len_plot = latency_vs_seq_len.plot(df=results_df, output_dir=args.output_dir, styles=styles)
-    except ValueError as e:
-        logger.error(f"Error generating latency vs sequence length plot: {e}")
-        return
+    for plotter in compatible_plotters:
+        logger.info(f"Running {plotter.get_name()} plotter...")
+        try:
+            result = plotter.plot(benchmark_data, args.output_dir, styles=styles)
+            plot_results[plotter.get_name()] = result
+            logger.info(f"Successfully generated {plotter.get_name()} plot")
+        except Exception as e:
+            logger.error(f"Error running {plotter.get_name()} plotter: {e}")
+            if args.verbose:
+                logger.exception("Full traceback:")
 
-    if seq_len_plot:
-        plot_filenames["latency_vs_seq_len"] = seq_len_plot
-        logger.info(f"Successfully generated latency vs sequence length plot: {seq_len_plot}")
-
-    logger.info(f"Results saved to: {args.output_dir}/results.json")
-    if plot_filenames:
+    # Log summary
+    if plot_results:
         logger.info("Generated plots:")
-        for category, filename in plot_filenames.items():
-            logger.info(f"  - {category}: {filename}")
+        for plotter_name, result in plot_results.items():
+            if isinstance(result, dict) and "filename" in result:
+                logger.info(f"  - {plotter_name}: {result['filename']}")
+            else:
+                logger.info(f"  - {plotter_name}: completed")
+    else:
+        logger.warning("No plots were generated successfully")
 
 
 if __name__ == "__main__":
