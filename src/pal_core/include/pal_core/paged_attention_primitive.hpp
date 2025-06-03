@@ -31,9 +31,8 @@ namespace mx = mlx::core;
 
 namespace pal::cpp {
 
-static constexpr size_t MIN_NEW_TOKENS_FOR_FUSED = 64; // wip
+static constexpr size_t FUSED_SIMD_GROUPS_PER_THREADGROUP = 6; // wip, 6-8 is the sweet spot
 
-static constexpr size_t FUSED_SIMD_GROUPS_PER_THREADGROUP = 2; // wip
 static constexpr uint32_t PASS1_SIMD_GROUPS_PER_GQA_GROUP = 6; // hand tuned; 4-6 seems to be the sweet spot
 static constexpr uint32_t PASS2_SIMD_GROUPS_PER_THREADGROUP = 8; // hand tuned; 8 is the sweet spot
 

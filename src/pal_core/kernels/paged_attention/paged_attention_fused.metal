@@ -253,16 +253,36 @@ inline float warp_max(float v, uint simd_size) {
         // make sure all threads have loaded the K/V vectors into K_tile and V_tile
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
-        // --- 10.1.1/10: History Tile - Score Calculation (no stashing in fused path) ---
-        float thread_score_val = 0; // Default to a state that would lead to zero contribution
-        if (local_thread_idx < current_hist_tile_actual_len) {
-            threadgroup const half* k_vector_from_tile_h = K_tile + (local_thread_idx * params.head_dim);
-            // The helper assumes it's always called for a full head_dim that's a multiple of 4.
-            for(uint d = 0; d < params.head_dim; d += 4) {
-                float4 qv = *((threadgroup const float4*)(q_shmem + d));
-                // Convert from half4 to float4 on-the-fly
-                float4 kv = float4(*((threadgroup const half4*)(k_vector_from_tile_h + d)));
-                thread_score_val += dot(qv, kv);
+        // --- 10.1.1/10: History Tile - Score Calculation (packed rows per lane) ---
+        const uint rows_per_lane  = (current_hist_tile_actual_len + actual_simd_width - 1) / actual_simd_width;
+        const uint kMaxLocalRows  = 8;                             // hard upper‑bound for safety
+        float      local_scores[kMaxLocalRows];
+        uint       local_row_ids[kMaxLocalRows];
+        uint       local_rows_filled = 0;
+
+        float thread_score_val = -INFINITY;                       // lane‑local running max
+
+        for (uint r = 0; r < rows_per_lane; ++r) {
+            uint row_idx = simd_lane_id + r * actual_simd_width;
+            if (row_idx >= current_hist_tile_actual_len) break;
+
+            threadgroup const half* k_vector_from_tile_h = K_tile + (row_idx * params.head_dim);
+
+            // Inline vector dot with FMA, horizontal add once per chunk
+            float4 dot_acc = float4(0.0f);
+            for (uint d = 0; d < params.head_dim; d += 4) {
+                float4 qf = *((threadgroup const float4*)(q_shmem + d));
+                float4 kf = float4(*((threadgroup const half4*)(k_vector_from_tile_h + d)));
+                dot_acc = fma(qf, kf, dot_acc);                    // qf*kf + dot_acc
+            }
+            float row_score = dot_acc.x + dot_acc.y + dot_acc.z + dot_acc.w;
+
+            thread_score_val = max(thread_score_val, row_score);
+
+            if (local_rows_filled < kMaxLocalRows) {
+                local_scores[local_rows_filled] = row_score;
+                local_row_ids[local_rows_filled] = row_idx;
+                ++local_rows_filled;
             }
         }
 
@@ -281,18 +301,16 @@ inline float warp_max(float v, uint simd_size) {
         threadgroup_barrier(mem_flags::mem_threadgroup);
         m_local_tile_val = tg_simd_reduce_scratch[0];
 
-        // --- 10.1.3/10: History Tile - Compute Exponentiated Values (no Score Tile) ---
-        float thread_exp_val = 0.0f;
-        if (local_thread_idx < current_hist_tile_actual_len &&
-            m_local_tile_val != -INFINITY &&
-            thread_score_val != -INFINITY) {
-            thread_exp_val = fast::exp(max(thread_score_val - m_local_tile_val,
-                                        params.log_exp_min_clamp));
+        // --- 10.1.3/10: History Tile - Local Sum (packed rows) ---
+        float thread_exp_total = 0.0f;
+        for (uint i_row = 0; i_row < local_rows_filled; ++i_row) {
+            thread_exp_total += fast::exp(max(local_scores[i_row] - m_local_tile_val,
+                                              params.log_exp_min_clamp));
         }
 
         // --- 10.1.4/10: History Tile - Local Sum (d_local_tile) Reduction ---
         /* warp sum via shuffle */
-        float d_local_tile_total_val = warp_sum(thread_exp_val, actual_simd_width);
+        float d_local_tile_total_val = warp_sum(thread_exp_total, actual_simd_width);
         if (simd_lane_id == 0)
             tg_simd_exp_sums_scratch[simd_group_id] = d_local_tile_total_val;
         threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -356,25 +374,22 @@ inline float warp_max(float v, uint simd_size) {
             }
         }
 
-        // --- 10.1.6/10: History Tile - Weighted V Accumulation (Fused Path) ---
-        if (local_thread_idx < current_hist_tile_actual_len) {
-            threadgroup const half* v_vector_from_tile_h = V_tile + (local_thread_idx * params.head_dim);
+        // --- 10.1.6/10: History Tile - Weighted V Accumulation (packed rows per lane) ---
+        for (uint i_row = 0; i_row < local_rows_filled; ++i_row) {
+            uint row_idx = local_row_ids[i_row];
+            threadgroup const half* v_vector_from_tile_h = V_tile + (row_idx * params.head_dim);
 
-            float weight_term = thread_exp_val;
-            float exp_term = fast::exp(max(m_local_tile_val - m_global_current_iter_atomic, params.log_exp_min_clamp));
+            float weight_term = fast::exp(max(local_scores[i_row] - m_local_tile_val,
+                                              params.log_exp_min_clamp));
+            float exp_term    = fast::exp(max(m_local_tile_val - m_global_current_iter_atomic,
+                                              params.log_exp_min_clamp));
             float final_p_attn_weight_numerator = weight_term * exp_term;
 
-            // Use vectorized half4 loads and float4 accumulation
             threadgroup const half4* v_vec_h4_ptr = reinterpret_cast<threadgroup const half4*>(v_vector_from_tile_h);
-            thread float4* acc_f4_ptr = reinterpret_cast<thread float4*>(acc_tile_local_fp32);
+            thread float4*          acc_f4_ptr    = reinterpret_cast<thread float4*>(acc_tile_local_fp32);
 
-            for (uint chunk_idx = 0; chunk_idx < chunks_per_row; chunk_idx++) {
-                // Load half4 and convert to float4
-                half4 v_h4 = v_vec_h4_ptr[chunk_idx];
-                float4 v_chunk_fp32 = float4(v_h4);
-
-                // Apply weight and accumulate
-                v_chunk_fp32 *= final_p_attn_weight_numerator;
+            for (uint chunk_idx = 0; chunk_idx < chunks_per_row; ++chunk_idx) {
+                float4 v_chunk_fp32 = float4(v_vec_h4_ptr[chunk_idx]) * final_p_attn_weight_numerator;
                 acc_f4_ptr[chunk_idx] += v_chunk_fp32;
             }
         }
