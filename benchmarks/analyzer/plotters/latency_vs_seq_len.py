@@ -260,7 +260,7 @@ class LatencyVsSeqLenPlotter(BasePlotter):
                     )
 
             # Set prefill plot aesthetics
-            title = "Prefill Latency vs Sequence Length"
+            title = "Prefill Latency vs Sequence Length (batch_size=1)"
             plot_styles.apply_common_plot_aesthetics(
                 ax_two_pass,
                 title,
@@ -360,7 +360,7 @@ class LatencyVsSeqLenPlotter(BasePlotter):
                 )
 
             # Set decode plot aesthetics
-            title = "Decode Latency vs History Length"
+            title = "Decode Latency vs History Length (batch_size=1)"
             plot_styles.apply_common_plot_aesthetics(
                 ax_fused,
                 title,

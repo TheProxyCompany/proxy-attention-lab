@@ -111,98 +111,6 @@ static mx::array create_query_token_offset_prefill(int num_sequences, int seq_le
     return mx::array(offset_data.data(), {num_sequences * seq_len}, mx::int32);
 }
 
-// Benchmark function that varies number of sequences (N)
-static void BM_PAL_DecodeBatchLatencyVsNumSequences(benchmark::State& state) {
-    // Extract benchmark parameters
-    BaselineConfig params;
-    int num_sequences = state.range(0);  // N: number of sequences in batch
-    int history_length = state.range(1); // H: history length for each sequence
-
-    // Extract params to local variables for clarity
-    int num_q_heads = params.num_q_heads;
-    int num_kv_heads = params.num_kv_heads;
-    int head_dim = params.head_dim;
-    mx::Dtype dtype = params.dtype;
-
-    // Get optimal tile size
-    auto info = pal::cpp::PagedAttentionPrimitive::get_optimal_tile_size_and_thread_info(
-        head_dim,
-        num_q_heads,
-        num_kv_heads
-    );
-
-    params.tokens_per_page = std::get<0>(info);
-    int tokens_per_page = params.tokens_per_page;
-
-    // Setup input tensors for decode scenario
-    int num_tokens = num_sequences;  // One token per sequence for decode
-    int num_logical_pages_per_seq = (history_length + tokens_per_page - 1) / tokens_per_page;
-    int num_total_physical_pages = num_sequences * num_logical_pages_per_seq;
-
-    // Create query tensor with shape [num_tokens, num_q_heads, head_dim]
-    // For decode, this represents one new token per sequence
-    mx::array queries = mx::random::normal(
-        {num_tokens, num_q_heads, head_dim},
-        dtype
-    );
-
-    // K/V cache pools sized for the history: [num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim]
-    mx::array k_cache_pool = mx::random::normal(
-        {num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim},
-        dtype
-    );
-    mx::array v_cache_pool = mx::random::normal(
-        {num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim},
-        dtype
-    );
-
-    // Create page table: [num_sequences_in_batch, num_logical_pages_per_seq]
-    mx::array page_table = create_page_table(num_sequences, num_logical_pages_per_seq);
-
-    // Set sequence length for each batch item to the history length
-    mx::array sequence_lengths = mx::full({num_sequences}, history_length, mx::int32);
-
-    // Create query-to-sequence mapping for decode (just sequence indices)
-    mx::array query_to_seq_map = mx::arange(num_sequences, mx::int32);
-
-    // Create query token offsets for decode (position after history)
-    std::vector<int32_t> offset_data(num_sequences);
-    for (int i = 0; i < num_sequences; ++i) {
-        offset_data[i] = history_length + 1; // Position after history
-    }
-    mx::array query_token_offset = mx::array(offset_data.data(), {num_sequences}, mx::int32);
-
-    queries = mx::contiguous(queries);
-    k_cache_pool = mx::contiguous(k_cache_pool);
-    v_cache_pool = mx::contiguous(v_cache_pool);
-    page_table = mx::contiguous(page_table);
-    sequence_lengths = mx::contiguous(sequence_lengths);
-    query_to_seq_map = mx::contiguous(query_to_seq_map);
-    query_token_offset = mx::contiguous(query_token_offset);
-
-    queries.eval();
-    k_cache_pool.eval();
-    v_cache_pool.eval();
-    page_table.eval();
-    sequence_lengths.eval();
-    query_to_seq_map.eval();
-    query_token_offset.eval();
-
-    // Main benchmark loop
-    for (auto _ : state) {
-        mx::array out = pal::cpp::paged_attention(
-            queries,
-            k_cache_pool,
-            v_cache_pool,
-            page_table,
-            sequence_lengths,
-            query_to_seq_map,
-            query_token_offset,
-            true /* use_fused_kernel */
-        );
-        out.eval();
-    }
-}
 
 // Benchmark function that varies history length (H)
 static void BM_PAL_DecodeBatchLatencyVsHistoryLength(benchmark::State& state) {
@@ -292,94 +200,6 @@ static void BM_PAL_DecodeBatchLatencyVsHistoryLength(benchmark::State& state) {
             query_to_seq_map,
             query_token_offset,
             true /* use_fused_kernel */
-        );
-        out.eval();
-    }
-}
-
-// PAL Two-Pass Prefill Batch benchmark function varying num sequences
-static void BM_PAL_TwoPass_PrefillBatchLatencyVsNumSequences(benchmark::State& state) {
-    // Extract benchmark parameters
-    BaselineConfig params;
-    int num_sequences = state.range(0);  // N: number of sequences in batch
-    int seq_len = state.range(1);        // L: sequence length for each prefill
-
-    // Extract params to local variables for clarity
-    int num_q_heads = params.num_q_heads;
-    int num_kv_heads = params.num_kv_heads;
-    int head_dim = params.head_dim;
-    mx::Dtype dtype = params.dtype;
-
-    // Get optimal tile size
-    auto info = pal::cpp::PagedAttentionPrimitive::get_optimal_tile_size_and_thread_info(
-        head_dim,
-        num_q_heads,
-        num_kv_heads
-    );
-
-    params.tokens_per_page = std::get<0>(info);
-    int tokens_per_page = params.tokens_per_page;
-
-    // Setup input tensors for prefill scenario
-    int num_tokens = num_sequences * seq_len;  // Total tokens across all sequences
-    int num_logical_pages_per_seq = (seq_len + tokens_per_page - 1) / tokens_per_page;
-    int num_total_physical_pages = num_sequences * num_logical_pages_per_seq;
-
-    // Create query tensor with shape [num_tokens, num_q_heads, head_dim]
-    mx::array queries = mx::random::normal(
-        {num_tokens, num_q_heads, head_dim},
-        dtype
-    );
-
-    // K/V cache pools: [num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim]
-    mx::array k_cache_pool = mx::random::normal(
-        {num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim},
-        dtype
-    );
-    mx::array v_cache_pool = mx::random::normal(
-        {num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim},
-        dtype
-    );
-
-    // Create page table: [num_sequences_in_batch, num_logical_pages_per_seq]
-    mx::array page_table = create_page_table(num_sequences, num_logical_pages_per_seq);
-
-    // Set sequence length for each batch item
-    mx::array sequence_lengths = mx::full({num_sequences}, seq_len, mx::int32);
-
-    // Create query-to-sequence mapping for prefill
-    mx::array query_to_seq_map = create_query_to_seq_map_prefill(num_sequences, seq_len);
-
-    // Create query token offsets for prefill
-    mx::array query_token_offset = create_query_token_offset_prefill(num_sequences, seq_len);
-
-    queries = mx::contiguous(queries);
-    k_cache_pool = mx::contiguous(k_cache_pool);
-    v_cache_pool = mx::contiguous(v_cache_pool);
-    page_table = mx::contiguous(page_table);
-    sequence_lengths = mx::contiguous(sequence_lengths);
-    query_to_seq_map = mx::contiguous(query_to_seq_map);
-    query_token_offset = mx::contiguous(query_token_offset);
-
-    queries.eval();
-    k_cache_pool.eval();
-    v_cache_pool.eval();
-    page_table.eval();
-    sequence_lengths.eval();
-    query_to_seq_map.eval();
-    query_token_offset.eval();
-
-    // Main benchmark loop
-    for (auto _ : state) {
-        mx::array out = pal::cpp::paged_attention(
-            queries,
-            k_cache_pool,
-            v_cache_pool,
-            page_table,
-            sequence_lengths,
-            query_to_seq_map,
-            query_token_offset,
-            false /* use_fused_kernel - two-pass */
         );
         out.eval();
     }
@@ -688,28 +508,6 @@ static void BM_MLX_SDPA_PrefillBatchLatencyVsSeqLen(benchmark::State& state) {
 const int REPETITIONS = 3;
 const int ITERATIONS = 3;
 
-// PAL: Benchmark varying N (num sequences) for each history length
-BENCHMARK(BM_PAL_DecodeBatchLatencyVsNumSequences)
-    ->Args({4, 128})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-    ->Args({4, 256})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-    ->Args({4, 1024})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-    ->Args({4, 4096})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-    ->Args({16, 128})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-    ->Args({16, 256})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-    ->Args({16, 1024})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-    ->Args({16, 4096})->Repetitions(REPETITIONS)->Iterations(ITERATIONS);
-
-// MLX: Benchmark varying N (num sequences) for each history length
-BENCHMARK(BM_MLX_SDPA_DecodeBatchLatencyVsNumSequences)
-    ->Args({4, 128})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-    ->Args({4, 256})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-    ->Args({4, 1024})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-    ->Args({4, 4096})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-    ->Args({64, 128})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-    ->Args({16, 256})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-    ->Args({16, 1024})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-    ->Args({16, 4096})->Repetitions(REPETITIONS)->Iterations(ITERATIONS);
-
 // PAL: Benchmark varying H (history length) for each batch size
 BENCHMARK(BM_PAL_DecodeBatchLatencyVsHistoryLength)
     ->Args({4, 128})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
@@ -740,44 +538,28 @@ BENCHMARK(BM_MLX_SDPA_DecodeBatchLatencyVsHistoryLength)
     ->Args({64, 1024})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
     ->Args({64, 4096})->Repetitions(REPETITIONS)->Iterations(ITERATIONS);
 
-// PAL Two-Pass: Benchmark varying N (num sequences) for shorter sequence lengths to optimize runtime
-BENCHMARK(BM_PAL_TwoPass_PrefillBatchLatencyVsNumSequences)
-    ->Args({4, 128})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-    ->Args({4, 256})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-    ->Args({4, 512})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-    ->Args({8, 128})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-    ->Args({8, 256})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-    ->Args({8, 512})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-    ->Args({16, 128})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-    ->Args({16, 256})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-    ->Args({16, 512})->Repetitions(REPETITIONS)->Iterations(ITERATIONS);
-
-// MLX SDPA Prefill: Benchmark varying N (num sequences) for shorter sequence lengths
-BENCHMARK(BM_MLX_SDPA_PrefillBatchLatencyVsNumSequences)
-    ->Args({4, 128})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-    ->Args({4, 256})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-    ->Args({4, 512})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-    ->Args({8, 128})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-    ->Args({8, 256})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-    ->Args({8, 512})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-    ->Args({16, 128})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-    ->Args({16, 256})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-    ->Args({16, 512})->Repetitions(REPETITIONS)->Iterations(ITERATIONS);
-
 // PAL Two-Pass: Benchmark varying sequence length for smaller batch sizes
 BENCHMARK(BM_PAL_TwoPass_PrefillBatchLatencyVsSeqLen)
+    ->Args({32, 4})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
+    ->Args({64, 4})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
     ->Args({128, 4})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
     ->Args({256, 4})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
     ->Args({512, 4})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
+    ->Args({32, 16})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
+    ->Args({64, 16})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
     ->Args({128, 16})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
     ->Args({256, 16})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
     ->Args({512, 16})->Repetitions(REPETITIONS)->Iterations(ITERATIONS);
 
 // MLX SDPA Prefill: Benchmark varying sequence length for smaller batch sizes
 BENCHMARK(BM_MLX_SDPA_PrefillBatchLatencyVsSeqLen)
+    ->Args({32, 4})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
+    ->Args({64, 4})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
     ->Args({128, 4})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
     ->Args({256, 4})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
     ->Args({512, 4})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
+    ->Args({32, 16})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
+    ->Args({64, 16})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
     ->Args({128, 16})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
     ->Args({256, 16})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
     ->Args({512, 16})->Repetitions(REPETITIONS)->Iterations(ITERATIONS);

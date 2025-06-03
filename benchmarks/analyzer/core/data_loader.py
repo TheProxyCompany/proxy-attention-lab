@@ -141,27 +141,16 @@ class DataLoader:
                     row["sequence_length"] = param_value
                     if len(parts) >= 3 and parts[2].isdigit():
                         row["num_sequences"] = int(parts[2])
-                elif "PrefillBatchLatencyVsNumSequences" in name:
-                    # First param is num_sequences, second is seq_len
-                    row["num_sequences"] = param_value
-                    if len(parts) >= 3 and parts[2].isdigit():
-                        row["sequence_length"] = int(parts[2])
-                elif "BatchLatencyVsNumSequences" in name:
-                    # First param is num_sequences, second is history_length
+                elif "DecodeBatchLatencyVsHistoryLength" in name:
+                    # First param is history_length, second is num_sequences
                     row["num_sequences"] = param_value
                     if len(parts) >= 3 and parts[2].isdigit():
                         row["history_length"] = int(parts[2])
-                elif "BatchLatencyVsHistoryLength" in name:
-                    # First param is history_length, second is num_sequences
-                    row["history_length"] = param_value
-                    if len(parts) >= 3 and parts[2].isdigit():
-                        row["num_sequences"] = int(parts[2])
-                elif "PrefillLatencyVsSeqLen" in name or "LatencyVsSeqLen" in name:
+                elif "PrefillLatencyVsSeqLen" in name:
                     row["sequence_length"] = param_value
                 elif "DecodeLatencyVsHistoryLen" in name:
                     row["sequence_length"] = param_value  # For compatibility
                 else:
-                    # Default to sequence_length for backward compatibility
                     row["sequence_length"] = param_value
             else:
                 logger.debug(f"Could not extract parameters from benchmark: {name}")
