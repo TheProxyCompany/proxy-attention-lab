@@ -566,7 +566,7 @@ using namespace metal;
                 m_local_p_this_page = m_pass1_results[flat_idx_ms_value];
                 s_local_p_this_page = s_pass1_results[flat_idx_ms_value];
 
-                rescale_factor_this_page = precise::exp(max(m_local_p_this_page - M_final_item_val,
+                rescale_factor_this_page = fast::exp(max(m_local_p_this_page - M_final_item_val,
                                                             params.log_exp_min_clamp));
             }
 

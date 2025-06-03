@@ -24,7 +24,6 @@ using namespace metal;
 /* ---------------------------------------------------------------------
  * New tuning constants & tiny helpers
  * -------------------------------------------------------------------*/
-constant uint K_STRIP = 64;                     // 64-wide head-dim slice
 
 /* warp shuffle helpers (Metal has no simd_reduce_add) */
 inline float warp_sum(float v, uint simd_size) {
@@ -287,7 +286,7 @@ inline float warp_max(float v, uint simd_size) {
         if (local_thread_idx < current_hist_tile_actual_len &&
             m_local_tile_val != -INFINITY &&
             thread_score_val != -INFINITY) {
-            thread_exp_val = precise::exp(max(thread_score_val - m_local_tile_val,
+            thread_exp_val = fast::exp(max(thread_score_val - m_local_tile_val,
                                         params.log_exp_min_clamp));
         }
 
@@ -362,18 +361,18 @@ inline float warp_max(float v, uint simd_size) {
             threadgroup const half* v_vector_from_tile_h = V_tile + (local_thread_idx * params.head_dim);
 
             float weight_term = thread_exp_val;
-            float exp_term = precise::exp(max(m_local_tile_val - m_global_current_iter_atomic, params.log_exp_min_clamp));
+            float exp_term = fast::exp(max(m_local_tile_val - m_global_current_iter_atomic, params.log_exp_min_clamp));
             float final_p_attn_weight_numerator = weight_term * exp_term;
 
             // Use vectorized half4 loads and float4 accumulation
             threadgroup const half4* v_vec_h4_ptr = reinterpret_cast<threadgroup const half4*>(v_vector_from_tile_h);
             thread float4* acc_f4_ptr = reinterpret_cast<thread float4*>(acc_tile_local_fp32);
-            
+
             for (uint chunk_idx = 0; chunk_idx < chunks_per_row; chunk_idx++) {
                 // Load half4 and convert to float4
                 half4 v_h4 = v_vec_h4_ptr[chunk_idx];
                 float4 v_chunk_fp32 = float4(v_h4);
-                
+
                 // Apply weight and accumulate
                 v_chunk_fp32 *= final_p_attn_weight_numerator;
                 acc_f4_ptr[chunk_idx] += v_chunk_fp32;
@@ -420,10 +419,10 @@ inline float warp_max(float v, uint simd_size) {
             }
 
             uint output_base_idx = global_item_idx * params.head_dim + i;
-            if (i < params.head_dim)     output_buffer[output_base_idx + 0] = (half)final_output_chunk.x;
-            if (i+1 < params.head_dim) output_buffer[output_base_idx + 1] = (half)final_output_chunk.y;
-            if (i+2 < params.head_dim) output_buffer[output_base_idx + 2] = (half)final_output_chunk.z;
-            if (i+3 < params.head_dim) output_buffer[output_base_idx + 3] = (half)final_output_chunk.w;
+            output_buffer[output_base_idx + 0] = (half)final_output_chunk.x;
+            output_buffer[output_base_idx + 1] = (half)final_output_chunk.y;
+            output_buffer[output_base_idx + 2] = (half)final_output_chunk.z;
+            output_buffer[output_base_idx + 3] = (half)final_output_chunk.w;
         }
         // Reuse tg_simd_v_chunk_sums for the next chunk, ensure previous values consumed
         threadgroup_barrier(mem_flags::mem_threadgroup); // Sync before next chunk
