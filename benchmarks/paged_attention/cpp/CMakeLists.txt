@@ -30,7 +30,7 @@ FetchContent_MakeAvailable(benchmark)
 FetchContent_GetProperties(benchmark SOURCE_DIR)
 
 # --- Define Benchmark Executable ---
-set(BENCHMARK_EXE_NAME paged_attention_benchmarks_cpp)
+set(BENCHMARK_EXE_NAME paged_attention_benchmarks)
 file(GLOB_RECURSE BENCHMARK_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp)
 add_executable(${BENCHMARK_EXE_NAME} ${BENCHMARK_SOURCES})
 

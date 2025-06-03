@@ -334,7 +334,7 @@ run_cpp_benchmarks() {
             if [ -n "${kernel}" ]; then
                 test_type="cpp_${kernel}"
             fi
-            local cpp_json_output="${BENCHMARK_OUTPUT_ROOT}/${test_type}_${benchmark_exename}_${timestamp}.json"
+            local cpp_json_output="${BENCHMARK_OUTPUT_ROOT}/${test_type}_${benchmark_exename}.json"
 
             if SPDLOG_LEVEL=debug "${benchmark_exe}" \
                 --benchmark_format=json \
