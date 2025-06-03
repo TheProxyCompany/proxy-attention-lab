@@ -45,6 +45,7 @@ def test_pal_vs_sdpa_equivalency_mha(batch_size, seq_len, num_heads, head_dim, d
     This ensures that our implementation matches the standard attention mechanism
     when the inputs are directly comparable.
     """
+    mx.metal.clear_cache()
     mx.random.seed(11)
 
     logger.info(f"Test: {test_pal_vs_sdpa_equivalency_mha.__name__}")

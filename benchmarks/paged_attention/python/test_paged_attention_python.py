@@ -48,6 +48,7 @@ def test_pal_latency_vs_seq_len(benchmark, seq_len_val):
         benchmark: pytest-benchmark fixture for performance measurement
         seq_len_val: sequence length value to test
     """
+    mx.metal.clear_cache()
     # Create test parameters from baseline with specified sequence length
     params = BASELINE_CONFIG.copy()
     params["seq_len"] = seq_len_val
@@ -143,6 +144,7 @@ def test_mlx_latency_vs_seq_len(benchmark, seq_len_val):
         benchmark: pytest-benchmark fixture for performance measurement
         seq_len_val: sequence length value to test
     """
+    mx.metal.clear_cache()
     # Create parameters with the fixed batch size and specified sequence length
     params = BASELINE_CONFIG.copy()
     params["seq_len"] = seq_len_val
@@ -326,6 +328,7 @@ def test_pal_decode_latency_vs_history_len(benchmark, history_len_val):
         benchmark: pytest-benchmark fixture for performance measurement
         history_len_val: history length value to test (size of existing KV cache)
     """
+    mx.metal.clear_cache()
     # Create test parameters for decode phase
     params = BASELINE_CONFIG.copy()
     params["history_len"] = history_len_val
@@ -376,6 +379,7 @@ def test_mlx_decode_latency_vs_history_len(benchmark, history_len_val):
         benchmark: pytest-benchmark fixture for performance measurement
         history_len_val: history length value to test (size of existing KV cache)
     """
+    mx.metal.clear_cache()
     # Create test parameters for decode phase
     params = BASELINE_CONFIG.copy()
     params["history_len"] = history_len_val
