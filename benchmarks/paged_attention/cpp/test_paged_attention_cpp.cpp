@@ -413,21 +413,21 @@ static void BM_MLX_SDPA_DecodeLatencyVsHistoryLen(benchmark::State& state) {
 const int REPETITIONS = 10; // magic number
 const int ITERATIONS = 20; // magic number
 
-// BENCHMARK(BM_PAL_LatencyVsSeqLen)
-//    ->Arg(64)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-//    ->Arg(256)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-//    ->Arg(512)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-//    ->Arg(1024)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-//    ->Arg(2048)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-//    ->Arg(4096)->Repetitions(REPETITIONS)->Iterations(ITERATIONS);
+BENCHMARK(BM_PAL_LatencyVsSeqLen)
+   ->Arg(64)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
+   ->Arg(256)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
+   ->Arg(512)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
+   ->Arg(1024)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
+   ->Arg(2048)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
+   ->Arg(4096)->Repetitions(REPETITIONS)->Iterations(ITERATIONS);
 
-// BENCHMARK(BM_MLX_SDPA_LatencyVsSeqLen)
-//    ->Arg(64)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-//    ->Arg(256)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-//    ->Arg(512)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-//    ->Arg(1024)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-//    ->Arg(2048)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-//    ->Arg(4096)->Repetitions(REPETITIONS)->Iterations(ITERATIONS);
+BENCHMARK(BM_MLX_SDPA_LatencyVsSeqLen)
+   ->Arg(64)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
+   ->Arg(256)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
+   ->Arg(512)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
+   ->Arg(1024)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
+   ->Arg(2048)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
+   ->Arg(4096)->Repetitions(REPETITIONS)->Iterations(ITERATIONS);
 
 BENCHMARK(BM_PAL_DecodeLatencyVsHistoryLen)
    ->Arg(64)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)

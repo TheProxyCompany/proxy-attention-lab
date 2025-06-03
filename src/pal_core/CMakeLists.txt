@@ -156,7 +156,6 @@ file(GLOB_RECURSE CORE_LIB_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/kernel_utils/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/metal/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/debug/*.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/*.cpp"
 )
 
 add_library(${CORE_LIB_NAME} STATIC ${CORE_LIB_SOURCES})
@@ -189,7 +188,7 @@ target_link_libraries(
 
 file(
     GLOB_RECURSE METAL_SOURCES
-    "${CMAKE_CURRENT_SOURCE_DIR}/kernels/paged_attention/*.metal"
+    "${CMAKE_CURRENT_SOURCE_DIR}/kernels/*/*.metal"
 )
 message(STATUS "Configuring Metal library build for PAL with sources: ${METAL_SOURCES}")
 mlx_build_metallib(
