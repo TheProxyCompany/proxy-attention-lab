@@ -800,11 +800,4 @@ CoreDims extract_dims(const std::vector<mx::array>& inputs) {
     return extracted_dims_;
 }
 
-bool PagedAttentionPrimitive::should_use_fused_kernel(
-    const CoreDims& core_dims,
-    const std::vector<mx::array>& inputs
-) {
-    return true;
-}
-
 }  // namespace pal::cpp

@@ -43,13 +43,13 @@ class FillKVPagesPrimitive : public mx::Primitive {
   /**
    * @brief Constructs a FillKVPagesPrimitive with specified parameters.
    *
-   * @param stream The MLX stream or device to execute on
+   * @param stream_or_device The MLX stream or device to execute on
    * @param num_kv_heads Number of key/value heads
    * @param head_dim Hidden dimension size per attention head
    * @param tokens_per_page Number of tokens stored in each memory page
    */
   explicit FillKVPagesPrimitive(
-    mx::StreamOrDevice stream,
+    mx::StreamOrDevice stream_or_device,
     int num_kv_heads = 0,
     int head_dim = 0,
     int tokens_per_page = 0
@@ -61,7 +61,7 @@ class FillKVPagesPrimitive : public mx::Primitive {
    * @param inputs Vector of input arrays
    * @param out Output array to store the result (may be unused)
    */
-  void eval_cpu(const std::vector<mx::array>& inputs, std::vector<array>& outputs) override;
+  void eval_cpu(const std::vector<mx::array>& inputs, std::vector<mx::array>& outputs) override;
 
   /**
    * @brief Evaluates the primitive on GPU.
@@ -71,7 +71,7 @@ class FillKVPagesPrimitive : public mx::Primitive {
    * @param inputs Vector of input arrays
    * @param out Output array to store the result (may be unused)
    */
-  void eval_gpu(const std::vector<mx::array>& inputs, std::vector<array>& outputs) override;
+  void eval_gpu(const std::vector<mx::array>& inputs, std::vector<mx::array>& outputs) override;
 
   /**
    * @brief Prints a representation of the primitive to the output stream.
@@ -94,8 +94,7 @@ class FillKVPagesPrimitive : public mx::Primitive {
     }
     const FillKVPagesPrimitive& other_fkv =
         static_cast<const FillKVPagesPrimitive&>(other);
-    return (this->num_q_heads_ == other_fkv.num_q_heads_ &&
-            this->num_kv_heads_ == other_fkv.num_kv_heads_ &&
+    return (this->num_kv_heads_ == other_fkv.num_kv_heads_ &&
             this->head_dim_ == other_fkv.head_dim_ &&
             this->tokens_per_page_ == other_fkv.tokens_per_page_);
   }

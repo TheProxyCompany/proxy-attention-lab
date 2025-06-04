@@ -263,11 +263,6 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
     uint32_t threads_per_group
   );
 
-  static bool should_use_fused_kernel(
-    const CoreDims& core_dims,
-    const std::vector<mx::array>& inputs
-  );
-
 };
 
 }  // namespace pal::cpp

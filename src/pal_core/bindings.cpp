@@ -20,6 +20,7 @@
 #include <nanobind/stl/optional.h>
 #include <nanobind/stl/variant.h>
 #include <nanobind/stl/vector.h>
+#include <nanobind/stl/tuple.h>
 
 #include <mlx/array.h>
 #include <mlx/mlx.h>

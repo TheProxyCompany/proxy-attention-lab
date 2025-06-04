@@ -78,7 +78,7 @@ profile = "black"
 line-length = 120
 
 [tool.pytest.ini_options]
-log_cli = false
-log_cli_level = "WARN"
+log_cli = true
+log_cli_level = "DEBUG"
 log_cli_format = "in %(filename)s:%(lineno)d [%(levelname)s] %(message)s"
 log_cli_date_format = "%H:%M:%S"

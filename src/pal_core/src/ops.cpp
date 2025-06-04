@@ -21,9 +21,11 @@
 #include <string>
 
 #include "mlx/backend/common/utils.h"
+#include "mlx/array.h"
 #include "mlx/utils.h"
 
 #include "pal_core/metal/metal_loader.hpp"
+#include "pal_core/fill_kv_pages_primitive.hpp"
 #include "pal_core/paged_attention_primitive.hpp"
 
 #include <spdlog/spdlog.h>
@@ -126,7 +128,6 @@ std::tuple<mx::array, mx::array> fill_kv_pages(
   pal::cpp::MetalLibRegistrar::ensure_pal_metallib_registered(stream_or_device);
 
   // Extract key parameters from input arrays to pass to the primitive
-  int num_q_heads = 1;  // Default for 1D/2D queries
   int head_dim = 0;
   int tokens_per_page = 0;
   int num_kv_heads = 0;
@@ -140,21 +141,27 @@ std::tuple<mx::array, mx::array> fill_kv_pages(
 
   // Create the primitive instance with the extracted parameters
   auto primitive = std::make_shared<FillKVPagesPrimitive>(
-      stream_or_device,
-      num_q_heads,
-      num_kv_heads,
-      head_dim,
-      tokens_per_page
-    );
+    stream_or_device,
+    num_kv_heads,
+    head_dim,
+    tokens_per_page
+  );
 
   spdlog::debug("[PAL Ops] FillKVPagesPrimitive instance created.");
 
-  std::vector<mx::array> inputs = {
+  std::vector<mx::Shape> result_shapes = {global_key_pool.shape(), global_value_pool.shape()};
+  std::vector<mx::Dtype> result_dtypes = {global_key_pool.dtype(), global_value_pool.dtype()};
+
+  auto outputs = mx::array::make_arrays(
+      result_shapes, result_dtypes, primitive,
+      {
         new_keys, new_values,
         global_key_pool, global_value_pool, // These are the arrays to be modified
         page_table, current_token_positions, query_to_seq_map
-    };
+      }
+    );
 
-
+  return std::make_tuple(outputs[0], outputs[1]);
+}
 
 }  // namespace pal::cpp
