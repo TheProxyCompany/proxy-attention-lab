@@ -38,6 +38,7 @@
 #include <mlx/array.h>
 #include <mlx/ops.h>
 #include <mlx/backend/cpu/encoder.h>
+#include "mlx/backend/gpu/copy.h"
 #include <mlx/backend/metal/device.h>
 #include <mlx/backend/metal/metal.h>
 #include "pal_core/metal/metal_loader.hpp"
@@ -280,10 +281,8 @@ void PagedAttentionPrimitive::_eval_gpu_2pass(
     // set intermediate outputs for prefill Pass 1
     mx::array m_locals_pass1_out = mx::array(m_s_shape, mx::float32, nullptr, {});
     m_locals_pass1_out.set_data(mx::allocator::malloc(m_locals_pass1_out.nbytes()));
-
     mx::array s_locals_pass1_out = mx::array(m_s_shape, mx::float32, nullptr, {});
     s_locals_pass1_out.set_data(mx::allocator::malloc(s_locals_pass1_out.nbytes()));
-
     mx::array o_partials_pass1_out = mx::array(o_shape, mx::float16, nullptr, {});
     o_partials_pass1_out.set_data(mx::allocator::malloc(o_partials_pass1_out.nbytes()));
 

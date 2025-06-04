@@ -80,8 +80,8 @@ mx::array paged_attention(
 std::tuple<mx::array, mx::array> fill_kv_pages(
     const mx::array& new_keys,
     const mx::array& new_values,
-    const mx::array& global_key_pool,
-    const mx::array& global_value_pool,
+    mx::array& global_key_pool,
+    mx::array& global_value_pool,
     const mx::array& page_table,
     const mx::array& current_token_write_positions,
     const mx::array& query_to_seq_map,

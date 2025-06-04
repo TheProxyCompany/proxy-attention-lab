@@ -67,6 +67,7 @@ def test_fill_kv_pages_smoke() -> None:
 
     mx.eval(updated_k_pool, updated_v_pool)
 
+    assert mx.sum(mx.isinf(updated_k_pool)) == 0, "updated_k_pool contains inf values"
     assert updated_k_pool.shape == global_key_pool.shape
     assert updated_k_pool.dtype == global_key_pool.dtype
     assert updated_v_pool.shape == global_value_pool.shape
