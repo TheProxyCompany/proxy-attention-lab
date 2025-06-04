@@ -1,7 +1,7 @@
 // dispatch.cpp
 // Implementation of Metal dispatch utilities
 //
-// Copyright 2024 The Proxy Company. All Rights Reserved.
+// Copyright 2025 The Proxy Company. All Rights Reserved.
 
 #include "pal_core/metal/dispatch.hpp"
 #include <spdlog/spdlog.h>

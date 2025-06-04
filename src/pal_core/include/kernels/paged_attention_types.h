@@ -1,7 +1,7 @@
 // paged_attention_types.h
 // Defines parameter structures shared between CPU and GPU for paged attention.
 //
-// Copyright 2024 The Proxy Company. All Rights Reserved.
+// Copyright 2025 The Proxy Company. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -68,4 +68,33 @@ static_assert(sizeof(PagedAttentionParams) == 64, "Metal sizeof(PagedAttentionPa
 constant static const uint kAlignmentBytes = 64;
 constant static const uint kAlignmentMask = kAlignmentBytes - 1;
 constant static const float kEpsilonForZeroGuard = 1e-9f;
+#endif
+
+/**
+ * @brief Shared parameter structure for fill_kv_pages operations.
+ *
+ * This structure is shared between CPU (C++) and GPU (Metal) code to ensure
+ * consistent parameter passing. The structure is explicitly aligned to 16 bytes
+ * to match Metal's buffer requirements for optimal performance.
+ */
+struct alignas(16) FillKVPagesParams {
+    uint32_t num_kv_heads;
+    uint32_t head_dim;
+    uint32_t tokens_per_page;
+    uint32_t page_table_max_logical_blocks;
+    uint32_t total_new_tokens_to_write;
+    uint32_t kv_pairs_per_threadgroup;
+};
+#ifndef __METAL_VERSION__ // C++ side
+
+static_assert(std::is_standard_layout_v<FillKVPagesParams>,
+              "FillKVPagesParams must be a standard-layout type.");
+static_assert(alignof(FillKVPagesParams) == 16,
+              "FillKVPagesParams must have 16-byte alignment.");
+// 6 uint32_t (24 bytes) = 24 data bytes.
+// alignas(16) means total size is 32 bytes (rounded up to multiple of 16).
+static_assert(sizeof(FillKVPagesParams) == 32, "C++ sizeof(FillKVPagesParams) expected to be 32 bytes.");
+
+#else // __METAL_VERSION__ (Metal side)
+static_assert(sizeof(FillKVPagesParams) == 32, "Metal sizeof(FillKVPagesParams) expected to be 32 bytes.");
 #endif

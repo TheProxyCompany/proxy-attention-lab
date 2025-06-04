@@ -2,7 +2,7 @@
 // paged_attention_primitive.hpp
 // Defines the PagedAttentionPrimitive class for MLX paged attention operations.
 //
-// Copyright 2024 The Proxy Company. All Rights Reserved.
+// Copyright 2025 The Proxy Company. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -261,11 +261,6 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
     uint32_t head_dimension,
     uint32_t number_of_simd_groups,
     uint32_t threads_per_group
-  );
-
-  static bool should_use_fused_kernel(
-    const CoreDims& core_dims,
-    const std::vector<mx::array>& inputs
   );
 
 };

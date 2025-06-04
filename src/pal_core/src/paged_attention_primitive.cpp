@@ -2,7 +2,7 @@
 // Implementation of the PagedAttentionPrimitive class that provides GPU-accelerated
 // paged attention operations for transformer models.
 //
-// Copyright 2024 The Proxy Company. All Rights Reserved.
+// Copyright 2025 The Proxy Company. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -38,6 +38,7 @@
 #include <mlx/array.h>
 #include <mlx/ops.h>
 #include <mlx/backend/cpu/encoder.h>
+#include "mlx/backend/gpu/copy.h"
 #include <mlx/backend/metal/device.h>
 #include <mlx/backend/metal/metal.h>
 #include "pal_core/metal/metal_loader.hpp"
@@ -280,10 +281,8 @@ void PagedAttentionPrimitive::_eval_gpu_2pass(
     // set intermediate outputs for prefill Pass 1
     mx::array m_locals_pass1_out = mx::array(m_s_shape, mx::float32, nullptr, {});
     m_locals_pass1_out.set_data(mx::allocator::malloc(m_locals_pass1_out.nbytes()));
-
     mx::array s_locals_pass1_out = mx::array(m_s_shape, mx::float32, nullptr, {});
     s_locals_pass1_out.set_data(mx::allocator::malloc(s_locals_pass1_out.nbytes()));
-
     mx::array o_partials_pass1_out = mx::array(o_shape, mx::float16, nullptr, {});
     o_partials_pass1_out.set_data(mx::allocator::malloc(o_partials_pass1_out.nbytes()));
 
@@ -798,13 +797,6 @@ CoreDims extract_dims(const std::vector<mx::array>& inputs) {
     }
 
     return extracted_dims_;
-}
-
-bool PagedAttentionPrimitive::should_use_fused_kernel(
-    const CoreDims& core_dims,
-    const std::vector<mx::array>& inputs
-) {
-    return true;
 }
 
 }  // namespace pal::cpp

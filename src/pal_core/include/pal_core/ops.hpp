@@ -2,7 +2,7 @@
 // ops.hpp
 // Declarations of PAL core operations for MLX integration.
 //
-// Copyright 2024 The Proxy Company. All Rights Reserved.
+// Copyright 2025 The Proxy Company. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -56,6 +56,35 @@ mx::array paged_attention(
     const mx::array& query_to_seq_map,
     const mx::array& query_token_offset,
     bool use_fused_kernel,
+    mx::StreamOrDevice stream = {}
+);
+
+/**
+ * @brief Fills the KV cache pages with the new keys and values.
+ *
+ * This function fills the KV cache pages with the new keys and values.
+ *
+ * @param new_keys The new keys to fill the KV cache with.
+ * @param new_values The new values to fill the KV cache with.
+ * @param global_key_pool The global key pool to fill the KV cache with.
+ * @param global_value_pool The global value pool to fill the KV cache with.
+ * @param page_table Page table mapping logical blocks for each sequence
+ *                  to physical page IDs in the k_cache_pool/v_cache_pool.
+ *                  Shape: [NumSequencesInBatch, MaxLogicalBlocksPerSequence]
+ * @param current_token_write_positions Logical token index within its sequence where the new K/V should be written
+ *                              Shape: [TotalCurrentTokensInBatch]
+ * @param query_to_seq_map Maps each query token to its sequence index.
+ * @param stream Optional stream or device for the operation.
+ * @return Tuple containing the updated global key pool and global value pool.
+ */
+std::tuple<mx::array, mx::array> fill_kv_pages(
+    const mx::array& new_keys,
+    const mx::array& new_values,
+    mx::array& global_key_pool,
+    mx::array& global_value_pool,
+    const mx::array& page_table,
+    const mx::array& current_token_write_positions,
+    const mx::array& query_to_seq_map,
     mx::StreamOrDevice stream = {}
 );
 

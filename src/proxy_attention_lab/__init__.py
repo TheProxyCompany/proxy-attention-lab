@@ -1,4 +1,4 @@
-# Copyright 2024 The Proxy Company. All Rights Reserved.
+# Copyright 2025 The Proxy Company. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@
 # ==============================================================================
 """Proxy Attention Lab (PAL): A laboratory for experimenting with attention primitives in MLX."""
 
-from proxy_attention_lab.ops import paged_attention
+from proxy_attention_lab.ops import fill_kv_pages, paged_attention
 from proxy_attention_lab.pal_core import get_optimal_tile_size as calculate_page_size
 
-__all__ = ["calculate_page_size", "paged_attention"]
+__all__ = ["calculate_page_size", "fill_kv_pages", "paged_attention"]
