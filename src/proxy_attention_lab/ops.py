@@ -1,4 +1,4 @@
-# Copyright 2024 The Proxy Company. All Rights Reserved.
+# Copyright 2025 The Proxy Company. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@
 
 import mlx.core as mx
 
+from proxy_attention_lab.pal_core import fill_kv_pages as cpp_fill_kv_pages_kernel
 from proxy_attention_lab.pal_core import paged_attention as cpp_paged_attention_kernel
 
 
@@ -71,5 +72,46 @@ def paged_attention(
         query_to_seq_map,
         query_token_offset,
         use_fused_kernel,
+        stream=stream,
+    )
+
+
+def fill_kv_pages(
+    new_keys: mx.array,
+    new_values: mx.array,
+    global_key_pool: mx.array,
+    global_value_pool: mx.array,
+    page_table: mx.array,
+    current_token_positions: mx.array,
+    query_to_seq_map: mx.array,
+    stream: mx.Stream | mx.Device | None = None,
+) -> tuple[mx.array, mx.array]:
+    """Fills the KV cache pages with the new keys and values.
+
+    Args:
+        new_keys: The new keys to fill the KV cache with.
+        new_values: The new values to fill the KV cache with.
+        global_key_pool: The global key pool to fill the KV cache with.
+        global_value_pool: The global value pool to fill the KV cache with.
+        page_table: Page table mapping logical blocks for each sequence
+            to physical page IDs in the k_cache_pool/v_cache_pool.
+            Shape: [NumSequencesInBatch, MaxLogicalBlocksPerSequence]
+        current_token_positions: Logical token index within its sequence where the new K/V should be written
+            Shape: [TotalCurrentTokensInBatch]
+        query_to_seq_map: Maps each query token to its sequence index.
+            Shape: [TotalQueryTokens]
+        stream: Optional stream or device for the operation.
+
+    Returns:
+        tuple[mx.array, mx.array]: The updated global key pool and global value pool.
+    """
+    return cpp_fill_kv_pages_kernel(
+        new_keys,
+        new_values,
+        global_key_pool,
+        global_value_pool,
+        page_table,
+        current_token_positions,
+        query_to_seq_map,
         stream=stream,
     )

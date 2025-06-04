@@ -2,7 +2,7 @@
 // dispatch.hpp
 // Metal dispatch utilities for kernel execution
 //
-// Copyright 2024 The Proxy Company. All Rights Reserved.
+// Copyright 2025 The Proxy Company. All Rights Reserved.
 
 #include <mlx/array.h>
 #include <mlx/backend/metal/device.h>

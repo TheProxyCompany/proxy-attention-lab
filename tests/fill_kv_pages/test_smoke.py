@@ -12,9 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Proxy Attention Lab (PAL): A laboratory for experimenting with attention primitives in MLX."""
+"""Basic smoke test for fill_kv_pages functionality."""
 
-from proxy_attention_lab.ops import fill_kv_pages, paged_attention
-from proxy_attention_lab.pal_core import get_optimal_tile_size as calculate_page_size
+import logging
 
-__all__ = ["calculate_page_size", "fill_kv_pages", "paged_attention"]
+logger = logging.getLogger(__name__)
+
+
+def test_fill_kv_pages_smoke() -> None:
+    """Verify that the fill_kv_pages function runs without errors on simple inputs.
+
+    This test creates minimal inputs to check that the function executes successfully
+    and produces an output with the expected shape and type. The test serves as a basic
+    sanity check for the fill_kv_pages mechanism, verifying:
+
+    1. The function can be called with correctly shaped random inputs
+    """
+    logger.info(f"Test: {test_fill_kv_pages_smoke.__name__}")

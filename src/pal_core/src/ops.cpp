@@ -1,7 +1,7 @@
 // ops.cpp
 // Implementation of PAL core operations for MLX integration.
 //
-// Copyright 2024 The Proxy Company. All Rights Reserved.
+// Copyright 2025 The Proxy Company. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -109,5 +109,52 @@ mx::array paged_attention(
       }
     );
 }
+
+std::tuple<mx::array, mx::array> fill_kv_pages(
+    const mx::array& new_keys,
+    const mx::array& new_values,
+    const mx::array& global_key_pool,
+    const mx::array& global_value_pool,
+    const mx::array& page_table,
+    const mx::array& current_token_positions,
+    const mx::array& query_to_seq_map,
+    mx::StreamOrDevice stream_or_device
+  ) {
+  spdlog::debug("[PAL Ops] pal::cpp::fill_kv_pages C++ operation called.");
+
+  // Ensure Metal library is loaded and registered
+  pal::cpp::MetalLibRegistrar::ensure_pal_metallib_registered(stream_or_device);
+
+  // Extract key parameters from input arrays to pass to the primitive
+  int num_q_heads = 1;  // Default for 1D/2D queries
+  int head_dim = 0;
+  int tokens_per_page = 0;
+  int num_kv_heads = 0;
+
+  // Extract head_dim and tokens_per_page from K cache pool
+  if (global_key_pool.ndim() == 4) {
+    tokens_per_page = global_key_pool.shape(1);
+    num_kv_heads = global_key_pool.shape(2);
+    head_dim = global_key_pool.shape(3);
+  }
+
+  // Create the primitive instance with the extracted parameters
+  auto primitive = std::make_shared<FillKVPagesPrimitive>(
+      stream_or_device,
+      num_q_heads,
+      num_kv_heads,
+      head_dim,
+      tokens_per_page
+    );
+
+  spdlog::debug("[PAL Ops] FillKVPagesPrimitive instance created.");
+
+  std::vector<mx::array> inputs = {
+        new_keys, new_values,
+        global_key_pool, global_value_pool, // These are the arrays to be modified
+        page_table, current_token_positions, query_to_seq_map
+    };
+
+
 
 }  // namespace pal::cpp

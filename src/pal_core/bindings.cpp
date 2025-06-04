@@ -1,7 +1,7 @@
 // bindings.cpp
 // Python bindings for PAL core C++ implementations.
 //
-// Copyright 2024 The Proxy Company. All Rights Reserved.
+// Copyright 2025 The Proxy Company. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -145,6 +145,48 @@ NB_MODULE(pal_core, m) {
 
         Note:
             The output HeadDim is always taken from the KV cache head dimension, regardless of query dimensions.
+      )doc");
+
+  m.def(
+      "fill_kv_pages",
+      [](const mx::array& new_keys,
+         const mx::array& new_values,
+         const mx::array& global_key_pool,
+         const mx::array& global_value_pool,
+         const mx::array& page_table,
+         const mx::array& current_token_positions,
+         const mx::array& query_to_seq_map,
+         std::optional<mx::StreamOrDevice> stream_or_device) {
+          return pal::cpp::fill_kv_pages(
+              new_keys,
+              new_values,
+              global_key_pool,
+              global_value_pool,
+              page_table,
+              current_token_positions,
+              query_to_seq_map,
+              stream_or_device.value_or(mx::StreamOrDevice{})
+          );
+      },
+      "new_keys"_a,
+      "new_values"_a,
+      "global_key_pool"_a,
+      "global_value_pool"_a,
+      "page_table"_a,
+      "current_token_positions"_a,
+      "query_to_seq_map"_a,
+      nb::kw_only(),
+      "stream"_a = nb::none(),
+      nb::sig("def fill_kv_pages(new_keys: mlx.core.array, "
+              "new_values: mlx.core.array, "
+              "global_key_pool: mlx.core.array, "
+              "global_value_pool: mlx.core.array, "
+              "page_table: mlx.core.array, "
+              "current_token_positions: mlx.core.array, "
+              "query_to_seq_map: mlx.core.array, "
+              "*, stream: mlx.core.Stream | mlx.core.Device | None = None) -> tuple[mlx.core.array, mlx.core.array]"),
+      R"doc(
+        Fills the KV cache pages with the new keys and values.
       )doc");
 
   // Version information

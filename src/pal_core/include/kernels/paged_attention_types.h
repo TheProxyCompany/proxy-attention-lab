@@ -1,7 +1,7 @@
 // paged_attention_types.h
 // Defines parameter structures shared between CPU and GPU for paged attention.
 //
-// Copyright 2024 The Proxy Company. All Rights Reserved.
+// Copyright 2025 The Proxy Company. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
