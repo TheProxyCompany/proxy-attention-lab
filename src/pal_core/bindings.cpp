@@ -155,7 +155,7 @@ NB_MODULE(pal_core, m) {
          const mx::array& global_key_pool,
          const mx::array& global_value_pool,
          const mx::array& page_table,
-         const mx::array& current_token_positions,
+         const mx::array& current_token_write_positions,
          const mx::array& query_to_seq_map,
          std::optional<mx::StreamOrDevice> stream_or_device) {
           return pal::cpp::fill_kv_pages(
@@ -164,7 +164,7 @@ NB_MODULE(pal_core, m) {
               global_key_pool,
               global_value_pool,
               page_table,
-              current_token_positions,
+              current_token_write_positions,
               query_to_seq_map,
               stream_or_device.value_or(mx::StreamOrDevice{})
           );
@@ -174,7 +174,7 @@ NB_MODULE(pal_core, m) {
       "global_key_pool"_a,
       "global_value_pool"_a,
       "page_table"_a,
-      "current_token_positions"_a,
+      "current_token_write_positions"_a,
       "query_to_seq_map"_a,
       nb::kw_only(),
       "stream"_a = nb::none(),
@@ -183,7 +183,7 @@ NB_MODULE(pal_core, m) {
               "global_key_pool: mlx.core.array, "
               "global_value_pool: mlx.core.array, "
               "page_table: mlx.core.array, "
-              "current_token_positions: mlx.core.array, "
+              "current_token_write_positions: mlx.core.array, "
               "query_to_seq_map: mlx.core.array, "
               "*, stream: mlx.core.Stream | mlx.core.Device | None = None) -> tuple[mlx.core.array, mlx.core.array]"),
       R"doc(

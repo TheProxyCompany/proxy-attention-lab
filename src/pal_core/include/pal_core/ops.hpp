@@ -71,7 +71,7 @@ mx::array paged_attention(
  * @param page_table Page table mapping logical blocks for each sequence
  *                  to physical page IDs in the k_cache_pool/v_cache_pool.
  *                  Shape: [NumSequencesInBatch, MaxLogicalBlocksPerSequence]
- * @param current_token_positions Logical token index within its sequence where the new K/V should be written
+ * @param current_token_write_positions Logical token index within its sequence where the new K/V should be written
  *                              Shape: [TotalCurrentTokensInBatch]
  * @param query_to_seq_map Maps each query token to its sequence index.
  * @param stream Optional stream or device for the operation.
@@ -83,7 +83,7 @@ std::tuple<mx::array, mx::array> fill_kv_pages(
     const mx::array& global_key_pool,
     const mx::array& global_value_pool,
     const mx::array& page_table,
-    const mx::array& current_token_positions,
+    const mx::array& current_token_write_positions,
     const mx::array& query_to_seq_map,
     mx::StreamOrDevice stream = {}
 );

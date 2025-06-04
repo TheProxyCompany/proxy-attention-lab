@@ -81,9 +81,8 @@ struct alignas(16) FillKVPagesParams {
     uint32_t num_kv_heads;
     uint32_t head_dim;
     uint32_t tokens_per_page;
-    uint32_t num_sequences;
-    uint32_t num_new_tokens;
-    uint32_t num_physical_pages;
+    uint32_t page_table_max_logical_blocks;
+    uint32_t total_new_tokens_to_write;
 };
 #ifndef __METAL_VERSION__ // C++ side
 
@@ -91,7 +90,7 @@ static_assert(std::is_standard_layout_v<FillKVPagesParams>,
               "FillKVPagesParams must be a standard-layout type.");
 static_assert(alignof(FillKVPagesParams) == 16,
               "FillKVPagesParams must have 16-byte alignment.");
-// 6 uint32_t (24 bytes) = 24 data bytes.
+// 5 uint32_t (20 bytes) = 20 data bytes.
 // alignas(16) means total size is 32 bytes (rounded up to multiple of 16).
 static_assert(sizeof(FillKVPagesParams) == 32, "C++ sizeof(FillKVPagesParams) expected to be 32 bytes.");
 

@@ -72,7 +72,7 @@ void FillKVPagesPrimitive::eval_gpu(const std::vector<mx::array>& inputs, std::v
     if (inputs.size() < 7) {
         throw std::invalid_argument(
             "[FillKVPagesPrimitive] Expected 7 inputs: new_keys, new_values, global_k_pool, "
-            "global_v_pool, page_table, current_token_positions, query_to_seq_map");
+            "global_v_pool, page_table, current_token_write_positions, query_to_seq_map");
     }
 
     // Extract input arrays
@@ -81,7 +81,7 @@ void FillKVPagesPrimitive::eval_gpu(const std::vector<mx::array>& inputs, std::v
     const auto& global_k_pool = inputs[2];          // [num_pages, tokens_per_page, num_kv_heads, head_dim]
     const auto& global_v_pool = inputs[3];          // [num_pages, tokens_per_page, num_kv_heads, head_dim]
     const auto& page_table = inputs[4];             // [num_sequences, max_logical_blocks]
-    const auto& current_token_positions = inputs[5]; // [num_sequences]
+    const auto& current_token_write_positions = inputs[5]; // [num_sequences]
     const auto& query_to_seq_map = inputs[6];       // [num_new_tokens]
 
     // Get stream and device
@@ -91,17 +91,21 @@ void FillKVPagesPrimitive::eval_gpu(const std::vector<mx::array>& inputs, std::v
     // Ensure PAL Metal library is registered
     MetalLibRegistrar::ensure_pal_metallib_registered(s);
 
-    // Setup parameters
+    // Populate FillKVPagesParams struct
     FillKVPagesParams params;
-    params.num_kv_heads = num_kv_heads_;
-    params.head_dim = head_dim_;
-    params.tokens_per_page = tokens_per_page_;
-    params.num_sequences = page_table.shape(0);
-    params.num_new_tokens = new_keys.shape(0);
-    params.num_physical_pages = global_k_pool.shape(0);
+    params.num_kv_heads = num_kv_heads_; // From primitive member
+    params.head_dim = head_dim_;         // From primitive member
+    params.tokens_per_page = tokens_per_page_; // From primitive member
+    params.total_new_tokens_to_write = new_keys.shape(0);
 
-    spdlog::debug("[FillKVPagesPrimitive] Params: num_sequences={}, num_new_tokens={}, num_physical_pages={}",
-                  params.num_sequences, params.num_new_tokens, params.num_physical_pages);
+    if (page_table.ndim() < 2) {
+        throw std::invalid_argument("[FillKVPagesPrimitive] page_table must be at least 2D.");
+    }
+    params.page_table_max_logical_blocks = page_table.shape(1);
+
+    spdlog::debug("[FillKVPagesPrimitive] Kernel Params: kv_heads={}, head_dim={}, tokens_per_page={}, total_new_tokens={}, pt_max_logical_blocks={}",
+                  params.num_kv_heads, params.head_dim, params.tokens_per_page,
+                  params.total_new_tokens_to_write, params.page_table_max_logical_blocks);
 
     // Get Metal kernel
     const std::string library_name = "pal";
@@ -110,13 +114,6 @@ void FillKVPagesPrimitive::eval_gpu(const std::vector<mx::array>& inputs, std::v
     if (!kernel_state) {
         throw std::runtime_error("[FillKVPagesPrimitive] Failed to load kernel: " + kernel_name);
     }
-
-    // Calculate dispatch grid
-    // Each thread processes one new token
-    metal::DispatchGrid grid;
-    grid.width = params.num_new_tokens;
-    grid.height = 1;
-    grid.depth = 1;
 
     // Setup compute encoder
     auto& compute_encoder = d.get_command_encoder(s.index);
@@ -128,7 +125,7 @@ void FillKVPagesPrimitive::eval_gpu(const std::vector<mx::array>& inputs, std::v
     compute_encoder.set_input_array(global_k_pool, 2);
     compute_encoder.set_input_array(global_v_pool, 3);
     compute_encoder.set_input_array(page_table, 4);
-    compute_encoder.set_input_array(current_token_positions, 5);
+    compute_encoder.set_input_array(current_token_write_positions, 5);
     compute_encoder.set_input_array(query_to_seq_map, 6);
     compute_encoder.set_bytes(&params, sizeof(FillKVPagesParams), 7);
 
@@ -136,12 +133,21 @@ void FillKVPagesPrimitive::eval_gpu(const std::vector<mx::array>& inputs, std::v
     // compute_encoder.set_output_array(global_k_pool, 8);
     // compute_encoder.set_output_array(global_v_pool, 9);
 
+    // Calculate dispatch grid
+    // Each thread processes one new token
+    metal::DispatchGrid grid;
+    grid.width = params.total_new_tokens_to_write;
+    grid.height = 1;
+    grid.depth = 1;
+
+    size_t threads_per_group = kernel_state->threadExecutionWidth() * SIMD_GROUPS_PER_THREADGROUP;
+
     // Dispatch kernel
     metal::MetalDispatcher::dispatch_kernel(
         compute_encoder,
         grid,
-        1024,   // threads_per_group
-        0       // threadgroup_memory_bytes
+        threads_per_group,   // threads_per_group
+        0                   // threadgroup_memory_bytes
     );
 
     // Return the modified global pools
@@ -163,7 +169,7 @@ std::vector<mx::Shape> FillKVPagesPrimitive::output_shapes(const std::vector<mx:
     if (inputs.size() < 7) {
         throw std::invalid_argument(
             "[FillKVPagesPrimitive] output_shapes: Expected 7 inputs (new_keys, new_values, "
-            "global_k_pool, global_v_pool, page_table, current_token_positions, query_to_seq_map)");
+            "global_k_pool, global_v_pool, page_table, current_token_write_positions, query_to_seq_map)");
     }
 
     // Validate global pool dimensions

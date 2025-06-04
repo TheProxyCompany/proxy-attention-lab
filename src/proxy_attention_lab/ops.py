@@ -82,7 +82,7 @@ def fill_kv_pages(
     global_key_pool: mx.array,
     global_value_pool: mx.array,
     page_table: mx.array,
-    current_token_positions: mx.array,
+    current_token_write_positions: mx.array,
     query_to_seq_map: mx.array,
     stream: mx.Stream | mx.Device | None = None,
 ) -> tuple[mx.array, mx.array]:
@@ -96,7 +96,7 @@ def fill_kv_pages(
         page_table: Page table mapping logical blocks for each sequence
             to physical page IDs in the k_cache_pool/v_cache_pool.
             Shape: [NumSequencesInBatch, MaxLogicalBlocksPerSequence]
-        current_token_positions: Logical token index within its sequence where the new K/V should be written
+        current_token_write_positions: Logical token index within its sequence where the new K/V should be written
             Shape: [TotalCurrentTokensInBatch]
         query_to_seq_map: Maps each query token to its sequence index.
             Shape: [TotalQueryTokens]
@@ -111,7 +111,7 @@ def fill_kv_pages(
         global_key_pool,
         global_value_pool,
         page_table,
-        current_token_positions,
+        current_token_write_positions,
         query_to_seq_map,
         stream=stream,
     )

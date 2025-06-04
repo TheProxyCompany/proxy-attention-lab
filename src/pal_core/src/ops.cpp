@@ -118,7 +118,7 @@ std::tuple<mx::array, mx::array> fill_kv_pages(
     const mx::array& global_key_pool,
     const mx::array& global_value_pool,
     const mx::array& page_table,
-    const mx::array& current_token_positions,
+    const mx::array& current_token_write_positions,
     const mx::array& query_to_seq_map,
     mx::StreamOrDevice stream_or_device
   ) {
@@ -127,17 +127,14 @@ std::tuple<mx::array, mx::array> fill_kv_pages(
   // Ensure Metal library is loaded and registered
   pal::cpp::MetalLibRegistrar::ensure_pal_metallib_registered(stream_or_device);
 
-  // Extract key parameters from input arrays to pass to the primitive
-  int head_dim = 0;
-  int tokens_per_page = 0;
-  int num_kv_heads = 0;
-
-  // Extract head_dim and tokens_per_page from K cache pool
-  if (global_key_pool.ndim() == 4) {
-    tokens_per_page = global_key_pool.shape(1);
-    num_kv_heads = global_key_pool.shape(2);
-    head_dim = global_key_pool.shape(3);
+  if (global_key_pool.ndim() != 4 || global_value_pool.ndim() != 4) {
+      throw std::invalid_argument("[fill_kv_pages] global_key_pool and global_value_pool must be 4D.");
   }
+
+  // Extract key parameters from input arrays to pass to the primitive
+  int tokens_per_page = global_key_pool.shape(1);
+  int num_kv_heads = global_key_pool.shape(2);
+  int head_dim = global_key_pool.shape(3);
 
   // Create the primitive instance with the extracted parameters
   auto primitive = std::make_shared<FillKVPagesPrimitive>(
@@ -146,20 +143,18 @@ std::tuple<mx::array, mx::array> fill_kv_pages(
     head_dim,
     tokens_per_page
   );
-
   spdlog::debug("[PAL Ops] FillKVPagesPrimitive instance created.");
 
-  std::vector<mx::Shape> result_shapes = {global_key_pool.shape(), global_value_pool.shape()};
+  auto primitive_inputs = {
+    new_keys, new_values,
+    global_key_pool, global_value_pool, // These are the arrays to be modified
+    page_table, current_token_write_positions, query_to_seq_map
+  };
+
+  std::vector<mx::Shape> result_shapes = primitive->output_shapes(primitive_inputs);
   std::vector<mx::Dtype> result_dtypes = {global_key_pool.dtype(), global_value_pool.dtype()};
 
-  auto outputs = mx::array::make_arrays(
-      result_shapes, result_dtypes, primitive,
-      {
-        new_keys, new_values,
-        global_key_pool, global_value_pool, // These are the arrays to be modified
-        page_table, current_token_positions, query_to_seq_map
-      }
-    );
+  auto outputs = mx::array::make_arrays(result_shapes, result_dtypes, primitive, primitive_inputs);
 
   return std::make_tuple(outputs[0], outputs[1]);
 }

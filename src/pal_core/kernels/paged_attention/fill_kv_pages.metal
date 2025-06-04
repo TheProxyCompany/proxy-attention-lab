@@ -23,20 +23,18 @@ using namespace metal;
 
 /**
  * fill_kv_pages_kernel
- * Scatters new key and value vectors into their designated positions within
- * global, paged KV cache pools. Each thread processes one new token.
  */
 [[kernel]] void fill_kv_pages_kernel(
-    device const half* new_keys [[buffer(0)]],
-    device const half* new_values [[buffer(1)]],
-    device half* global_k_pool [[buffer(2)]],
-    device half* global_v_pool [[buffer(3)]],
-    device const uint* page_table [[buffer(4)]],
-    device const int* current_token_positions [[buffer(5)]],
-    device const uint* query_to_seq_map [[buffer(6)]],
-    constant const FillKVPagesParams& params [[buffer(7)]],
-    uint tid [[thread_position_in_grid]])
-{
+    device const half* new_keys,                            // [[buffer(0)]]
+    device const half* new_values,                          // [[buffer(1)]]
+    device half* global_k_pool,                             // [[buffer(2)]]
+    device half* global_v_pool,                             // [[buffer(3)]]
+    device const uint* page_table_data,                     // [[buffer(4)]]
+    device const int* current_token_write_positions,        // [[buffer(5)]]
+    device const uint* query_to_seq_map_data,               // [[buffer(6)]]
+    constant const FillKVPagesParams& params,               // [[buffer(7)]]
+    uint tid [[thread_position_in_grid]]
+) {
     // Thread tid processes the tid-th new token (0 to params.num_new_tokens - 1)
 
     // Boundary check
@@ -44,7 +42,7 @@ using namespace metal;
 
     // Step 1: Retrieve metadata for the current token (tid)
     // Get sequence_index_in_batch = query_to_seq_map[tid];
-    // Get logical_token_pos_in_sequence = current_token_positions[tid];
+    // Get logical_token_pos_in_sequence = current_token_write_positions[tid];
 
     // Step 2: Calculate target page and slot
     // uint logical_block_idx = logical_token_pos_in_sequence / params.tokens_per_page;
