@@ -190,6 +190,8 @@ file(
     GLOB_RECURSE METAL_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/kernels/*/*.metal"
 )
+
+set(PAL_METALLIB_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}" CACHE PATH "Output directory for pal.metallib")
 message(STATUS "Configuring Metal library build for PAL with sources: ${METAL_SOURCES}")
 mlx_build_metallib(
     TARGET ${METALLIB_TARGET}
@@ -199,12 +201,12 @@ mlx_build_metallib(
         ${CMAKE_CURRENT_SOURCE_DIR}/include/kernels
         ${PAL_METAL_CPP_INCLUDE_DIR}/
         ${MLX_INCLUDE_DIRS}
-    OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+    OUTPUT_DIRECTORY ${PAL_METALLIB_OUTPUT_DIRECTORY}
     OUTPUT_FILENAME ${PAL_METALLIB_FILENAME}
     # DEBUG ON
 )
 
-set(PAL_METALLIB_PATH ${CMAKE_BINARY_DIR}/${PAL_METALLIB_FILENAME} CACHE INTERNAL "Path to built pal.metallib")
+set(PAL_METALLIB_PATH ${PAL_METALLIB_OUTPUT_DIRECTORY}/${PAL_METALLIB_FILENAME} CACHE INTERNAL "Path to built pal.metallib")
 message(STATUS "PAL Core: pal.metallib built at ${PAL_METALLIB_PATH}")
 
 add_dependencies(${CORE_LIB_NAME} ${METALLIB_TARGET})
