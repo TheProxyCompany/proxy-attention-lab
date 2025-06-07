@@ -32,19 +32,20 @@ logger = logging.getLogger(__name__)
 tokens_per_page = 64
 
 
+@pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16])
 @pytest.mark.parametrize(
-    "batch_size, history_len, num_heads, head_dim, dtype",
+    "batch_size, history_len, num_heads, head_dim",
     [
-        (1, 16, (1, 1), 32, mx.float16),  # Basic case
-        (1, 32, (1, 1), 32, mx.float16),  # Longer history
-        (1, 16, (4, 1), 32, mx.float16),  # MQA (num_q_heads > num_kv_heads)
-        (1, 16, (4, 2), 32, mx.float16),  # GQA (num_q_heads > num_kv_heads, num_kv_heads > 1)
-        (1, 16, (1, 1), 64, mx.float16),  # Different head dimension
-        (1, 64, (2, 2), 32, mx.float16),  # num q = num kv heads
-        (1, 64, (4, 2), 128, mx.float16),  # 128 head dim
-        (1, 1024, (32, 16), 128, mx.float16),  # Gemma 3 27b
-        (2, 32, (4, 4), 32, mx.float16),  # Batched Example
-        (2, 2048, (32, 16), 128, mx.float16),  # Batch of 2, Gemma 3 27b
+        (1, 16, (1, 1), 32),  # Basic case
+        (1, 32, (1, 1), 32),  # Longer history
+        (1, 16, (4, 1), 32),  # MQA (num_q_heads > num_kv_heads)
+        (1, 16, (4, 2), 32),  # GQA (num_q_heads > num_kv_heads, num_kv_heads > 1)
+        (1, 16, (1, 1), 64),  # Different head dimension
+        (1, 64, (2, 2), 32),  # num q = num kv heads
+        (1, 64, (4, 2), 128),  # 128 head dim
+        (1, 1024, (32, 16), 128),  # Gemma 3 27b
+        (2, 32, (4, 4), 32),  # Batched Example
+        (2, 2048, (32, 16), 128),  # Batch of 2, Gemma 3 27b
     ],
 )
 def test_pal_decode_vs_sdpa_equivalency(batch_size, history_len, num_heads, head_dim, dtype):
@@ -235,7 +236,7 @@ def test_pal_decode_vs_sdpa_equivalency(batch_size, history_len, num_heads, head
     mean_diff = mx.mean(diff).item()
     logger.info(f"    Difference metrics - Max: {max_diff:.6f}, Mean: {mean_diff:.6f}")
 
-    # For FP16, we allow slightly larger differences due to numerical precision & different implementation
+    # For FP16/BF16, we allow slightly larger differences due to numerical precision & different implementation
     current_atol = 1e-2
     current_rtol = 1e-4
     logger.info(f"    Tolerance values - Absolute: {current_atol}, Relative: {current_rtol}")

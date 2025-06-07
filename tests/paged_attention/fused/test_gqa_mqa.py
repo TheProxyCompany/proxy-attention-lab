@@ -22,13 +22,15 @@ configurations, where the number of query heads can differ from the number of ke
 import logging
 
 import mlx.core as mx
+import pytest
 
 from proxy_attention_lab import paged_attention
 
 logger = logging.getLogger(__name__)
 
 
-def test_fetch_k_vector_from_multiple_kv_heads() -> None:
+@pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16])
+def test_fetch_k_vector_from_multiple_kv_heads(dtype) -> None:
     """Test GQA with multiple Q heads mapping to KV heads.
 
     This test verifies that in Grouped Query Attention (GQA) mode, multiple query heads
@@ -40,12 +42,12 @@ def test_fetch_k_vector_from_multiple_kv_heads() -> None:
     cfg_num_kv_heads = 2
     cfg_head_dim = 4
     cfg_max_logical_blocks_per_seq_in_pagetable = 2
-    py_queries = mx.zeros((num_tokens, num_q_heads, cfg_head_dim), dtype=mx.float16)
+    py_queries = mx.zeros((num_tokens, num_q_heads, cfg_head_dim), dtype=dtype)
     py_queries[0, 0, :] = 100.0
     py_queries[0, 1, :] = 200.0
     num_physical_pages = 1
     k_cache_shape = (num_physical_pages, cfg_tokens_per_page, cfg_num_kv_heads, cfg_head_dim)
-    py_k_cache_pool = mx.zeros(k_cache_shape, dtype=mx.float16)
+    py_k_cache_pool = mx.zeros(k_cache_shape, dtype=dtype)
     token_slot = 5
     for i in range(cfg_head_dim):
         py_k_cache_pool[0, token_slot, 0, i] = float(i + 1)
@@ -54,9 +56,9 @@ def test_fetch_k_vector_from_multiple_kv_heads() -> None:
 
     # Set up V-cache pool with distinct values for each K-vector position
     # Values for KV head 0 (used by Q head 0)
-    py_v_cache_pool[0, token_slot, 0, :] = mx.array([10.0, 11.0, 12.0, 13.0], dtype=mx.float16)
+    py_v_cache_pool[0, token_slot, 0, :] = mx.array([10.0, 11.0, 12.0, 13.0], dtype=dtype)
     # Values for KV head 1 (used by Q head 1)
-    py_v_cache_pool[0, token_slot, 1, :] = mx.array([20.0, 21.0, 22.0, 23.0], dtype=mx.float16)
+    py_v_cache_pool[0, token_slot, 1, :] = mx.array([20.0, 21.0, 22.0, 23.0], dtype=dtype)
 
     py_page_table = mx.array(
         [
@@ -107,15 +109,15 @@ def test_fetch_k_vector_from_multiple_kv_heads() -> None:
     # Therefore V-output for each query head is exactly the corresponding V-vector
 
     # For Q head 0 -> KV head 0: V-vector should be [10, 11, 12, 13]
-    expected_v_head0 = mx.array([10.0, 11.0, 12.0, 13.0], dtype=mx.float16)
+    expected_v_head0 = mx.array([10.0, 11.0, 12.0, 13.0], dtype=dtype)
 
     # For Q head 1 -> KV head 1: V-vector should be [20, 21, 22, 23]
-    expected_v_head1 = mx.array([20.0, 21.0, 22.0, 23.0], dtype=mx.float16)
+    expected_v_head1 = mx.array([20.0, 21.0, 22.0, 23.0], dtype=dtype)
 
     # Combine into expected V-output array
     expected_v_output = mx.stack([expected_v_head0, expected_v_head1])
 
-    logger.info(f"Test: {test_fetch_k_vector_from_multiple_kv_heads.__name__}")
+    logger.info(f"Test: {test_fetch_k_vector_from_multiple_kv_heads.__name__} (dtype={dtype})")
     logger.info(f"  GQA configuration: num_q_heads={num_q_heads}, num_kv_heads={cfg_num_kv_heads}")
     logger.info(f"  Expected V output: {expected_v_output}")
     logger.info(f"  Actual V output: {output_arr}")
@@ -124,14 +126,15 @@ def test_fetch_k_vector_from_multiple_kv_heads() -> None:
     assert output_arr.shape == expected_output_shape, (
         f"Output shape {output_arr.shape} does not match expected {expected_output_shape}"
     )
-    assert output_arr.dtype == mx.float16, f"Output dtype {output_arr.dtype} does not match float16"
+    assert output_arr.dtype == dtype, f"Output dtype {output_arr.dtype} does not match {dtype}"
     # Check V output vectors
     assert mx.allclose(output_arr, expected_v_output, atol=1e-2, rtol=1e-2), (
         "V output vectors do not match expected values for GQA mapping"
     )
 
 
-def test_mqa_kv_head_selection() -> None:
+@pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16])
+def test_mqa_kv_head_selection(dtype) -> None:
     """Test Multi-Query Attention (MQA) KV head selection.
 
     This test verifies that the kernel correctly maps query heads to KV heads
@@ -149,26 +152,26 @@ def test_mqa_kv_head_selection() -> None:
     cfg_head_dim = 4
 
     # Create 3D queries with shape [num_tokens, num_q_heads, cfg_head_dim]
-    py_queries = mx.zeros((num_tokens, num_q_heads, cfg_head_dim), dtype=mx.float16)
+    py_queries = mx.zeros((num_tokens, num_q_heads, cfg_head_dim), dtype=dtype)
     # Q-vector for the single query head
-    py_queries[0, 0, :] = mx.array([1.0, 2.0, 3.0, 4.0], dtype=mx.float16)
+    py_queries[0, 0, :] = mx.array([1.0, 2.0, 3.0, 4.0], dtype=dtype)
 
     # Create K-cache pool with different K-vectors in each KV head
     num_physical_pages = 1
     k_cache_shape = (num_physical_pages, cfg_tokens_per_page, cfg_num_kv_heads, cfg_head_dim)
-    py_k_cache_pool = mx.zeros(k_cache_shape, dtype=mx.float16)
+    py_k_cache_pool = mx.zeros(k_cache_shape, dtype=dtype)
 
     # K-vector for KV head 0 - this is the one that should be used
-    py_k_cache_pool[0, 0, 0, :] = mx.array([1.0, 1.0, 1.0, 1.0], dtype=mx.float16)
+    py_k_cache_pool[0, 0, 0, :] = mx.array([1.0, 1.0, 1.0, 1.0], dtype=dtype)
     # K-vector for KV head 1 - should NOT be used by the single query head
-    py_k_cache_pool[0, 0, 1, :] = mx.array([2.0, 2.0, 2.0, 2.0], dtype=mx.float16)
+    py_k_cache_pool[0, 0, 1, :] = mx.array([2.0, 2.0, 2.0, 2.0], dtype=dtype)
 
     py_v_cache_pool = mx.zeros_like(py_k_cache_pool)
     # Set up V-cache pool with distinct values for each KV head
     # For KV head 0 (which will be used in MQA)
-    py_v_cache_pool[0, 0, 0, :] = mx.array([10.0, 20.0, 30.0, 40.0], dtype=mx.float16)
+    py_v_cache_pool[0, 0, 0, :] = mx.array([10.0, 20.0, 30.0, 40.0], dtype=dtype)
     # For KV head 1 (which would be incorrect to use)
-    py_v_cache_pool[0, 0, 1, :] = mx.array([50.0, 60.0, 70.0, 80.0], dtype=mx.float16)
+    py_v_cache_pool[0, 0, 1, :] = mx.array([50.0, 60.0, 70.0, 80.0], dtype=dtype)
 
     py_page_table = mx.array([[0]], dtype=mx.uint32)  # Logical block 0 -> Physical page 0
     py_sequence_lengths = mx.array([cfg_tokens_per_page], dtype=mx.int32)
@@ -214,7 +217,7 @@ def test_mqa_kv_head_selection() -> None:
     # Incorrect V output would be using KV head 1's V vector
     incorrect_v_output = py_v_cache_pool[0, 0, 1, :].reshape(1, cfg_head_dim)
 
-    logger.info(f"Test: {test_mqa_kv_head_selection.__name__}")
+    logger.info(f"Test: {test_mqa_kv_head_selection.__name__} (dtype={dtype})")
     logger.info(f"  MQA configuration: num_q_heads={num_q_heads}, num_kv_heads={cfg_num_kv_heads}")
     logger.info(f"  Q = {py_queries[0, 0, :]}, K (KV head 0) = {py_k_cache_pool[0, 0, 0, :]}")
     logger.info(f"  Correct V (KV head 0) = {py_v_cache_pool[0, 0, 0, :]}")
@@ -225,7 +228,7 @@ def test_mqa_kv_head_selection() -> None:
     assert output_arr.shape == expected_output_shape, (
         f"Output shape {output_arr.shape} does not match expected {expected_output_shape}"
     )
-    assert output_arr.dtype == mx.float16, f"Output dtype {output_arr.dtype} does not match float16"
+    assert output_arr.dtype == dtype, f"Output dtype {output_arr.dtype} does not match {dtype}"
     # Verify that the kernel is correctly using KV head 0 for the query by checking the V output
     assert mx.allclose(output_arr, expected_v_output, atol=1e-2, rtol=1e-2), (
         "MQA is not correctly using KV head 0 for the query"
@@ -236,7 +239,8 @@ def test_mqa_kv_head_selection() -> None:
     )
 
 
-def test_mqa_multi_token_kv_head_selection_2d_query() -> None:
+@pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16])
+def test_mqa_multi_token_kv_head_selection_2d_query(dtype) -> None:
     """Test MQA with multi-token KV head selection using 2D queries.
 
     This test verifies consistent KV head selection behavior with 2D queries
@@ -251,17 +255,17 @@ def test_mqa_multi_token_kv_head_selection_2d_query() -> None:
 
     # Create 2D queries with shape [num_tokens, cfg_head_dim]
     # For 2D queries, the C++ primitive sets params->num_q_heads = 1 internally
-    py_queries = mx.array([[1.0] * cfg_head_dim] * num_tokens, dtype=mx.float16)
+    py_queries = mx.array([[1.0] * cfg_head_dim] * num_tokens, dtype=dtype)
 
     # Create K-cache pool with zeros (not used by debug kernel)
     num_physical_pages = 1
     k_cache_shape = (num_physical_pages, cfg_tokens_per_page, cfg_num_kv_heads, cfg_head_dim)
-    py_k_cache_pool = mx.zeros(k_cache_shape, dtype=mx.float16)
+    py_k_cache_pool = mx.zeros(k_cache_shape, dtype=dtype)
     py_v_cache_pool = mx.zeros_like(py_k_cache_pool)
 
     # Add V-cache with distinct values for each token position
     # All queries use KV-head 0 in MQA mode when queries are 2D
-    py_v_cache_pool[0, 0, 0, :] = mx.array([10.0, 20.0, 30.0, 40.0], dtype=mx.float16)
+    py_v_cache_pool[0, 0, 0, :] = mx.array([10.0, 20.0, 30.0, 40.0], dtype=dtype)
 
     py_page_table = mx.array([[0]], dtype=mx.uint32)  # Simple page table
     py_sequence_lengths = mx.array([cfg_tokens_per_page], dtype=mx.int32)  # Plenty of tokens in the sequence
@@ -300,10 +304,10 @@ def test_mqa_multi_token_kv_head_selection_2d_query() -> None:
     # Since we only have one history token per query item, softmax prob is 1.0
     # So the output should be exactly the V-vector from KV head 0
     # Create a stack of the same V-vector for each token
-    single_v = mx.array([10.0, 20.0, 30.0, 40.0], dtype=mx.float16)
+    single_v = mx.array([10.0, 20.0, 30.0, 40.0], dtype=dtype)
     expected_v_output = mx.stack([single_v] * num_tokens)
 
-    logger.info(f"Test: {test_mqa_multi_token_kv_head_selection_2d_query.__name__}")
+    logger.info(f"Test: {test_mqa_multi_token_kv_head_selection_2d_query.__name__} (dtype={dtype})")
     logger.info(f"  MQA configuration: 2D queries, num_kv_heads={cfg_num_kv_heads}")
     logger.info(f"  Number of tokens: {num_tokens}")
     logger.info(f"  Expected V output: {expected_v_output[0]} (repeated for each token)")
@@ -313,7 +317,7 @@ def test_mqa_multi_token_kv_head_selection_2d_query() -> None:
     assert output_arr.shape == expected_output_shape, (
         f"Output shape {output_arr.shape} does not match expected {expected_output_shape}"
     )
-    assert output_arr.dtype == mx.float16, f"Output dtype {output_arr.dtype} does not match float16"
+    assert output_arr.dtype == dtype, f"Output dtype {output_arr.dtype} does not match {dtype}"
     # Check values match expected V-vector from correct KV head
     assert mx.allclose(output_arr, expected_v_output, atol=1e-2, rtol=1e-2), (
         "MQA with 2D queries is not correctly selecting KV head 0"

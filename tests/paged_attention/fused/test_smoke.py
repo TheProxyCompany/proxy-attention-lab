@@ -17,13 +17,15 @@
 import logging
 
 import mlx.core as mx
+import pytest
 
 from proxy_attention_lab import paged_attention
 
 logger = logging.getLogger(__name__)
 
 
-def test_paged_attention_smoke() -> None:
+@pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16])
+def test_paged_attention_smoke(dtype) -> None:
     """Verify that the paged_attention function runs without errors on simple inputs.
 
     This test creates minimal inputs to check that the function executes successfully
@@ -35,7 +37,7 @@ def test_paged_attention_smoke() -> None:
     3. The output has the expected dimensions based on input parameters
     4. The output contains valid numerical values (no NaN or Inf)
     """
-    logger.info(f"Test: {test_paged_attention_smoke.__name__}")
+    logger.info(f"Test: {test_paged_attention_smoke.__name__} (dtype={dtype})")
 
     # Query tensor parameters
     num_queries = 4
@@ -55,11 +57,12 @@ def test_paged_attention_smoke() -> None:
     logger.info(f"    Queries: {num_queries} queries, {num_q_heads} heads, {head_dim} dimensions")
     logger.info(f"    KV cache: {num_total_pages} pages, {tokens_per_page} tokens per page, {num_kv_heads} KV heads")
     logger.info(f"    Batch: {num_sequences_in_batch} sequences, {max_logical_blocks_per_seq_val} blocks per sequence")
+    logger.info(f"    Dtype: {dtype}")
 
     # Create test inputs with random values
-    mock_queries = mx.random.normal((num_queries, num_q_heads, head_dim)).astype(mx.float16)
-    mock_k_cache_pool = mx.random.normal((num_total_pages, tokens_per_page, num_kv_heads, head_dim)).astype(mx.float16)
-    mock_v_cache_pool = mx.random.normal((num_total_pages, tokens_per_page, num_kv_heads, head_dim)).astype(mx.float16)
+    mock_queries = mx.random.normal((num_queries, num_q_heads, head_dim)).astype(dtype)
+    mock_k_cache_pool = mx.random.normal((num_total_pages, tokens_per_page, num_kv_heads, head_dim)).astype(dtype)
+    mock_v_cache_pool = mx.random.normal((num_total_pages, tokens_per_page, num_kv_heads, head_dim)).astype(dtype)
 
     # Create page table: maps logical blocks to physical pages
     # Shape: [num_sequences_in_batch, max_logical_blocks_per_seq_val]

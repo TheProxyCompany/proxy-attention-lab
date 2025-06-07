@@ -130,7 +130,8 @@ void PagedAttentionPrimitive::_eval_gpu_fused(
 ) {
     // Prepare Metal kernel and command encoder
     const std::string library_name = "pal";
-    const std::string kernel_name = "paged_attn_fused_kernel";
+    const std::string dtype_suffix = mx::type_to_name(inputs[0].dtype());
+    const std::string kernel_name = "paged_attn_fused_kernel_" + dtype_suffix;
     auto kernel_state = device.get_kernel(kernel_name, library_name);
     if (!kernel_state) {
         throw std::runtime_error("[PAL Primitive] Failed to load kernel: " + kernel_name);

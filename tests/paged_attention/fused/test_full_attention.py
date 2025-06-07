@@ -21,14 +21,16 @@ including matrix multiplication, softmax, and value aggregation.
 import logging
 
 import mlx.core as mx
+import pytest
 
 from proxy_attention_lab import paged_attention
 
 logger = logging.getLogger(__name__)
 
 
-def test_full_attention_in_one_block() -> None:
-    """Test full attention computation in a single block.
+@pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16])
+def test_full_attention_in_one_block(dtype) -> None:
+    """Test full attention computation in a single block for both float16 and bfloat16.
 
     Tests the full attention computation (max score, softmax, and V-aggregation)
     for a single item with multiple history tokens.
@@ -43,7 +45,7 @@ def test_full_attention_in_one_block() -> None:
 
     All token positions in this test are within the same logical block 0.
     """
-    logger.info(f"Test: {test_full_attention_in_one_block.__name__}")
+    logger.info(f"Test: {test_full_attention_in_one_block.__name__} (dtype={dtype})")
 
     # --- Configuration ---
     num_q_threads = 1  # Just one query thread for this test
@@ -60,20 +62,20 @@ def test_full_attention_in_one_block() -> None:
 
     # --- Setup test inputs ---
     # 1. Q-vector: Shape [num_q_threads, cfg_head_dim]
-    py_queries = mx.array([[1.0, 2.0, 3.0, 4.0]], dtype=mx.float16)
+    py_queries = mx.array([[1.0, 2.0, 3.0, 4.0]], dtype=dtype)
 
     # 2. K-Cache Pool: [NumPhysPages, TokensPerPage, NumKVHeads, HeadDim]
     num_physical_pages = 1
     k_cache_shape = (num_physical_pages, cfg_tokens_per_page, cfg_num_kv_heads, cfg_head_dim)
-    py_k_cache_pool = mx.zeros(k_cache_shape, dtype=mx.float16)
+    py_k_cache_pool = mx.zeros(k_cache_shape, dtype=dtype)
 
     # Historical K-vectors with different values to produce different scores
     # K-vector at position 0
-    py_k_cache_pool[0, 0, 0, :] = mx.array([1.0, 1.0, 1.0, 1.0], dtype=mx.float16)
+    py_k_cache_pool[0, 0, 0, :] = mx.array([1.0, 1.0, 1.0, 1.0], dtype=dtype)
     # K-vector at position 1
-    py_k_cache_pool[0, 1, 0, :] = mx.array([2.0, 2.0, 2.0, 2.0], dtype=mx.float16)
+    py_k_cache_pool[0, 1, 0, :] = mx.array([2.0, 2.0, 2.0, 2.0], dtype=dtype)
     # K-vector at position 2
-    py_k_cache_pool[0, 2, 0, :] = mx.array([0.5, 0.5, 0.5, 0.5], dtype=mx.float16)
+    py_k_cache_pool[0, 2, 0, :] = mx.array([0.5, 0.5, 0.5, 0.5], dtype=dtype)
 
     logger.info("  KV Cache Setup:")
     logger.info(f"    K at position 0: {py_k_cache_pool[0, 0, 0, :]}")
@@ -81,10 +83,10 @@ def test_full_attention_in_one_block() -> None:
     logger.info(f"    K at position 2: {py_k_cache_pool[0, 2, 0, :]}")
 
     # 3. V-Cache Pool with distinct values for each position
-    py_v_cache_pool = mx.zeros(k_cache_shape, dtype=mx.float16)
-    py_v_cache_pool[0, 0, 0, :] = mx.array([10.0, 11.0, 12.0, 13.0], dtype=mx.float16)  # Position 0
-    py_v_cache_pool[0, 1, 0, :] = mx.array([20.0, 21.0, 22.0, 23.0], dtype=mx.float16)  # Position 1
-    py_v_cache_pool[0, 2, 0, :] = mx.array([30.0, 31.0, 32.0, 33.0], dtype=mx.float16)  # Position 2
+    py_v_cache_pool = mx.zeros(k_cache_shape, dtype=dtype)
+    py_v_cache_pool[0, 0, 0, :] = mx.array([10.0, 11.0, 12.0, 13.0], dtype=dtype)  # Position 0
+    py_v_cache_pool[0, 1, 0, :] = mx.array([20.0, 21.0, 22.0, 23.0], dtype=dtype)  # Position 1
+    py_v_cache_pool[0, 2, 0, :] = mx.array([30.0, 31.0, 32.0, 33.0], dtype=dtype)  # Position 2
 
     # 4. Page Table: Maps logical block 0 to physical page 0
     py_page_table = mx.array([[0]], dtype=mx.uint32)  # Shape (1, 1)
@@ -124,10 +126,14 @@ def test_full_attention_in_one_block() -> None:
     py_scale = 1.0 / mx.sqrt(mx.array(float(cfg_head_dim))).item()
 
     # Calculate scores for each history position
-    score0 = (1.0 * 1.0 + 2.0 * 1.0 + 3.0 * 1.0 + 4.0 * 1.0) * py_scale  # = 10 * 0.5 = 5.0
-    score1 = (1.0 * 2.0 + 2.0 * 2.0 + 3.0 * 2.0 + 4.0 * 2.0) * py_scale  # = 20 * 0.5 = 10.0
-    score2 = (1.0 * 0.5 + 2.0 * 0.5 + 3.0 * 0.5 + 4.0 * 0.5) * py_scale  # = 5 * 0.5 = 2.5
-
+    # Use float32 for reference math to avoid dtype shenanigans
+    q_vec = py_queries[0].astype(mx.float32)
+    k0 = py_k_cache_pool[0, 0, 0, :].astype(mx.float32)
+    k1 = py_k_cache_pool[0, 1, 0, :].astype(mx.float32)
+    k2 = py_k_cache_pool[0, 2, 0, :].astype(mx.float32)
+    score0 = (mx.sum(q_vec * k0) * py_scale).item()
+    score1 = (mx.sum(q_vec * k1) * py_scale).item()
+    score2 = (mx.sum(q_vec * k2) * py_scale).item()
     scores = [score0, score1, score2]
 
     logger.info("  Attention Scores:")
@@ -151,11 +157,12 @@ def test_full_attention_in_one_block() -> None:
         logger.info(f"    Position {i}: {prob:.6f}")
 
     # Expected weighted sum of V-vectors
-    expected_v = mx.zeros(cfg_head_dim, dtype=mx.float16)
+    expected_v = mx.zeros(cfg_head_dim, dtype=mx.float32)
     for i, prob in enumerate(probs):
-        expected_v += py_v_cache_pool[0, i, 0, :] * prob
+        v_vec = py_v_cache_pool[0, i, 0, :].astype(mx.float32)
+        expected_v += v_vec * prob
 
-    expected_v_reshaped = expected_v.reshape(1, cfg_head_dim)
+    expected_v_reshaped = expected_v.astype(dtype).reshape(1, cfg_head_dim)
 
     logger.info("  Attention Output:")
     logger.info(f"    Expected output shape: {expected_v_reshaped.shape}")
@@ -170,7 +177,7 @@ def test_full_attention_in_one_block() -> None:
     assert output_arr.shape == expected_shape, (
         f"Output shape {output_arr.shape} does not match expected {expected_shape}"
     )
-    assert output_arr.dtype == mx.float16, f"Output dtype {output_arr.dtype} does not match float16"
+    assert output_arr.dtype == dtype, f"Output dtype {output_arr.dtype} does not match {dtype}"
     assert mx.allclose(output_arr, expected_v_reshaped, atol=1e-2), (
         f"Value mismatch. Expected: {expected_v_reshaped}, Got: {output_arr}"
     )

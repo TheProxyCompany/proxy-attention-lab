@@ -21,14 +21,16 @@ aggregation aspects of the paged attention operation.
 import logging
 
 import mlx.core as mx
+import pytest
 
 from proxy_attention_lab import paged_attention
 
 logger = logging.getLogger(__name__)
 
 
-def test_v_aggregation_local_accumulation() -> None:
-    """Test V-aggregation with local accumulation.
+@pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16])
+def test_v_aggregation_local_accumulation(dtype) -> None:
+    """Test V-aggregation with local accumulation for both float16 and bfloat16.
 
     Tests the V-aggregation for a single item with a single history token,
     verifying proper softmax probability calculation using global max and sum_exp.
@@ -41,7 +43,7 @@ def test_v_aggregation_local_accumulation() -> None:
     4. Weight the value vectors with the softmax probabilities
     5. Return the aggregated value vectors
     """
-    logger.info(f"Test: {test_v_aggregation_local_accumulation.__name__}")
+    logger.info(f"Test: {test_v_aggregation_local_accumulation.__name__} (dtype={dtype})")
 
     num_items = 1
     cfg_head_dim = 4
@@ -50,16 +52,16 @@ def test_v_aggregation_local_accumulation() -> None:
 
     # --- Setup test inputs ---
     # Q: [1, head_dim]
-    py_queries = mx.array([[1.0, 1.0, 1.0, 1.0]], dtype=mx.float16)
+    py_queries = mx.array([[1.0, 1.0, 1.0, 1.0]], dtype=dtype)
     logger.info(f"  Query shape: {py_queries.shape}, values: {py_queries}")
 
     # K-cache: K for hist_idx = 0
-    py_k_cache_pool = mx.zeros((1, cfg_tokens_per_page, cfg_num_kv_heads, cfg_head_dim), dtype=mx.float16)
-    py_k_cache_pool[0, 0, 0, :] = mx.array([1.0, 1.0, 0.0, 0.0], dtype=mx.float16)  # Raw dot = 2.0
+    py_k_cache_pool = mx.zeros((1, cfg_tokens_per_page, cfg_num_kv_heads, cfg_head_dim), dtype=dtype)
+    py_k_cache_pool[0, 0, 0, :] = mx.array([1.0, 1.0, 0.0, 0.0], dtype=dtype)  # Raw dot = 2.0
 
     # V-cache: V for hist_idx = 0
-    py_v_cache_pool = mx.zeros((1, cfg_tokens_per_page, cfg_num_kv_heads, cfg_head_dim), dtype=mx.float16)
-    py_v_cache_pool[0, 0, 0, :] = mx.array([10.0, 20.0, 30.0, 40.0], dtype=mx.float16)
+    py_v_cache_pool = mx.zeros((1, cfg_tokens_per_page, cfg_num_kv_heads, cfg_head_dim), dtype=dtype)
+    py_v_cache_pool[0, 0, 0, :] = mx.array([10.0, 20.0, 30.0, 40.0], dtype=dtype)
 
     # Page table, sequence lengths, etc. for 1 item, 1 history token at pos 0
     py_page_table = mx.array([[0]], dtype=mx.uint32)
@@ -133,7 +135,7 @@ def test_v_aggregation_local_accumulation() -> None:
     assert output_arr.shape == expected_shape, (
         f"Output shape {output_arr.shape} does not match expected {expected_shape}"
     )
-    assert output_arr.dtype == mx.float16, f"Output dtype {output_arr.dtype} does not match float16"
+    assert output_arr.dtype == dtype, f"Output dtype {output_arr.dtype} does not match {dtype}"
     # Value assertion - fully reduced V vector
     assert mx.allclose(output_arr, expected_v_output_reshaped, atol=1e-2), (
         f"Value mismatch. Expected (full V): {expected_v_output_reshaped}, Got: {output_arr}"

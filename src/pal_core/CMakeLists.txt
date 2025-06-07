@@ -188,7 +188,6 @@ target_link_libraries(
 
 set(METAL_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/kernels/paged_attention/paged_attention_kernels.metal"
-    "${CMAKE_CURRENT_SOURCE_DIR}/kernels/paged_attention/paged_attention_fused.metal"
     "${CMAKE_CURRENT_SOURCE_DIR}/kernels/paged_attention/paged_attention_2pass.metal"
 )
 
