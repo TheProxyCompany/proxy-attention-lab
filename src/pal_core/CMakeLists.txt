@@ -153,9 +153,7 @@ set(PAL_METALLIB_FILENAME "pal.metallib")
 # --- Core C++ Static Library ---
 file(GLOB_RECURSE CORE_LIB_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/kernel_utils/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/metal/*.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/debug/*.cpp"
 )
 
 add_library(${CORE_LIB_NAME} STATIC ${CORE_LIB_SOURCES})
@@ -169,9 +167,11 @@ target_include_directories(
         # Headers from dependencies that might be exposed through PAL's headers
         $<BUILD_INTERFACE:${PAL_METAL_CPP_INCLUDE_DIR}>
         $<INSTALL_INTERFACE:include/metal_cpp>
+        $<BUILD_INTERFACE:${MLX_INCLUDE_DIRS}>
+        $<INSTALL_INTERFACE:include/mlx>
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
-        ${MLX_INCLUDE_DIRS}
+        # ${MLX_INCLUDE_DIRS}
         ${nanobind_INCLUDE_DIRS}
 )
 
