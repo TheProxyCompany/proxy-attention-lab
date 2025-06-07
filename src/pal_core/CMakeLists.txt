@@ -185,11 +185,7 @@ target_link_libraries(
         ${PAL_SPDLOG_LINK_TARGET}
 )
 
-
-set(METAL_SOURCES
-    "${CMAKE_CURRENT_SOURCE_DIR}/kernels/paged_attention/paged_attention_kernels.metal"
-    "${CMAKE_CURRENT_SOURCE_DIR}/kernels/paged_attention/paged_attention_2pass.metal"
-)
+set(METAL_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/kernels/paged_attention/paged_attention_kernels.metal")
 
 set(PAL_METALLIB_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}" CACHE PATH "Output directory for pal.metallib")
 message(STATUS "Configuring Metal library build for PAL with sources: ${METAL_SOURCES}")

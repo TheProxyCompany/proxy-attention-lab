@@ -20,7 +20,7 @@
 
 #include <metal_stdlib>
 
-#include "bf16.h"
+#include "mlx/backend/metal/kernels/metal_3_1/bf16.h"
 #include "mlx/backend/metal/kernels/bf16_math.h"
 #include "mlx/backend/metal/kernels/complex.h"
 #include "mlx/backend/metal/kernels/defines.h"
@@ -56,4 +56,25 @@ inline float4 to_float4(half4 v) {
 // Convert our custom bfloat4_ struct to float4
 inline float4 to_float4(bfloat4_ v) {
     return float4((float)v.x, (float)v.y, (float)v.z, (float)v.w);
+}
+
+// Convert float4 to a target type T's vector representation
+template <typename T>
+inline typename Vec<T, 4>::Type from_float4(float4 v);
+
+// Specialization for converting float4 to half4
+template <>
+inline half4 from_float4<half>(float4 v) {
+    return half4(v);
+}
+
+// Specialization for converting float4 to our custom bfloat4_ struct
+template <>
+inline bfloat4_ from_float4<bfloat16_t>(float4 v) {
+    bfloat4_ result;
+    result.x = bfloat16_t(v.x);
+    result.y = bfloat16_t(v.y);
+    result.z = bfloat16_t(v.z);
+    result.w = bfloat16_t(v.w);
+    return result;
 }

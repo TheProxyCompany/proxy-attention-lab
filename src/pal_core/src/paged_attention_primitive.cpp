@@ -190,11 +190,19 @@ void PagedAttentionPrimitive::_eval_gpu_2pass(
     PagedAttentionParams& params
 ) {
     auto* metal_device_ptr = device.mtl_device();
-
     const std::string library_name = "pal";
-    auto kernel_state = device.get_kernel("paged_attn_pass1_kernel", library_name);
+
+    // --- NEW: Dynamic kernel name generation ---
+    const std::string dtype_suffix = mx::type_to_name(inputs[0].dtype());
+    const std::string pass1_kernel_name = "paged_attn_pass1_kernel_" + dtype_suffix;
+    const std::string pass2_kernel_name = "paged_attn_pass2_kernel_" + dtype_suffix;
+
+    spdlog::debug("[PAL 2PASS] Dispatching to kernels: {} and {}", pass1_kernel_name, pass2_kernel_name);
+    // --- End new section ---
+
+    auto kernel_state = device.get_kernel(pass1_kernel_name, library_name);
     if (!kernel_state) {
-        throw std::runtime_error("[PAL Primitive] Failed to load kernel: paged_attn_pass1_kernel");
+        throw std::runtime_error("[PAL Primitive] Failed to load kernel: " + pass1_kernel_name);
     }
 
     auto [tile_size, final_threads_per_tg, actual_simd_width] = get_optimal_tile_size_and_thread_info(
@@ -307,9 +315,9 @@ void PagedAttentionPrimitive::_eval_gpu_2pass(
         memory_layout.total_bytes
     );
 
-    kernel_state = device.get_kernel("paged_attn_pass2_kernel", library_name);
+    kernel_state = device.get_kernel(pass2_kernel_name, library_name);
     if (!kernel_state) {
-        throw std::runtime_error("[PAL Primitive] Failed to load Pass 2 kernel: paged_attn_pass2_kernel");
+        throw std::runtime_error("[PAL Primitive] Failed to load Pass 2 kernel: " + pass2_kernel_name);
     }
 
     compute_encoder.set_compute_pipeline_state(kernel_state);

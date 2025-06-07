@@ -18,7 +18,7 @@
 
 #include "fill_kv_pages.h.metal"
 #include "paged_attention_fused.h.metal"
-// #include "paged_attention_2pass.h.metal"
+#include "paged_attention_2pass.h.metal"
 
 [[kernel]] void get_device_info() {
     // used for fetching a metal compute pipeline state
@@ -74,3 +74,51 @@ INSTANTIATE_FILL_KV_PAGES(bfloat16_t,  bfloat16);
 // --- Create the concrete specializations ---
 INSTANTIATE_PAGED_ATTN_FUSED(half,        float16);
 INSTANTIATE_PAGED_ATTN_FUSED(bfloat16_t,  bfloat16);
+
+// --- Instantiation Macro for paged_attn_pass1_kernel ---
+#define INSTANTIATE_PAGED_ATTN_PASS1(TYPE, SUFFIX)                                                                              \
+    template [[host_name("paged_attn_pass1_kernel_" #SUFFIX)]] [[kernel]] void                                                  \
+    paged_attn_pass1_kernel<TYPE>(                                                                                              \
+        device const TYPE* queries_in                [[buffer(0)]],                                                             \
+        device const TYPE* k_cache_pool_in           [[buffer(1)]],                                                             \
+        device const TYPE* v_cache_pool_in           [[buffer(2)]],                                                             \
+        device const uint* page_table_in             [[buffer(3)]],                                                             \
+        device const int*  sequence_lengths_in       [[buffer(4)]],                                                             \
+        device const int*  query_token_offset_in     [[buffer(5)]],                                                             \
+        constant const PagedAttentionParams& params  [[buffer(6)]],                                                             \
+        device const uint2* active_work_item_pairs   [[buffer(7)]],                                                             \
+        device const uint* query_starts_for_batch_item_arr [[buffer(8)]],                                                      \
+        device float*      m_locals_pass1_out        [[buffer(9)]],                                                            \
+        device float*      s_locals_pass1_out        [[buffer(10)]],                                                            \
+        device TYPE*       o_partials_pass1_out      [[buffer(11)]],                                                            \
+        uint              actual_simd_width          [[threads_per_simdgroup]],                                                 \
+        threadgroup float* tg_mem                    [[threadgroup(0)]],                                                        \
+        uint3             tg_pos_in_grid             [[threadgroup_position_in_grid]],                                          \
+        uint3             tg_dim                     [[threads_per_threadgroup]],                                               \
+        uint              local_idx_in_tg            [[thread_index_in_threadgroup]],                                           \
+        uint              simd_lane_id               [[thread_index_in_simdgroup]],                                             \
+        uint              simd_group_id              [[simdgroup_index_in_threadgroup]]                                         \
+    );
+
+// --- Instantiation Macro for paged_attn_pass2_kernel ---
+#define INSTANTIATE_PAGED_ATTN_PASS2(TYPE, SUFFIX)                                                                              \
+    template [[host_name("paged_attn_pass2_kernel_" #SUFFIX)]] [[kernel]] void                                                  \
+    paged_attn_pass2_kernel<TYPE>(                                                                                              \
+        device const float* m_pass1_results          [[buffer(0)]],                                                             \
+        device const float* s_pass1_results          [[buffer(1)]],                                                             \
+        device const TYPE*  o_pass1_results          [[buffer(2)]],                                                             \
+        constant const PagedAttentionParams& params  [[buffer(3)]],                                                             \
+        device TYPE*       final_output_buffer       [[buffer(4)]],                                                             \
+        uint              actual_simd_width          [[threads_per_simdgroup]],                                                 \
+        threadgroup float* tg_mem                    [[threadgroup(0)]],                                                        \
+        uint3             tg_pos_in_grid             [[threadgroup_position_in_grid]],                                          \
+        uint3             tg_dim                     [[threads_per_threadgroup]],                                               \
+        uint              local_idx_in_tg            [[thread_index_in_threadgroup]]                                            \
+    );
+
+// --- Create the concrete specializations for 2-pass kernels ---
+INSTANTIATE_PAGED_ATTN_PASS1(half,       float16);
+INSTANTIATE_PAGED_ATTN_PASS1(bfloat16_t, bfloat16);
+
+INSTANTIATE_PAGED_ATTN_PASS2(half,       float16);
+INSTANTIATE_PAGED_ATTN_PASS2(bfloat16_t, bfloat16);

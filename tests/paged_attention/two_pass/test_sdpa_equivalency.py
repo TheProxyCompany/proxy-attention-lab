@@ -9,19 +9,20 @@ from proxy_attention_lab import calculate_page_size, paged_attention
 logger = logging.getLogger(__name__)
 
 
+@pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16])
 @pytest.mark.parametrize(
-    "batch_size, seq_len, num_heads, head_dim, dtype",
+    "batch_size, seq_len, num_heads, head_dim",
     [
-        (1, 16, (1, 1), 32, mx.float16),  # Original case
-        (1, 32, (1, 1), 32, mx.float16),  # Longer sequence
-        (1, 16, (4, 1), 32, mx.float16),  # MQA (num_q_heads > num_kv_heads)
-        (1, 16, (4, 2), 32, mx.float16),  # GQA (num_q_heads > num_kv_heads, num_kv_heads > 1)
-        (1, 16, (1, 1), 64, mx.float16),  # Different head dimension
-        (1, 16, (2, 2), 32, mx.float16),  # num q = num kv heads
-        (1, 16, (4, 2), 128, mx.float16),  # 128 head dim
-        (1, 123, (32, 16), 128, mx.float16),  # long sequence
-        (1, 2048, (32, 16), 128, mx.float16),  # Gemma 3 27b, long sequence
-        (2, 64, (4, 4), 32, mx.float16),  # Batched Example
+        (1, 16, (1, 1), 32),  # Original case
+        (1, 32, (1, 1), 32),  # Longer sequence
+        (1, 16, (4, 1), 32),  # MQA (num_q_heads > num_kv_heads)
+        (1, 16, (4, 2), 32),  # GQA (num_q_heads > num_kv_heads, num_kv_heads > 1)
+        (1, 16, (1, 1), 64),  # Different head dimension
+        (1, 16, (2, 2), 32),  # num q = num kv heads
+        (1, 16, (4, 2), 128),  # 128 head dim
+        (1, 123, (32, 16), 128),  # long sequence
+        (1, 2048, (32, 16), 128),  # Gemma 3 27b, long sequence
+        (2, 64, (4, 4), 32),  # Batched Example
     ],
 )
 def test_pal_vs_sdpa_equivalency_mha(batch_size, seq_len, num_heads, head_dim, dtype):
@@ -204,7 +205,7 @@ def test_pal_vs_sdpa_equivalency_mha(batch_size, seq_len, num_heads, head_dim, d
     logger.info(f"    Difference metrics - Max: {max_diff:.6f}, Mean: {mean_diff:.6f}")
 
     # For FP16, we allow slightly larger differences due to numerical precision & different implementation
-    current_atol = 1e-2
+    current_atol = 1e-2 if dtype == mx.float16 else 2e-2
     current_rtol = 1e-4
     logger.info(f"    Tolerance values - Absolute: {current_atol}, Relative: {current_rtol}")
 

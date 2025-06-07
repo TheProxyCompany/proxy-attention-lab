@@ -22,13 +22,16 @@ zero history, sequence length limits, and page table boundaries.
 import logging
 
 import mlx.core as mx
+import pytest
 
-from proxy_attention_lab import calculate_page_size, paged_attention
+from proxy_attention_lab import paged_attention
+from proxy_attention_lab.pal_core import get_optimal_tile_size
 
 logger = logging.getLogger(__name__)
 
 
-def test_max_score_over_history_in_one_block() -> None:
+@pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16])
+def test_max_score_over_history_in_one_block(dtype) -> None:
     """Test full attention computation within a single block.
 
     This test verifies the full attention computation (max score, softmax, and V-aggregation)
@@ -38,7 +41,7 @@ def test_max_score_over_history_in_one_block() -> None:
     cfg_num_q_heads = 1
     cfg_num_kv_heads = 1
     cfg_head_dim = 4
-    cfg_tokens_per_page = calculate_page_size(cfg_head_dim, cfg_num_q_heads, cfg_num_kv_heads)
+    cfg_tokens_per_page = get_optimal_tile_size(cfg_head_dim, cfg_num_q_heads, cfg_num_kv_heads)
     sequence_length = 4  # Sequence has 4 tokens total (positions 0, 1, 2, 3)
 
     # --- Setup test inputs ---
@@ -51,22 +54,22 @@ def test_max_score_over_history_in_one_block() -> None:
             [0.3, 0.3, 0.3, 0.3],  # Token 2
             [1.0, 2.0, 3.0, 4.0],  # Token 3 (current position)
         ],
-        dtype=mx.float16,
+        dtype=dtype,
     )
 
     # 2. Create K-cache with values for history positions
     k_cache_shape = (1, cfg_tokens_per_page, cfg_num_kv_heads, cfg_head_dim)
-    py_k_cache_pool = mx.zeros(k_cache_shape, dtype=mx.float16)
+    py_k_cache_pool = mx.zeros(k_cache_shape, dtype=dtype)
     # Set K-vectors for each history position
-    py_k_cache_pool[0, 0, 0, :] = mx.array([1.0, 1.0, 1.0, 1.0], dtype=mx.float16)  # Position 0
-    py_k_cache_pool[0, 1, 0, :] = mx.array([2.0, 2.0, 2.0, 2.0], dtype=mx.float16)  # Position 1
-    py_k_cache_pool[0, 2, 0, :] = mx.array([0.5, 0.5, 0.5, 0.5], dtype=mx.float16)  # Position 2
+    py_k_cache_pool[0, 0, 0, :] = mx.array([1.0, 1.0, 1.0, 1.0], dtype=dtype)  # Position 0
+    py_k_cache_pool[0, 1, 0, :] = mx.array([2.0, 2.0, 2.0, 2.0], dtype=dtype)  # Position 1
+    py_k_cache_pool[0, 2, 0, :] = mx.array([0.5, 0.5, 0.5, 0.5], dtype=dtype)  # Position 2
 
     # 3. Create V-cache with distinct values for each position
-    py_v_cache_pool = mx.zeros(k_cache_shape, dtype=mx.float16)
-    py_v_cache_pool[0, 0, 0, :] = mx.array([10.0, 11.0, 12.0, 13.0], dtype=mx.float16)  # Position 0
-    py_v_cache_pool[0, 1, 0, :] = mx.array([20.0, 21.0, 22.0, 23.0], dtype=mx.float16)  # Position 1
-    py_v_cache_pool[0, 2, 0, :] = mx.array([30.0, 31.0, 32.0, 33.0], dtype=mx.float16)  # Position 2
+    py_v_cache_pool = mx.zeros(k_cache_shape, dtype=dtype)
+    py_v_cache_pool[0, 0, 0, :] = mx.array([10.0, 11.0, 12.0, 13.0], dtype=dtype)  # Position 0
+    py_v_cache_pool[0, 1, 0, :] = mx.array([20.0, 21.0, 22.0, 23.0], dtype=dtype)  # Position 1
+    py_v_cache_pool[0, 2, 0, :] = mx.array([30.0, 31.0, 32.0, 33.0], dtype=dtype)  # Position 2
 
     # 4. Set up page table and sequence metadata
     py_page_table = mx.array([[0]], dtype=mx.uint32)  # Map logical block 0 -> physical page 0
@@ -131,13 +134,13 @@ def test_max_score_over_history_in_one_block() -> None:
             v_hist = py_v_cache_pool[0, i, 0, :].astype(mx.float32)
             expected_V_output_py += v_hist * softmax_probs[i]
 
-        expected_outputs.append(expected_V_output_py.astype(mx.float16))
+        expected_outputs.append(expected_V_output_py.astype(dtype))
 
     # Stack all outputs
     expected_V_output_reshaped = mx.stack(expected_outputs)
 
     # Log test details
-    logger.info(f"Test: {test_max_score_over_history_in_one_block.__name__}")
+    logger.info(f"Test: {test_max_score_over_history_in_one_block.__name__} dtype={dtype}")
     logger.info(f"  Expected V output shape: {expected_V_output_reshaped.shape}")
     logger.info(f"  Actual V output shape: {output_arr.shape}")
     logger.info(f"  Expected V output: {expected_V_output_reshaped}")
@@ -147,14 +150,15 @@ def test_max_score_over_history_in_one_block() -> None:
     assert output_arr.shape == expected_V_output_reshaped.shape, (
         f"Output shape {output_arr.shape} does not match expected {expected_V_output_reshaped.shape}"
     )
-    assert output_arr.dtype == mx.float16, f"Output dtype {output_arr.dtype} does not match float16"
-    # Increased tolerance slightly for float16 sum
+    assert output_arr.dtype == dtype, f"Output dtype {output_arr.dtype} does not match {dtype}"
+    # Increased tolerance slightly for float16/bfloat16 sum
     assert mx.allclose(output_arr, expected_V_output_reshaped, atol=1e-2, rtol=1e-2), (
         "Output values do not match expected values"
     )
 
 
-def test_max_score_over_multi_block_history() -> None:
+@pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16])
+def test_max_score_over_multi_block_history(dtype) -> None:
     """Test maximum score calculation over history spanning multiple logical blocks.
 
     This test verifies that the paged attention operation can correctly:
@@ -189,32 +193,32 @@ def test_max_score_over_multi_block_history() -> None:
             [0.5, 0.5, 0.5, 0.5],  # Token 4
             [1.0, 2.0, 3.0, 4.0],  # Token 5 (current position)
         ],
-        dtype=mx.float16,
+        dtype=dtype,
     )
 
     # 2. Create K-cache with values for history positions in multiple blocks
     num_physical_pages = 2  # Two physical pages for the two logical blocks
     k_cache_shape = (num_physical_pages, cfg_tokens_per_page, cfg_num_kv_heads, cfg_head_dim)
-    py_k_cache_pool = mx.zeros(k_cache_shape, dtype=mx.float16)
+    py_k_cache_pool = mx.zeros(k_cache_shape, dtype=dtype)
 
     # Set K-vectors in physical page 0 (logical block 0)
-    py_k_cache_pool[0, 0, 0, :] = mx.array([1.0, 1.0, 1.0, 1.0], dtype=mx.float16)  # Position 0
-    py_k_cache_pool[0, 1, 0, :] = mx.array([2.0, 2.0, 2.0, 2.0], dtype=mx.float16)  # Position 1
-    py_k_cache_pool[0, 2, 0, :] = mx.array([0.5, 0.5, 0.5, 0.5], dtype=mx.float16)  # Position 2
+    py_k_cache_pool[0, 0, 0, :] = mx.array([1.0, 1.0, 1.0, 1.0], dtype=dtype)  # Position 0
+    py_k_cache_pool[0, 1, 0, :] = mx.array([2.0, 2.0, 2.0, 2.0], dtype=dtype)  # Position 1
+    py_k_cache_pool[0, 2, 0, :] = mx.array([0.5, 0.5, 0.5, 0.5], dtype=dtype)  # Position 2
 
     # Set K-vectors in physical page 1 (logical block 1)
-    py_k_cache_pool[1, 0, 0, :] = mx.array([3.0, 3.0, 3.0, 3.0], dtype=mx.float16)  # Position 3
-    py_k_cache_pool[1, 1, 0, :] = mx.array([1.5, 1.5, 1.5, 1.5], dtype=mx.float16)  # Position 4
+    py_k_cache_pool[1, 0, 0, :] = mx.array([3.0, 3.0, 3.0, 3.0], dtype=dtype)  # Position 3
+    py_k_cache_pool[1, 1, 0, :] = mx.array([1.5, 1.5, 1.5, 1.5], dtype=dtype)  # Position 4
 
     # 3. Create V-cache with distinct values for each position
     py_v_cache_pool = mx.zeros_like(py_k_cache_pool)
     # Set V-vectors in physical page 0 (logical block 0)
-    py_v_cache_pool[0, 0, 0, :] = mx.array([10.0, 20.0, 30.0, 40.0], dtype=mx.float16)  # Position 0
-    py_v_cache_pool[0, 1, 0, :] = mx.array([50.0, 60.0, 70.0, 80.0], dtype=mx.float16)  # Position 1
-    py_v_cache_pool[0, 2, 0, :] = mx.array([5.0, 6.0, 7.0, 8.0], dtype=mx.float16)  # Position 2
+    py_v_cache_pool[0, 0, 0, :] = mx.array([10.0, 20.0, 30.0, 40.0], dtype=dtype)  # Position 0
+    py_v_cache_pool[0, 1, 0, :] = mx.array([50.0, 60.0, 70.0, 80.0], dtype=dtype)  # Position 1
+    py_v_cache_pool[0, 2, 0, :] = mx.array([5.0, 6.0, 7.0, 8.0], dtype=dtype)  # Position 2
     # Set V-vectors in physical page 1 (logical block 1)
-    py_v_cache_pool[1, 0, 0, :] = mx.array([100.0, 110.0, 120.0, 130.0], dtype=mx.float16)  # Position 3
-    py_v_cache_pool[1, 1, 0, :] = mx.array([15.0, 25.0, 35.0, 45.0], dtype=mx.float16)  # Position 4
+    py_v_cache_pool[1, 0, 0, :] = mx.array([100.0, 110.0, 120.0, 130.0], dtype=dtype)  # Position 3
+    py_v_cache_pool[1, 1, 0, :] = mx.array([15.0, 25.0, 35.0, 45.0], dtype=dtype)  # Position 4
 
     # 4. Set up page table - maps logical blocks to physical pages
     py_page_table = mx.array([[0, 1]], dtype=mx.uint32)  # Logical block 0 -> page 0, block 1 -> page 1
@@ -258,7 +262,7 @@ def test_max_score_over_multi_block_history() -> None:
             scores_qi.append(score_val)
             v_list_qi.append(v_vec)
         if not scores_qi:
-            full_expected_outputs.append(mx.zeros(cfg_head_dim, dtype=mx.float16))
+            full_expected_outputs.append(mx.zeros(cfg_head_dim, dtype=dtype))
             continue
         max_qi = max(scores_qi)
         exp_list = [mx.exp(mx.maximum(s - max_qi, -16.0)).item() for s in scores_qi]
@@ -267,12 +271,12 @@ def test_max_score_over_multi_block_history() -> None:
         out_vec = mx.zeros(cfg_head_dim, dtype=mx.float32)
         for vv, pr in zip(v_list_qi, probs, strict=False):
             out_vec += vv * pr
-        full_expected_outputs.append(out_vec.astype(mx.float16))
+        full_expected_outputs.append(out_vec.astype(dtype))
 
     expected_V_output_reshaped = mx.stack(full_expected_outputs)
     expected_output_shape = (sequence_length, cfg_head_dim)
 
-    logger.info(f"Test: {test_max_score_over_multi_block_history.__name__}")
+    logger.info(f"Test: {test_max_score_over_multi_block_history.__name__} dtype={dtype}")
     logger.info(f"  Expected V output shape: {expected_V_output_reshaped.shape}")
     logger.info(f"  Actual V output shape: {output_arr.shape}")
     logger.info(f"  Expected V output: {expected_V_output_reshaped}")
@@ -282,7 +286,7 @@ def test_max_score_over_multi_block_history() -> None:
     assert output_arr.shape == expected_output_shape, (
         f"Output shape {output_arr.shape} does not match expected {expected_output_shape}"
     )
-    assert output_arr.dtype == mx.float16, f"Output dtype {output_arr.dtype} does not match float16"
+    assert output_arr.dtype == dtype, f"Output dtype {output_arr.dtype} does not match {dtype}"
     assert mx.allclose(output_arr, expected_V_output_reshaped, atol=1e-2, rtol=1e-2), (
         "Output values do not match expected values"
     )
@@ -290,7 +294,8 @@ def test_max_score_over_multi_block_history() -> None:
     logger.info("test_max_score_over_multi_block_history PASSED")
 
 
-def test_zero_history_returns_zero_score() -> None:
+@pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16])
+def test_zero_history_returns_zero_score(dtype) -> None:
     """Test that zero history returns zero score.
 
     This test verifies the code path in the kernel where 'effective_history_length = 0',
@@ -319,27 +324,27 @@ def test_zero_history_returns_zero_score() -> None:
             [1.8, 2.8, 3.8, 4.8],  # Token 8
             [1.9, 2.9, 3.9, 4.9],  # Token 9
         ],
-        dtype=mx.float16,
+        dtype=dtype,
     )
 
     # 2. K-Cache Pool: Minimal setup with some values (won't be accessed)
     num_physical_pages = 1
     k_cache_shape = (num_physical_pages, cfg_tokens_per_page, cfg_num_kv_heads, cfg_head_dim)
-    py_k_cache_pool = mx.zeros(k_cache_shape, dtype=mx.float16)
+    py_k_cache_pool = mx.zeros(k_cache_shape, dtype=dtype)
     # Set up K-cache values for testing
-    py_k_cache_pool[0, 0, 0, :] = mx.array([1.0, 1.0, 1.0, 1.0], dtype=mx.float16)  # Position 0
-    py_k_cache_pool[0, 1, 0, :] = mx.array([2.0, 2.0, 2.0, 2.0], dtype=mx.float16)  # Position 1
-    py_k_cache_pool[0, 2, 0, :] = mx.array([0.5, 0.5, 0.5, 0.5], dtype=mx.float16)  # Position 2
-    py_k_cache_pool[0, 3, 0, :] = mx.array([3.0, 3.0, 3.0, 3.0], dtype=mx.float16)  # Position 3
+    py_k_cache_pool[0, 0, 0, :] = mx.array([1.0, 1.0, 1.0, 1.0], dtype=dtype)  # Position 0
+    py_k_cache_pool[0, 1, 0, :] = mx.array([2.0, 2.0, 2.0, 2.0], dtype=dtype)  # Position 1
+    py_k_cache_pool[0, 2, 0, :] = mx.array([0.5, 0.5, 0.5, 0.5], dtype=dtype)  # Position 2
+    py_k_cache_pool[0, 3, 0, :] = mx.array([3.0, 3.0, 3.0, 3.0], dtype=dtype)  # Position 3
     # Positions 4+ stay as zeros
 
     # 3. V-Cache Pool with values to verify that these are aggregated correctly
     py_v_cache_pool = mx.zeros_like(py_k_cache_pool)
     # Set up V-cache with values to verify correct aggregation
-    py_v_cache_pool[0, 0, 0, :] = mx.array([10.0, 20.0, 30.0, 40.0], dtype=mx.float16)  # Position 0
-    py_v_cache_pool[0, 1, 0, :] = mx.array([50.0, 60.0, 70.0, 80.0], dtype=mx.float16)  # Position 1 (highest score)
-    py_v_cache_pool[0, 2, 0, :] = mx.array([5.0, 6.0, 7.0, 8.0], dtype=mx.float16)  # Position 2
-    py_v_cache_pool[0, 3, 0, :] = mx.array([100.0, 110.0, 120.0, 130.0], dtype=mx.float16)  # Position 3
+    py_v_cache_pool[0, 0, 0, :] = mx.array([10.0, 20.0, 30.0, 40.0], dtype=dtype)  # Position 0
+    py_v_cache_pool[0, 1, 0, :] = mx.array([50.0, 60.0, 70.0, 80.0], dtype=dtype)  # Position 1 (highest score)
+    py_v_cache_pool[0, 2, 0, :] = mx.array([5.0, 6.0, 7.0, 8.0], dtype=dtype)  # Position 2
+    py_v_cache_pool[0, 3, 0, :] = mx.array([100.0, 110.0, 120.0, 130.0], dtype=dtype)  # Position 3
     # Positions 4+ are zeros
 
     # 4. Page Table: Simple mapping for one logical block
@@ -404,16 +409,16 @@ def test_zero_history_returns_zero_score() -> None:
             v_out = mx.zeros(cfg_head_dim, dtype=mx.float32)
             for v, p in zip(v_vecs, probs, strict=False):
                 v_out += v * p
-            expected_outputs.append(v_out.astype(mx.float16))
+            expected_outputs.append(v_out.astype(dtype))
         else:
-            expected_outputs.append(mx.zeros(cfg_head_dim, dtype=mx.float16))
+            expected_outputs.append(mx.zeros(cfg_head_dim, dtype=dtype))
 
     expected_v_output = mx.stack(expected_outputs)
 
     # Output is now full attention format [num_q_threads, cfg_head_dim]
     expected_output_shape = (10, cfg_head_dim)
 
-    logger.info(f"Test: {test_zero_history_returns_zero_score.__name__}")
+    logger.info(f"Test: {test_zero_history_returns_zero_score.__name__} dtype={dtype}")
     logger.info(f"  Query token offsets = {py_query_token_offset}")
     logger.info(f"  Expected V output = {expected_v_output}")
     logger.info(f"  Actual V output = {output_arr}")
@@ -422,7 +427,7 @@ def test_zero_history_returns_zero_score() -> None:
     assert output_arr.shape == expected_output_shape, (
         f"Output shape {output_arr.shape} does not match expected {expected_output_shape}"
     )
-    assert output_arr.dtype == mx.float16, f"Output dtype {output_arr.dtype} does not match float16"
+    assert output_arr.dtype == dtype, f"Output dtype {output_arr.dtype} does not match {dtype}"
     # Verify V output matches expected causal attention
     assert mx.allclose(output_arr, expected_v_output, atol=1e-2, rtol=1e-2), (
         "Output values do not match expected causal attention outputs"
@@ -431,7 +436,8 @@ def test_zero_history_returns_zero_score() -> None:
     logger.info("test_zero_history_returns_zero_score PASSED")
 
 
-def test_history_limited_by_sequence_length() -> None:
+@pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16])
+def test_history_limited_by_sequence_length(dtype) -> None:
     """Test history truncation based on sequence length limits.
 
     This test verifies that when a query token's logical offset implies a history that extends
@@ -453,38 +459,38 @@ def test_history_limited_by_sequence_length() -> None:
 
     # --- Setup test inputs ---
     # 1. Query vector: Single query
-    py_queries = mx.array([[1.0, 1.0, 1.0, 1.0]] * actual_sequence_length, dtype=mx.float16)
+    py_queries = mx.array([[1.0, 1.0, 1.0, 1.0]] * actual_sequence_length, dtype=dtype)
 
     # 2. K-Cache Pool: Set up with different values for positions 0-4
     num_physical_pages = 2  # Need enough pages for all positions
     k_cache_shape = (num_physical_pages, cfg_tokens_per_page, cfg_num_kv_heads, cfg_head_dim)
-    py_k_cache_pool = mx.zeros(k_cache_shape, dtype=mx.float16)
+    py_k_cache_pool = mx.zeros(k_cache_shape, dtype=dtype)
 
     # Set up K-vectors for each history position
     # Position 0 - Score will be 2.0 after scale
-    py_k_cache_pool[0, 0, 0, :] = mx.array([1.0, 1.0, 1.0, 1.0], dtype=mx.float16)
+    py_k_cache_pool[0, 0, 0, :] = mx.array([1.0, 1.0, 1.0, 1.0], dtype=dtype)
 
     # Position 1 - Score will be 6.0 after scale (should be the max within valid sequence)
-    py_k_cache_pool[0, 1, 0, :] = mx.array([3.0, 3.0, 3.0, 3.0], dtype=mx.float16)
+    py_k_cache_pool[0, 1, 0, :] = mx.array([3.0, 3.0, 3.0, 3.0], dtype=dtype)
 
     # Position 2 - Score will be 4.0 after scale
-    py_k_cache_pool[0, 2, 0, :] = mx.array([2.0, 2.0, 2.0, 2.0], dtype=mx.float16)
+    py_k_cache_pool[0, 2, 0, :] = mx.array([2.0, 2.0, 2.0, 2.0], dtype=dtype)
 
     # Position 3 - Beyond sequence length, should NOT be accessed
-    py_k_cache_pool[0, 3, 0, :] = mx.array([8.0, 8.0, 8.0, 8.0], dtype=mx.float16)  # Score would be 16.0
+    py_k_cache_pool[0, 3, 0, :] = mx.array([8.0, 8.0, 8.0, 8.0], dtype=dtype)  # Score would be 16.0
 
     # Position 4 - Beyond sequence length, should NOT be accessed
-    py_k_cache_pool[1, 0, 0, :] = mx.array([10.0, 10.0, 10.0, 10.0], dtype=mx.float16)  # Score would be 20.0
+    py_k_cache_pool[1, 0, 0, :] = mx.array([10.0, 10.0, 10.0, 10.0], dtype=dtype)  # Score would be 20.0
 
     # 3. V-Cache Pool with values to verify that these are aggregated correctly
     py_v_cache_pool = mx.zeros_like(py_k_cache_pool)
     # Set up V-cache with values to verify correct aggregation
-    py_v_cache_pool[0, 0, 0, :] = mx.array([10.0, 20.0, 30.0, 40.0], dtype=mx.float16)  # Position 0
-    py_v_cache_pool[0, 1, 0, :] = mx.array([50.0, 60.0, 70.0, 80.0], dtype=mx.float16)  # Position 1 (highest score)
-    py_v_cache_pool[0, 2, 0, :] = mx.array([5.0, 6.0, 7.0, 8.0], dtype=mx.float16)  # Position 2
+    py_v_cache_pool[0, 0, 0, :] = mx.array([10.0, 20.0, 30.0, 40.0], dtype=dtype)  # Position 0
+    py_v_cache_pool[0, 1, 0, :] = mx.array([50.0, 60.0, 70.0, 80.0], dtype=dtype)  # Position 1 (highest score)
+    py_v_cache_pool[0, 2, 0, :] = mx.array([5.0, 6.0, 7.0, 8.0], dtype=dtype)  # Position 2
     # Positions 3-4 should NOT be accessed due to sequence length limit (actual_sequence_length=3)
-    py_v_cache_pool[0, 3, 0, :] = mx.array([100.0, 200.0, 300.0, 400.0], dtype=mx.float16)  # Position 3
-    py_v_cache_pool[1, 0, 0, :] = mx.array([500.0, 600.0, 700.0, 800.0], dtype=mx.float16)  # Position 4
+    py_v_cache_pool[0, 3, 0, :] = mx.array([100.0, 200.0, 300.0, 400.0], dtype=dtype)  # Position 3
+    py_v_cache_pool[1, 0, 0, :] = mx.array([500.0, 600.0, 700.0, 800.0], dtype=dtype)  # Position 4
 
     # 4. Page Table: Two logical blocks mapped to two physical pages
     py_page_table = mx.array([[0, 1]], dtype=mx.uint32)  # Shape (1, 2)
@@ -548,10 +554,10 @@ def test_history_limited_by_sequence_length() -> None:
     expected_V_output_py = v_vec0 * prob0 + v_vec1 * prob1 + v_vec2 * prob2
 
     # Reshape to match output format [num_q_threads, cfg_head_dim]
-    expected_V_output = mx.stack([expected_V_output_py.astype(mx.float16)] * actual_sequence_length)
+    expected_V_output = mx.stack([expected_V_output_py.astype(dtype)] * actual_sequence_length)
     expected_output_shape = (actual_sequence_length, cfg_head_dim)
 
-    logger.info(f"Test: {test_history_limited_by_sequence_length.__name__}")
+    logger.info(f"Test: {test_history_limited_by_sequence_length.__name__} dtype={dtype}")
     logger.info(f"  actual_sequence_length = {actual_sequence_length}, query_token_offset = {query_token_offset}")
     logger.info("  Scores for positions within sequence length:")
     logger.info(f"    Position 0 = {score0}")
@@ -565,7 +571,7 @@ def test_history_limited_by_sequence_length() -> None:
     assert output_arr.shape == expected_output_shape, (
         f"Output shape {output_arr.shape} does not match expected {expected_output_shape}"
     )
-    assert output_arr.dtype == mx.float16, f"Output dtype {output_arr.dtype} does not match float16"
+    assert output_arr.dtype == dtype, f"Output dtype {output_arr.dtype} does not match {dtype}"
     # Verify the V output contains the weighted sum of only positions 0-2,
     # not including positions 3-4 which should be excluded by sequence length limit
     assert mx.allclose(output_arr, expected_V_output, atol=1e-2, rtol=1e-2), (
@@ -575,7 +581,8 @@ def test_history_limited_by_sequence_length() -> None:
     logger.info("test_history_limited_by_sequence_length PASSED")
 
 
-def test_history_scan_stops_at_page_table_limit() -> None:
+@pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16])
+def test_history_scan_stops_at_page_table_limit(dtype) -> None:
     """Test that history scan stops at page table limits.
 
     This test verifies that if the history scan encounters a logical_block_idx that is
@@ -601,12 +608,12 @@ def test_history_scan_stops_at_page_table_limit() -> None:
 
     # --- Setup test inputs ---
     # Provide 10 queries to match sequence_length
-    py_queries = mx.array([[1.0, 1.0, 1.0, 1.0]] * 10, dtype=mx.float16)
+    py_queries = mx.array([[1.0, 1.0, 1.0, 1.0]] * 10, dtype=dtype)
 
     # 2. K-Cache Pool:
     num_physical_pages = 2  # Two physical pages for the two logical blocks in page table
     k_cache_shape = (num_physical_pages, cfg_tokens_per_page, cfg_num_kv_heads, cfg_head_dim)
-    py_k_cache_pool = mx.zeros(k_cache_shape, dtype=mx.float16)
+    py_k_cache_pool = mx.zeros(k_cache_shape, dtype=dtype)
 
     # Position mapping with cfg_tokens_per_page = 2:
     # hist_pos 0, 1 -> logical_block_idx 0 -> physical_page 0
@@ -615,15 +622,15 @@ def test_history_scan_stops_at_page_table_limit() -> None:
 
     # K-vectors for logical block 0 (positions 0, 1)
     # Position 0 (token_slot 0 on physical_page 0) - Score will be 2.0 after scale
-    py_k_cache_pool[0, 0, 0, :] = mx.array([1.0, 1.0, 1.0, 1.0], dtype=mx.float16)
+    py_k_cache_pool[0, 0, 0, :] = mx.array([1.0, 1.0, 1.0, 1.0], dtype=dtype)
     # Position 1 (token_slot 1 on physical_page 0) - Score will be 4.0 after scale
-    py_k_cache_pool[0, 1, 0, :] = mx.array([2.0, 2.0, 2.0, 2.0], dtype=mx.float16)
+    py_k_cache_pool[0, 1, 0, :] = mx.array([2.0, 2.0, 2.0, 2.0], dtype=dtype)
 
     # K-vectors for logical block 1 (positions 2, 3)
     # Position 2 (token_slot 0 on physical_page 1) - Score will be 10.0 after scale (should be max)
-    py_k_cache_pool[1, 0, 0, :] = mx.array([5.0, 5.0, 5.0, 5.0], dtype=mx.float16)
+    py_k_cache_pool[1, 0, 0, :] = mx.array([5.0, 5.0, 5.0, 5.0], dtype=dtype)
     # Position 3 (token_slot 1 on physical_page 1) - Score will be 6.0 after scale
-    py_k_cache_pool[1, 1, 0, :] = mx.array([3.0, 3.0, 3.0, 3.0], dtype=mx.float16)
+    py_k_cache_pool[1, 1, 0, :] = mx.array([3.0, 3.0, 3.0, 3.0], dtype=dtype)
 
     # Note: Position 4 would be in logical block 2 (which is beyond page table limit)
     # We don't need to set values for it, as it should not be accessed
@@ -631,12 +638,12 @@ def test_history_scan_stops_at_page_table_limit() -> None:
     # 3. V-Cache Pool with values to verify that these are aggregated correctly
     py_v_cache_pool = mx.zeros_like(py_k_cache_pool)
     # Set up V-cache with values to verify correct aggregation
-    py_v_cache_pool[0, 0, 0, :] = mx.array([10.0, 20.0, 30.0, 40.0], dtype=mx.float16)  # Position 0
-    py_v_cache_pool[0, 1, 0, :] = mx.array([50.0, 60.0, 70.0, 80.0], dtype=mx.float16)  # Position 1 (highest score)
-    py_v_cache_pool[0, 2, 0, :] = mx.array([5.0, 6.0, 7.0, 8.0], dtype=mx.float16)  # Position 2
+    py_v_cache_pool[0, 0, 0, :] = mx.array([10.0, 20.0, 30.0, 40.0], dtype=dtype)  # Position 0
+    py_v_cache_pool[0, 1, 0, :] = mx.array([50.0, 60.0, 70.0, 80.0], dtype=dtype)  # Position 1 (highest score)
+    py_v_cache_pool[0, 2, 0, :] = mx.array([5.0, 6.0, 7.0, 8.0], dtype=dtype)  # Position 2
     # Positions 3-4 should NOT be accessed due to sequence length limit
-    py_v_cache_pool[0, 3, 0, :] = mx.array([100.0, 200.0, 300.0, 400.0], dtype=mx.float16)  # Position 3
-    py_v_cache_pool[1, 0, 0, :] = mx.array([500.0, 600.0, 700.0, 800.0], dtype=mx.float16)  # Position 4
+    py_v_cache_pool[0, 3, 0, :] = mx.array([100.0, 200.0, 300.0, 400.0], dtype=dtype)  # Position 3
+    py_v_cache_pool[1, 0, 0, :] = mx.array([500.0, 600.0, 700.0, 800.0], dtype=dtype)  # Position 4
 
     # 4. Page Table: Maps logical blocks 0,1 to physical pages 0,1
     # Limited to max_logical_blocks_per_seq_in_pagetable = 2
@@ -707,10 +714,10 @@ def test_history_scan_stops_at_page_table_limit() -> None:
     expected_V_output_py = v_vec0 * prob0 + v_vec1 * prob1 + v_vec2 * prob2 + v_vec3 * prob3
 
     # Output is now full attention format [num_q_threads, cfg_head_dim]
-    expected_V_output = mx.stack([expected_V_output_py.astype(mx.float16)] * 10)
+    expected_V_output = mx.stack([expected_V_output_py.astype(dtype)] * 10)
     expected_output_shape = (10, cfg_head_dim)
 
-    logger.info(f"Test: {test_history_scan_stops_at_page_table_limit.__name__}")
+    logger.info(f"Test: {test_history_scan_stops_at_page_table_limit.__name__} dtype={dtype}")
     logger.info(
         f"  max_logical_blocks_per_seq = {max_logical_blocks_per_seq_in_pagetable}, query_token_offset = {query_token_offset}"
     )
@@ -727,7 +734,7 @@ def test_history_scan_stops_at_page_table_limit() -> None:
     assert output_arr.shape == expected_output_shape, (
         f"Output shape {output_arr.shape} does not match expected {expected_output_shape}"
     )
-    assert output_arr.dtype == mx.float16, f"Output dtype {output_arr.dtype} does not match float16"
+    assert output_arr.dtype == dtype, f"Output dtype {output_arr.dtype} does not match {dtype}"
     # Verify the V output contains only information from valid page table blocks
     assert mx.allclose(output_arr, expected_V_output, atol=1e-2, rtol=1e-2), (
         "Output values do not match expected weighted sum from valid page table blocks"

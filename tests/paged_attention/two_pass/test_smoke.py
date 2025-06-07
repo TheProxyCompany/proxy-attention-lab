@@ -17,13 +17,15 @@
 import logging
 
 import mlx.core as mx
+import pytest
 
 from proxy_attention_lab import calculate_page_size, paged_attention
 
 logger = logging.getLogger(__name__)
 
 
-def test_paged_attention_smoke() -> None:
+@pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16])
+def test_paged_attention_smoke(dtype) -> None:
     """Verify that the paged_attention function runs without errors on simple inputs.
 
     This test creates minimal inputs to check that the function executes successfully
@@ -40,7 +42,7 @@ def test_paged_attention_smoke() -> None:
     - TotalNumQueryTokensInBatch MUST equal sum(sequence_lengths)
     - query_to_seq_map and query_token_offset must match the contiguous query layout
     """
-    logger.info(f"Test: {test_paged_attention_smoke.__name__}")
+    logger.info(f"Test: {test_paged_attention_smoke.__name__} (dtype={dtype})")
 
     # Query tensor parameters
     num_q_heads = 2
@@ -69,9 +71,9 @@ def test_paged_attention_smoke() -> None:
 
     # Create test inputs with random values
     # For prefill, queries shape is [TotalNumQueryTokensInBatch, NumQHeads, HeadDim]
-    mock_queries = mx.random.normal((total_num_query_tokens, num_q_heads, head_dim)).astype(mx.float16)
-    mock_k_cache_pool = mx.random.normal((num_total_pages, tokens_per_page, num_kv_heads, head_dim)).astype(mx.float16)
-    mock_v_cache_pool = mx.random.normal((num_total_pages, tokens_per_page, num_kv_heads, head_dim)).astype(mx.float16)
+    mock_queries = mx.random.normal((total_num_query_tokens, num_q_heads, head_dim)).astype(dtype)
+    mock_k_cache_pool = mx.random.normal((num_total_pages, tokens_per_page, num_kv_heads, head_dim)).astype(dtype)
+    mock_v_cache_pool = mx.random.normal((num_total_pages, tokens_per_page, num_kv_heads, head_dim)).astype(dtype)
 
     # Create page table: maps logical blocks to physical pages
     # Shape: [num_sequences_in_batch, max_logical_blocks_per_seq_val]
