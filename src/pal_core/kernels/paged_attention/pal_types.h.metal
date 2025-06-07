@@ -20,7 +20,7 @@
 
 #include <metal_stdlib>
 
-#include "mlx/backend/metal/kernels/metal_3_1/bf16.h"
+#include "mlx/backend/metal/kernels/utils.h"
 #include "mlx/backend/metal/kernels/bf16_math.h"
 #include "mlx/backend/metal/kernels/complex.h"
 #include "mlx/backend/metal/kernels/defines.h"
