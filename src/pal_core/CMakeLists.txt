@@ -167,11 +167,9 @@ target_include_directories(
         # Headers from dependencies that might be exposed through PAL's headers
         $<BUILD_INTERFACE:${PAL_METAL_CPP_INCLUDE_DIR}>
         $<INSTALL_INTERFACE:include/metal_cpp>
-        $<BUILD_INTERFACE:${MLX_INCLUDE_DIRS}>
-        $<INSTALL_INTERFACE:include/mlx>
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
-        # ${MLX_INCLUDE_DIRS}
+        ${MLX_INCLUDE_DIRS}
         ${nanobind_INCLUDE_DIRS}
 )
 
