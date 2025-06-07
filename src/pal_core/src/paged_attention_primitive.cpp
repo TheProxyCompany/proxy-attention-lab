@@ -531,13 +531,7 @@ uint32_t PagedAttentionPrimitive::calculate_symmetric_tile_depth(
 
     uint32_t unaligned_depth = static_cast<uint32_t>(memory_for_qkv_tiles / bytes_per_unit_depth);
     spdlog::debug("[calculate_symmetric_tile_depth] Unaligned symmetric depth (D_s): {}", unaligned_depth);
-
-    uint32_t symmetric_depth = std::max(4u, unaligned_depth); // Ensure at least a minimum depth
-    symmetric_depth = (symmetric_depth / 4) * 4;             // Align down to multiple of 4
-    if (symmetric_depth < 4) {
-        symmetric_depth = 4; // Ensure minimum depth of 4 after alignment
-    }
-
+    uint32_t symmetric_depth = std::max(4u, (unaligned_depth / 4) * 4); // Align down to multiple of 4
     spdlog::debug("[calculate_symmetric_tile_depth] Final symmetric depth (D_s): {}", symmetric_depth);
     return std::min(MAX_TILE_SIZE_PRACTICAL, symmetric_depth);
 }
