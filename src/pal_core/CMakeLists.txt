@@ -134,6 +134,7 @@ endif()
 if(NOT TARGET mlx)
     set(CMAKE_FIND_PACKAGE_PREFER_CONFIG TRUE)
     find_package(MLX CONFIG REQUIRED PATHS ${Python_SITELIB} NO_DEFAULT_PATH)
+    set(MLX_METAL_INCLUDE_DIRS ${MLX_INCLUDE_DIRS})
 else()
     message(STATUS "PAL: MLX already found as a target")
 endif()
@@ -194,7 +195,7 @@ mlx_build_metallib(
     INCLUDE_DIRS
         ${CMAKE_CURRENT_SOURCE_DIR}/include/kernels
         ${PAL_METAL_CPP_INCLUDE_DIR}/
-        ${MLX_INCLUDE_DIRS}
+        ${MLX_METAL_INCLUDE_DIRS}
     OUTPUT_DIRECTORY ${PAL_METALLIB_OUTPUT_DIRECTORY}
     OUTPUT_FILENAME ${PAL_METALLIB_FILENAME}
     # DEBUG ON

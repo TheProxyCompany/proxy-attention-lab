@@ -47,7 +47,6 @@ foreach(_benchmark_cmake_file ${_BENCHMARK_CMAKE_FILES})
     list(APPEND BENCHMARK_DIRS ${_benchmark_dir})
 endforeach()
 
-message(STATUS "BENCHMARK_DIRS: ${BENCHMARK_DIRS}")
 foreach(BENCHMARK_DIR ${BENCHMARK_DIRS})
     message(STATUS "Adding benchmark directory: ${BENCHMARK_DIR}")
     add_subdirectory(${BENCHMARK_DIR})
