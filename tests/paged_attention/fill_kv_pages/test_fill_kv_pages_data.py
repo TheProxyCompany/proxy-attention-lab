@@ -8,8 +8,9 @@ from proxy_attention_lab import fill_kv_pages
 logger = logging.getLogger(__name__)
 
 
-def test_fill_single_token_single_sequence():
-    """Test filling a single token for a single sequence.
+@pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16])
+def test_fill_single_token_single_sequence(dtype):
+    """Test filling a single token for a single sequence, for both float16 and bfloat16.
 
     This test verifies that the fill_kv_pages operation correctly writes
     new key and value data to the appropriate location in the global pools.
@@ -23,13 +24,12 @@ def test_fill_single_token_single_sequence():
     head_dim = 4
     primitive_tokens_per_page = 2
     num_physical_pages = 1
-    dtype = mx.float16
 
     logger.info(
         f"Test parameters: num_new_tokens_total={num_new_tokens_total}, "
         f"num_sequences_in_batch={num_sequences_in_batch}, "
         f"num_kv_heads={num_kv_heads}, head_dim={head_dim}, "
-        f"tokens_per_page={primitive_tokens_per_page}"
+        f"tokens_per_page={primitive_tokens_per_page}, dtype={dtype}"
     )
 
     # Create distinct new keys and values
@@ -108,14 +108,14 @@ def test_fill_single_token_single_sequence():
 
     if not mx.allclose(updated_k_pool, expected_k_pool, rtol=1e-3, atol=1e-3):
         pytest.fail(
-            "Data in updated_k_pool does not match expected_k_pool. "
+            f"Data in updated_k_pool does not match expected_k_pool for dtype={dtype}. "
             "The Metal kernel needs to be implemented to write the key data."
         )
 
     if not mx.allclose(updated_v_pool, expected_v_pool, rtol=1e-3, atol=1e-3):
         pytest.fail(
-            "Data in updated_v_pool does not match expected_v_pool. "
+            f"Data in updated_v_pool does not match expected_v_pool for dtype={dtype}. "
             "The Metal kernel needs to be implemented to write the value data."
         )
 
-    logger.info("Test passed: Key and value data were correctly written to the pools")
+    logger.info(f"Test passed: Key and value data were correctly written to the pools for dtype={dtype}")

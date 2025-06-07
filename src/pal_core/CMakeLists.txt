@@ -186,9 +186,10 @@ target_link_libraries(
 )
 
 
-file(
-    GLOB_RECURSE METAL_SOURCES
-    "${CMAKE_CURRENT_SOURCE_DIR}/kernels/*/*.metal"
+set(METAL_SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/kernels/paged_attention/paged_attention_kernels.metal"
+    "${CMAKE_CURRENT_SOURCE_DIR}/kernels/paged_attention/paged_attention_fused.metal"
+    "${CMAKE_CURRENT_SOURCE_DIR}/kernels/paged_attention/paged_attention_2pass.metal"
 )
 
 set(PAL_METALLIB_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}" CACHE PATH "Output directory for pal.metallib")

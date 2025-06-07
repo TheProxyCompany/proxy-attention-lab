@@ -19,7 +19,8 @@ logger = logging.getLogger(__name__)
         (3, 4),  # Starting in second logical block
     ],
 )
-def test_fill_multiple_tokens_single_sequence(num_new_tokens_in_chunk, start_logical_position):
+@pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16])
+def test_fill_multiple_tokens_single_sequence(num_new_tokens_in_chunk, start_logical_position, dtype):
     """Test filling multiple tokens for a single sequence (simulating prefill chunk).
 
     This test verifies that the fill_kv_pages operation correctly writes
@@ -29,13 +30,13 @@ def test_fill_multiple_tokens_single_sequence(num_new_tokens_in_chunk, start_log
     Args:
         num_new_tokens_in_chunk: Number of new tokens to write
         start_logical_position: Starting logical position for writing
+        dtype: Data type to use for the test (mx.float16 or mx.bfloat16)
     """
     # Fixed test parameters
     num_sequences_in_batch = 1
     num_kv_heads = 1
     head_dim = 4
     primitive_tokens_per_page = 4
-    dtype = mx.float16
 
     # Calculate required logical blocks and physical pages
     end_logical_position = start_logical_position + num_new_tokens_in_chunk - 1
@@ -49,7 +50,7 @@ def test_fill_multiple_tokens_single_sequence(num_new_tokens_in_chunk, start_log
         f"num_sequences_in_batch={num_sequences_in_batch}, "
         f"num_kv_heads={num_kv_heads}, head_dim={head_dim}, "
         f"tokens_per_page={primitive_tokens_per_page}, "
-        f"num_physical_pages={num_physical_pages}"
+        f"num_physical_pages={num_physical_pages}, dtype={dtype}"
     )
 
     # Create distinct new keys and values
@@ -166,7 +167,8 @@ def test_fill_multiple_tokens_single_sequence(num_new_tokens_in_chunk, start_log
         pytest.fail(
             f"Data in updated_k_pool does not match expected_k_pool for "
             f"num_new_tokens_in_chunk={num_new_tokens_in_chunk}, "
-            f"start_logical_position={start_logical_position}"
+            f"start_logical_position={start_logical_position}, "
+            f"dtype={dtype}"
         )
 
     logger.debug("Comparing value pools...")
@@ -182,10 +184,11 @@ def test_fill_multiple_tokens_single_sequence(num_new_tokens_in_chunk, start_log
         pytest.fail(
             f"Data in updated_v_pool does not match expected_v_pool for "
             f"num_new_tokens_in_chunk={num_new_tokens_in_chunk}, "
-            f"start_logical_position={start_logical_position}"
+            f"start_logical_position={start_logical_position}, "
+            f"dtype={dtype}"
         )
 
     logger.info(
         f"Test passed: {num_new_tokens_in_chunk} tokens correctly written "
-        f"starting at logical position {start_logical_position}"
+        f"starting at logical position {start_logical_position} (dtype={dtype})"
     )

@@ -21,14 +21,6 @@
 
 using namespace metal;
 
-
-[[kernel]] void get_device_info() {
-    // used for fetching a metal compute pipeline state
-    // for the current device to get the max threads per group
-    // and simd group size
-}
-
-
 /**
  * paged_attn_pass1_kernel
  * Pass 1 of the page-centric 2pass architecture.

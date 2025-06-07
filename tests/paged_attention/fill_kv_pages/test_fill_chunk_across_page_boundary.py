@@ -8,8 +8,9 @@ from proxy_attention_lab import fill_kv_pages
 logger = logging.getLogger(__name__)
 
 
-def test_fill_chunk_across_page_boundary():
-    """Test filling a chunk that spans across a page boundary.
+@pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16])
+def test_fill_chunk_across_page_boundary(dtype):
+    """Test filling a chunk that spans across a page boundary for both float16 and bfloat16.
 
     This test verifies that the fill_kv_pages operation correctly writes
     new key and value data when a chunk of tokens starts in one logical block
@@ -19,7 +20,6 @@ def test_fill_chunk_across_page_boundary():
     num_kv_heads = 1
     head_dim = 4
     primitive_tokens_per_page = 4
-    dtype = mx.float16
 
     # Scenario: Write tokens starting mid-page and crossing to next page
     start_logical_position = primitive_tokens_per_page // 2  # Start at position 2 (mid-page)
@@ -34,7 +34,7 @@ def test_fill_chunk_across_page_boundary():
         f"num_sequences_in_batch={num_sequences_in_batch}, "
         f"num_kv_heads={num_kv_heads}, head_dim={head_dim}, "
         f"tokens_per_page={primitive_tokens_per_page}, "
-        f"num_physical_pages={num_physical_pages}"
+        f"num_physical_pages={num_physical_pages}, dtype={dtype}"
     )
 
     # Create distinct new keys and values
@@ -188,5 +188,5 @@ def test_fill_chunk_across_page_boundary():
 
     logger.info(
         f"Test passed: Chunk of {num_new_tokens_in_chunk} tokens correctly written "
-        f"across page boundary (starting at position {start_logical_position})"
+        f"across page boundary (starting at position {start_logical_position}), dtype={dtype}"
     )

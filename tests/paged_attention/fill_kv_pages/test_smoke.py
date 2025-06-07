@@ -17,13 +17,15 @@
 import logging
 
 import mlx.core as mx
+import pytest
 
 from proxy_attention_lab import fill_kv_pages
 
 logger = logging.getLogger(__name__)
 
 
-def test_fill_kv_pages_smoke() -> None:
+@pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16])
+def test_fill_kv_pages_smoke(dtype: mx.Dtype) -> None:
     """
     Smoke test for fill_kv_pages: verifies the function runs on minimal, valid inputs and produces outputs of correct shape and dtype.
     """
@@ -34,7 +36,6 @@ def test_fill_kv_pages_smoke() -> None:
     tokens_per_page = 16
     num_physical_pages = 10
     max_logical_blocks_per_seq = 4
-    dtype = mx.float16
 
     new_keys = mx.random.normal([num_new_tokens, num_kv_heads, head_dim], dtype=dtype)
     new_values = mx.random.normal([num_new_tokens, num_kv_heads, head_dim], dtype=dtype)

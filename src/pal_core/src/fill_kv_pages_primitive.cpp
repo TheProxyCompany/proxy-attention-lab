@@ -109,9 +109,10 @@ void FillKVPagesPrimitive::eval_gpu(const std::vector<mx::array>& inputs, std::v
                   params.num_kv_heads, params.head_dim, params.tokens_per_page,
                   params.total_new_tokens_to_write, params.page_table_max_logical_blocks);
 
+    const std::string dtype_identifier = mx::type_to_name(global_k_pool.dtype());
     // Get Metal kernel
     const std::string library_name = "pal";
-    const std::string kernel_name = "fill_kv_pages_kernel";
+    const std::string kernel_name = "fill_kv_pages_kernel_" + dtype_identifier;
     auto kernel_state = d.get_kernel(kernel_name, library_name);
     if (!kernel_state) {
         throw std::runtime_error("[FillKVPagesPrimitive] Failed to load kernel: " + kernel_name);

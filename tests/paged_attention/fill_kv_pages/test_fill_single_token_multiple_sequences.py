@@ -19,7 +19,8 @@ logger = logging.getLogger(__name__)
         (4, "distinct_pages_same_slot"),
     ],
 )
-def test_fill_single_token_multiple_sequences(num_sequences_in_batch, write_to_same_page_slot_type):
+@pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16])
+def test_fill_single_token_multiple_sequences(num_sequences_in_batch, write_to_same_page_slot_type, dtype):
     """Test filling single token each for multiple sequences (simulating batched decode).
 
     This test verifies that the fill_kv_pages operation correctly writes
@@ -32,12 +33,12 @@ def test_fill_single_token_multiple_sequences(num_sequences_in_batch, write_to_s
             - "distinct_pages_distinct_slots": each sequence writes to different page & slot
             - "same_page_distinct_slots": all sequences write to same page, different slots
             - "distinct_pages_same_slot": sequences write to different pages, same slot
+        dtype: Data type to use for the test (mx.float16 or mx.bfloat16)
     """
     # Fixed test parameters
     num_kv_heads = 1
     head_dim = 4
     primitive_tokens_per_page = 4
-    dtype = mx.float16
 
     # Determine physical pages needed based on scenario
     if write_to_same_page_slot_type == "distinct_pages_distinct_slots":
@@ -52,7 +53,7 @@ def test_fill_single_token_multiple_sequences(num_sequences_in_batch, write_to_s
         f"write_type={write_to_same_page_slot_type}, "
         f"num_kv_heads={num_kv_heads}, head_dim={head_dim}, "
         f"tokens_per_page={primitive_tokens_per_page}, "
-        f"num_physical_pages={num_physical_pages}"
+        f"num_physical_pages={num_physical_pages}, dtype={dtype}"
     )
 
     # Create distinct new keys and values
@@ -180,7 +181,8 @@ def test_fill_single_token_multiple_sequences(num_sequences_in_batch, write_to_s
         pytest.fail(
             f"Data in updated_k_pool does not match expected_k_pool for "
             f"num_sequences_in_batch={num_sequences_in_batch}, "
-            f"write_type={write_to_same_page_slot_type}"
+            f"write_type={write_to_same_page_slot_type}, "
+            f"dtype={dtype}"
         )
 
     logger.debug("Comparing value pools...")
@@ -196,10 +198,11 @@ def test_fill_single_token_multiple_sequences(num_sequences_in_batch, write_to_s
         pytest.fail(
             f"Data in updated_v_pool does not match expected_v_pool for "
             f"num_sequences_in_batch={num_sequences_in_batch}, "
-            f"write_type={write_to_same_page_slot_type}"
+            f"write_type={write_to_same_page_slot_type}, "
+            f"dtype={dtype}"
         )
 
     logger.info(
         f"Test passed: {num_sequences_in_batch} sequences correctly written "
-        f"with write_type={write_to_same_page_slot_type}"
+        f"with write_type={write_to_same_page_slot_type}, dtype={dtype}"
     )
