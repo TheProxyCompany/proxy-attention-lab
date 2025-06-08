@@ -223,7 +223,7 @@ void PagedAttentionPrimitive::_eval_gpu_2pass(
         actual_simd_width,
         true  // use_2pass_kernel
     );
-    spdlog::debug("[PAL 2PASS Debug] TGMem Assertion Check: Calculated layout total_bytes = {}", memory_layout.total_bytes);
+    spdlog::trace("[PAL 2PASS] TGMem Assertion Check: Calculated layout total_bytes = {}", memory_layout.total_bytes);
     if (memory_layout.total_bytes > metal_device_ptr->maxThreadgroupMemoryLength()) {
         throw std::runtime_error("[PAL Primitive] Prefill TGMem budget EXCEEDED with tile_size: " + std::to_string(tile_size));
     }
@@ -231,17 +231,17 @@ void PagedAttentionPrimitive::_eval_gpu_2pass(
     // Create work items buffer and update params BEFORE allocating arrays
     auto [work_items_buffer, num_active_batch_logical_pages_val] = create_work_items_buffer(params, inputs[4]);
     params.num_active_batch_logical_pages = num_active_batch_logical_pages_val;
-    spdlog::debug("[PAL 2PASS Debug] params.num_active_batch_logical_pages SET to: {}", params.num_active_batch_logical_pages);
+    spdlog::trace("[PAL 2PASS] params.num_active_batch_logical_pages SET to: {}", params.num_active_batch_logical_pages);
 
     mx::array query_starts_buffer = create_query_starts_buffer(
         params.num_sequences_in_batch,
         inputs[4],
         stream
     );
-    spdlog::debug("[PAL 2PASS Debug] query_starts_buffer created. Shape: [{}]", query_starts_buffer.shape(0));
+    spdlog::trace("[PAL 2PASS] query_starts_buffer created. Shape: [{}]", query_starts_buffer.shape(0));
 
     // Before allocating intermediate arrays
-    spdlog::debug("[PAL 2PASS Debug] Allocating intermediate arrays with: query_token_count_total={}, num_q_heads={}, num_active_batch_logical_pages={}",
+    spdlog::trace("[PAL 2PASS] Allocating intermediate arrays with: query_token_count_total={}, num_q_heads={}, num_active_batch_logical_pages={}",
                   params.query_token_count_total, params.num_q_heads, params.num_active_batch_logical_pages);
 
     // intermediate arrays for Pass 1 outputs
@@ -266,9 +266,9 @@ void PagedAttentionPrimitive::_eval_gpu_2pass(
     grid.depth = 1;
 
     // Before Pass 1 dispatch
-    spdlog::debug("[PAL 2PASS Debug] Pass 1 Grid: width={}, height={}, depth={}",
+    spdlog::trace("[PAL 2PASS] Pass 1 Grid: width={}, height={}, depth={}",
                   grid.width, grid.height, grid.depth);
-    spdlog::debug("[PAL 2PASS Debug] Passing params to Pass 1 with num_active_batch_logical_pages = {}",
+    spdlog::trace("[PAL 2PASS] Passing params to Pass 1 with num_active_batch_logical_pages = {}",
                   params.num_active_batch_logical_pages);
 
     // Setup compute encoder
@@ -374,16 +374,6 @@ void PagedAttentionPrimitive::_eval_gpu_2pass(
     current_offset_for_calc += kFinalMemoryPaddingGuardBytes;
     pass2_tg_mem_bytes = AttentionMemoryLayout::align_size(current_offset_for_calc);
 
-    // Set intermediate input arrays from Pass 1
-    spdlog::debug("[dispatch_prefill_pass2] m_locals_in shape: [{}, {}, {}]",
-                  m_locals_pass1_out.shape(0), m_locals_pass1_out.shape(1), m_locals_pass1_out.shape(2));
-    spdlog::debug("[dispatch_prefill_pass2] s_locals_in shape: [{}, {}, {}]",
-                  s_locals_pass1_out.shape(0), s_locals_pass1_out.shape(1), s_locals_pass1_out.shape(2));
-    spdlog::debug("[dispatch_prefill_pass2] o_partials_in shape: [{}, {}, {}, {}]",
-                  o_partials_pass1_out.shape(0), o_partials_pass1_out.shape(1), o_partials_pass1_out.shape(2), o_partials_pass1_out.shape(3));
-    spdlog::debug("[dispatch_prefill_pass2] work_items_buffer shape: [{}, {}]",
-                  work_items_buffer.shape(0), work_items_buffer.shape(1));
-
     // Set input arrays
     compute_encoder.set_input_array(m_locals_pass1_out, 0);
     compute_encoder.set_input_array(s_locals_pass1_out, 1);
@@ -477,7 +467,7 @@ size_t PagedAttentionPrimitive::calculate_per_gqa_group_compute_scratch(
     per_gqa_group_compute_scratch += kFinalMemoryPaddingGuardBytes;
     per_gqa_group_compute_scratch = AttentionMemoryLayout::align_size(per_gqa_group_compute_scratch);
 
-    spdlog::debug("[PAL 2PASS Debug] Calculated per_gqa_group_compute_scratch = {} bytes for D_s calculation", per_gqa_group_compute_scratch);
+    spdlog::trace("[PAL 2PASS] Calculated per_gqa_group_compute_scratch = {} bytes for D_s calculation", per_gqa_group_compute_scratch);
 
     return per_gqa_group_compute_scratch;
 }
@@ -505,7 +495,7 @@ uint32_t PagedAttentionPrimitive::calculate_symmetric_tile_depth(
     size_t fixed_overhead_bytes = per_gqa_group_compute_scratch_bytes;
     fixed_overhead_bytes = AttentionMemoryLayout::align_size(fixed_overhead_bytes);
 
-    spdlog::debug("[calculate_symmetric_tile_depth] Max TGMem: {} bytes, Fixed Overhead: {} bytes",
+    spdlog::trace("[calculate_symmetric_tile_depth] Max TGMem: {} bytes, Fixed Overhead: {} bytes",
                   max_threadgroup_memory_bytes, fixed_overhead_bytes);
 
     if (fixed_overhead_bytes >= max_threadgroup_memory_bytes) {
@@ -515,14 +505,14 @@ uint32_t PagedAttentionPrimitive::calculate_symmetric_tile_depth(
     }
 
     size_t memory_for_qkv_tiles = max_threadgroup_memory_bytes - fixed_overhead_bytes;
-    spdlog::debug("[calculate_symmetric_tile_depth] Memory available for QKV tiles: {} bytes", memory_for_qkv_tiles);
+    spdlog::trace("[calculate_symmetric_tile_depth] Memory available for QKV tiles: {} bytes", memory_for_qkv_tiles);
 
     // Bytes needed for one "layer" (depth=1) of symmetric Q, K, V tiles:
     // K-tile layer: head_dimension * sizeof(half)
     // V-tile layer: head_dimension * sizeof(half)
     // Q-block layer: query_heads_per_kv_group * head_dimension * sizeof(float)
     size_t bytes_per_unit_depth = head_dimension * (2 * S_h + query_heads_per_kv_group * S_f);
-    spdlog::debug("[calculate_symmetric_tile_depth] Bytes per unit depth for QKV tiles: {} bytes", bytes_per_unit_depth);
+    spdlog::trace("[calculate_symmetric_tile_depth] Bytes per unit depth for QKV tiles: {} bytes", bytes_per_unit_depth);
 
     if (bytes_per_unit_depth == 0) {
         spdlog::error("[calculate_symmetric_tile_depth] Denominator (bytes_per_unit_depth) is zero.");
@@ -530,7 +520,7 @@ uint32_t PagedAttentionPrimitive::calculate_symmetric_tile_depth(
     }
 
     uint32_t unaligned_depth = static_cast<uint32_t>(memory_for_qkv_tiles / bytes_per_unit_depth);
-    spdlog::debug("[calculate_symmetric_tile_depth] Unaligned symmetric depth (D_s): {}", unaligned_depth);
+    spdlog::trace("[calculate_symmetric_tile_depth] Unaligned symmetric depth (D_s): {}", unaligned_depth);
     uint32_t symmetric_depth = std::max(4u, (unaligned_depth / 4) * 4); // Align down to multiple of 4
     spdlog::debug("[calculate_symmetric_tile_depth] Final symmetric depth (D_s): {}", symmetric_depth);
     return std::min(MAX_TILE_SIZE_PRACTICAL, symmetric_depth);
@@ -709,7 +699,7 @@ static std::tuple<mx::array, size_t> create_work_items_buffer(const PagedAttenti
     // Get sequence lengths array data
     const int32_t* sequence_lengths_ptr = sequence_lengths.data<int32_t>();
 
-    spdlog::debug("[create_work_items_buffer] num_sequences_in_batch: {}, tokens_per_page: {}",
+    spdlog::trace("[create_work_items_buffer] num_sequences_in_batch: {}, tokens_per_page: {}",
                   params.num_sequences_in_batch, params.tokens_per_page);
 
     // Iterate through batch items and their logical pages
@@ -718,14 +708,14 @@ static std::tuple<mx::array, size_t> create_work_items_buffer(const PagedAttenti
         if (seq_len > 0) {
             // Calculate number of logical pages for this sequence
             uint32_t num_logical_pages = (seq_len + params.tokens_per_page - 1) / params.tokens_per_page;
-            spdlog::debug("[create_work_items_buffer] Batch {}: seq_len={}, num_logical_pages={}",
+            spdlog::trace("[create_work_items_buffer] Batch {}: seq_len={}, num_logical_pages={}",
                           b_idx, seq_len, num_logical_pages);
             // Add all logical pages for this batch item
             for (uint32_t lp_idx = 0; lp_idx < num_logical_pages; ++lp_idx) {
                 active_work_items.push_back(std::make_tuple(b_idx, lp_idx));
             }
         } else {
-            spdlog::debug("[create_work_items_buffer] Batch {}: seq_len={} (skipped)", b_idx, seq_len);
+            spdlog::trace("[create_work_items_buffer] Batch {}: seq_len={} (skipped)", b_idx, seq_len);
         }
     }
 
@@ -746,7 +736,7 @@ static std::tuple<mx::array, size_t> create_work_items_buffer(const PagedAttenti
         mx::uint32
     );
 
-    spdlog::debug("[create_work_items_buffer] work_items_buffer created with shape [{}, {}]",
+    spdlog::trace("[create_work_items_buffer] work_items_buffer created with shape [{}, {}]",
                   work_items_buffer.shape(0), work_items_buffer.shape(1));
 
     return std::make_tuple(work_items_buffer, active_work_items.size());
