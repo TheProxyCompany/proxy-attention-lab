@@ -17,10 +17,15 @@ logger = logging.getLogger(__name__)
         (4, 0),  # Exactly one page
         (5, 0),  # More than one page
         (3, 4),  # Starting in second logical block
+        (17, 0),  # Total new tokens = 17, max logical blocks = 5
     ],
 )
 @pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16])
-def test_fill_multiple_tokens_single_sequence(num_new_tokens_in_chunk, start_logical_position, dtype):
+@pytest.mark.parametrize("num_kv_heads", [1, 8])
+@pytest.mark.parametrize("head_dim", [4, 128])
+def test_fill_multiple_tokens_single_sequence(
+    num_kv_heads, head_dim, num_new_tokens_in_chunk, start_logical_position, dtype
+):
     """Test filling multiple tokens for a single sequence (simulating prefill chunk).
 
     This test verifies that the fill_kv_pages operation correctly writes
@@ -34,8 +39,6 @@ def test_fill_multiple_tokens_single_sequence(num_new_tokens_in_chunk, start_log
     """
     # Fixed test parameters
     num_sequences_in_batch = 1
-    num_kv_heads = 1
-    head_dim = 4
     primitive_tokens_per_page = 4
 
     # Calculate required logical blocks and physical pages
@@ -59,12 +62,18 @@ def test_fill_multiple_tokens_single_sequence(num_new_tokens_in_chunk, start_log
     new_keys_data = []
     new_values_data = []
     for i in range(num_new_tokens_in_chunk):
-        # Keys: [i*10+1, i*10+2, i*10+3, i*10+4]
-        # Values: [i*10+5, i*10+6, i*10+7, i*10+8]
-        key_row = [i * 10 + j + 1 for j in range(head_dim)]
-        value_row = [i * 10 + j + 5 for j in range(head_dim)]
-        new_keys_data.append([key_row])  # Extra dimension for kv_heads
-        new_values_data.append([value_row])
+        # Create data for all KV heads
+        token_keys = []
+        token_values = []
+        for _ in range(num_kv_heads):
+            # Keys: [i*10+1, i*10+2, i*10+3, i*10+4] for each head
+            # Values: [i*10+5, i*10+6, i*10+7, i*10+8] for each head
+            key_head = [i * 10 + j + 1 for j in range(head_dim)]
+            value_head = [i * 10 + j + 5 for j in range(head_dim)]
+            token_keys.append(key_head)
+            token_values.append(value_head)
+        new_keys_data.append(token_keys)
+        new_values_data.append(token_values)
 
     new_keys = mx.array(new_keys_data, dtype=dtype)
     new_values = mx.array(new_values_data, dtype=dtype)
@@ -141,12 +150,13 @@ def test_fill_multiple_tokens_single_sequence(num_new_tokens_in_chunk, start_log
         slot_in_block = logical_pos % primitive_tokens_per_page
         physical_page = page_table_data[0][logical_block]
 
-        # Expected keys and values
-        expected_key = [i * 10 + j + 1 for j in range(head_dim)]
-        expected_value = [i * 10 + j + 5 for j in range(head_dim)]
+        # Expected keys and values for all heads
+        for h in range(num_kv_heads):
+            expected_key = [i * 10 + j + 1 for j in range(head_dim)]
+            expected_value = [i * 10 + j + 5 for j in range(head_dim)]
 
-        expected_k_pool[physical_page, slot_in_block, 0, :] = mx.array(expected_key, dtype=dtype)
-        expected_v_pool[physical_page, slot_in_block, 0, :] = mx.array(expected_value, dtype=dtype)
+            expected_k_pool[physical_page, slot_in_block, h, :] = mx.array(expected_key, dtype=dtype)
+            expected_v_pool[physical_page, slot_in_block, h, :] = mx.array(expected_value, dtype=dtype)
 
         logger.debug(
             f"Token {i}: logical_pos={logical_pos}, physical_page={physical_page}, "
@@ -159,10 +169,13 @@ def test_fill_multiple_tokens_single_sequence(num_new_tokens_in_chunk, start_log
         # Log differences for debugging
         for page in range(num_physical_pages):
             for slot in range(primitive_tokens_per_page):
-                actual = updated_k_pool[page, slot, 0, :].tolist()
-                expected = expected_k_pool[page, slot, 0, :].tolist()
-                if actual != expected:
-                    logger.error(f"Mismatch at page={page}, slot={slot}: actual={actual}, expected={expected}")
+                for h in range(num_kv_heads):
+                    actual = updated_k_pool[page, slot, h, :].tolist()
+                    expected = expected_k_pool[page, slot, h, :].tolist()
+                    if actual != expected:
+                        logger.error(
+                            f"Mismatch at page={page}, slot={slot}, head={h}: actual={actual}, expected={expected}"
+                        )
 
         pytest.fail(
             f"Data in updated_k_pool does not match expected_k_pool for "
@@ -176,10 +189,13 @@ def test_fill_multiple_tokens_single_sequence(num_new_tokens_in_chunk, start_log
         # Log differences for debugging
         for page in range(num_physical_pages):
             for slot in range(primitive_tokens_per_page):
-                actual = updated_v_pool[page, slot, 0, :].tolist()
-                expected = expected_v_pool[page, slot, 0, :].tolist()
-                if actual != expected:
-                    logger.error(f"Mismatch at page={page}, slot={slot}: actual={actual}, expected={expected}")
+                for h in range(num_kv_heads):
+                    actual = updated_v_pool[page, slot, h, :].tolist()
+                    expected = expected_v_pool[page, slot, h, :].tolist()
+                    if actual != expected:
+                        logger.error(
+                            f"Mismatch at page={page}, slot={slot}, head={h}: actual={actual}, expected={expected}"
+                        )
 
         pytest.fail(
             f"Data in updated_v_pool does not match expected_v_pool for "

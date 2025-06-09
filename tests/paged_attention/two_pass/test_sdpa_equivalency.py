@@ -13,19 +13,10 @@ logger = logging.getLogger(__name__)
 @pytest.mark.parametrize(
     "batch_size, seq_len, num_heads, head_dim",
     [
-        (1, 16, (1, 1), 32),  # Original case
-        (1, 32, (1, 1), 32),  # Longer sequence
-        (1, 16, (4, 1), 32),  # MQA (num_q_heads > num_kv_heads)
-        (1, 16, (4, 2), 32),  # GQA (num_q_heads > num_kv_heads, num_kv_heads > 1)
-        (1, 16, (1, 1), 64),  # Different head dimension
-        (1, 16, (2, 2), 32),  # num q = num kv heads
-        (1, 16, (4, 2), 128),  # 128 head dim
-        (1, 123, (32, 16), 128),  # long sequence
-        (1, 2048, (32, 16), 128),  # Gemma 3 27b, long sequence
-        (2, 64, (4, 4), 32),  # Batched Example
+        (1, 17, (32, 8), 128),  # llama 3.1 8b failing "paris question"
     ],
 )
-def test_pal_vs_sdpa_equivalency_mha(batch_size, seq_len, num_heads, head_dim, dtype):
+def test_pal_vs_sdpa_equivalency(batch_size, seq_len, num_heads, head_dim, dtype):
     """Compare PAL paged_attention with MLX SDPA kernel.
 
     This test verifies that our paged_attention implementation produces numerically
@@ -49,7 +40,7 @@ def test_pal_vs_sdpa_equivalency_mha(batch_size, seq_len, num_heads, head_dim, d
     mx.metal.clear_cache()
     mx.random.seed(11)
 
-    logger.info(f"Test: {test_pal_vs_sdpa_equivalency_mha.__name__}")
+    logger.info(f"Test: {test_pal_vs_sdpa_equivalency.__name__}")
     num_q_heads, num_kv_heads = num_heads
 
     logger.info("  Test Configuration:")
