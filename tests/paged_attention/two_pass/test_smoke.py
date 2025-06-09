@@ -62,7 +62,7 @@ def test_paged_attention_smoke(dtype) -> None:
 
     # KV cache parameters
     num_total_pages = 2
-    max_logical_blocks_per_seq_val = 1  # Sequence uses at most 1 logical block
+    max_logical_pages_per_seq_val = 1  # Sequence uses at most 1 logical block
 
     logger.info("  Test Configuration:")
     logger.info(f"    Queries: {total_num_query_tokens} total query tokens, {num_q_heads} heads, {head_dim} dimensions")
@@ -76,9 +76,9 @@ def test_paged_attention_smoke(dtype) -> None:
     mock_v_cache_pool = mx.random.normal((num_total_pages, tokens_per_page, num_kv_heads, head_dim)).astype(dtype)
 
     # Create page table: maps logical blocks to physical pages
-    # Shape: [num_sequences_in_batch, max_logical_blocks_per_seq_val]
+    # Shape: [num_sequences_in_batch, max_logical_pages_per_seq_val]
     # For this smoke test, just point to physical page 0
-    page_table_content = [[0] * max_logical_blocks_per_seq_val for _ in range(num_sequences_in_batch)]
+    page_table_content = [[0] * max_logical_pages_per_seq_val for _ in range(num_sequences_in_batch)]
     mock_page_table = mx.array(page_table_content, dtype=mx.uint32)
 
     # Metadata arrays aligned with prefill contract

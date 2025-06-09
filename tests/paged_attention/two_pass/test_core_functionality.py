@@ -43,7 +43,7 @@ def test_fetch_k_vector_element_for_first_token_of_sequence(dtype) -> None:
     # Configuration
     cfg_num_kv_heads = 1
     cfg_head_dim = 4
-    cfg_max_logical_blocks_per_seq_in_pagetable = 2
+    cfg_max_logical_pages_per_seq_in_pagetable = 2
 
     # Calculate proper tokens_per_page
     cfg_tokens_per_page = calculate_page_size(cfg_head_dim, 1, cfg_num_kv_heads)  # Assuming num_q_heads=1 for 2D
@@ -92,7 +92,7 @@ def test_fetch_k_vector_element_for_first_token_of_sequence(dtype) -> None:
         ],
         dtype=mx.uint32,
     )
-    assert py_page_table.shape == (num_sequences, cfg_max_logical_blocks_per_seq_in_pagetable)
+    assert py_page_table.shape == (num_sequences, cfg_max_logical_pages_per_seq_in_pagetable)
 
     # Set up sequence metadata aligned with prefill contract
     py_sequence_lengths = mx.array(sequence_lengths_list, dtype=mx.int32)
@@ -192,7 +192,7 @@ def test_fetch_entire_k_vector_for_specific_token_slot(dtype) -> None:
     # Configuration
     cfg_num_kv_heads = 1
     cfg_head_dim = 4
-    cfg_max_logical_blocks_per_seq_in_pagetable = 2
+    cfg_max_logical_pages_per_seq_in_pagetable = 2
 
     # Calculate proper tokens_per_page
     cfg_tokens_per_page = calculate_page_size(cfg_head_dim, 1, cfg_num_kv_heads)  # Assuming num_q_heads=1 for 2D
@@ -243,7 +243,7 @@ def test_fetch_entire_k_vector_for_specific_token_slot(dtype) -> None:
         ],
         dtype=mx.uint32,
     )
-    assert py_page_table.shape == (num_sequences, cfg_max_logical_blocks_per_seq_in_pagetable)
+    assert py_page_table.shape == (num_sequences, cfg_max_logical_pages_per_seq_in_pagetable)
 
     # Set up sequence metadata aligned with prefill contract
     py_sequence_lengths = mx.array(sequence_lengths_list, dtype=mx.int32)
@@ -341,7 +341,7 @@ def test_fetch_k_vector_from_variable_token_slot_in_first_logical_block(dtype) -
     # Configuration
     cfg_num_kv_heads = 1
     cfg_head_dim = 4
-    cfg_max_logical_blocks_per_seq_in_pagetable = 2
+    cfg_max_logical_pages_per_seq_in_pagetable = 2
 
     # Calculate proper tokens_per_page
     cfg_tokens_per_page = calculate_page_size(cfg_head_dim, 1, cfg_num_kv_heads)
@@ -390,7 +390,7 @@ def test_fetch_k_vector_from_variable_token_slot_in_first_logical_block(dtype) -
 
     # Set up page table - single sequence, single page
     py_page_table = mx.array([[0, 99]], dtype=mx.uint32)
-    assert py_page_table.shape == (num_sequences, cfg_max_logical_blocks_per_seq_in_pagetable)
+    assert py_page_table.shape == (num_sequences, cfg_max_logical_pages_per_seq_in_pagetable)
 
     # Set up sequence metadata aligned with prefill contract
     py_sequence_lengths = mx.array(sequence_lengths_list, dtype=mx.int32)

@@ -41,7 +41,7 @@ def test_fetch_k_vector_from_multiple_kv_heads(dtype) -> None:
     cfg_tokens_per_page = 64
     cfg_num_kv_heads = 2
     cfg_head_dim = 4
-    cfg_max_logical_blocks_per_seq_in_pagetable = 2
+    cfg_max_logical_pages_per_seq_in_pagetable = 2
     py_queries = mx.zeros((num_tokens, num_q_heads, cfg_head_dim), dtype=dtype)
     py_queries[0, 0, :] = 100.0
     py_queries[0, 1, :] = 200.0
@@ -66,7 +66,7 @@ def test_fetch_k_vector_from_multiple_kv_heads(dtype) -> None:
         ],
         dtype=mx.uint32,
     )
-    assert py_page_table.shape == (1, cfg_max_logical_blocks_per_seq_in_pagetable)
+    assert py_page_table.shape == (1, cfg_max_logical_pages_per_seq_in_pagetable)
     py_sequence_lengths = mx.array([64], dtype=mx.int32)
 
     # Need query_to_seq_map with one entry per token, not per head

@@ -48,11 +48,7 @@ NB_MODULE(pal_core, m) {
     uint32_t num_query_heads,
     uint32_t num_kv_heads,
     std::optional<mx::StreamOrDevice> stream_or_device) {
-      auto tile_info = pal::cpp::PagedAttentionPrimitive::get_optimal_tile_size_and_thread_info(
-        head_dimension,
-        num_query_heads,
-        num_kv_heads,
-        stream_or_device.value_or(mx::StreamOrDevice{}));
+      auto tile_info = pal::cpp::PagedAttentionPrimitive::get_optimal_tile_size_and_thread_info();
       auto tile_size = std::get<0>(tile_info);
       return tile_size;
     },

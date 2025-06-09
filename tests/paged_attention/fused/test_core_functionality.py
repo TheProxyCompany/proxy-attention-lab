@@ -41,7 +41,7 @@ def test_fetch_k_vector_element_for_first_token_of_sequence(dtype) -> None:
     cfg_tokens_per_page = 64
     cfg_num_kv_heads = 1
     cfg_head_dim = 4
-    cfg_max_logical_blocks_per_seq_in_pagetable = 2
+    cfg_max_logical_pages_per_seq_in_pagetable = 2
 
     # Create 2D queries with shape [num_q_threads, cfg_head_dim]
     py_queries = mx.zeros((num_q_threads, cfg_head_dim), dtype=dtype)
@@ -77,7 +77,7 @@ def test_fetch_k_vector_element_for_first_token_of_sequence(dtype) -> None:
         ],
         dtype=mx.uint32,
     )
-    assert py_page_table.shape == (num_q_threads, cfg_max_logical_blocks_per_seq_in_pagetable)
+    assert py_page_table.shape == (num_q_threads, cfg_max_logical_pages_per_seq_in_pagetable)
 
     # Set up sequence metadata
     py_sequence_lengths = mx.array([10, 5], dtype=mx.int32)
@@ -149,7 +149,7 @@ def test_fetch_entire_k_vector_for_specific_token_slot(dtype) -> None:
     cfg_tokens_per_page = 64
     cfg_num_kv_heads = 1
     cfg_head_dim = 4
-    cfg_max_logical_blocks_per_seq_in_pagetable = 2
+    cfg_max_logical_pages_per_seq_in_pagetable = 2
 
     # Create 2D queries with shape [num_q_threads, cfg_head_dim]
     py_queries = mx.zeros((num_q_threads, cfg_head_dim), dtype=dtype)
@@ -182,7 +182,7 @@ def test_fetch_entire_k_vector_for_specific_token_slot(dtype) -> None:
         ],
         dtype=mx.uint32,
     )
-    assert py_page_table.shape == (num_q_threads, cfg_max_logical_blocks_per_seq_in_pagetable)
+    assert py_page_table.shape == (num_q_threads, cfg_max_logical_pages_per_seq_in_pagetable)
 
     # Set up sequence metadata
     py_sequence_lengths = mx.array([10, 5], dtype=mx.int32)
@@ -252,7 +252,7 @@ def test_fetch_k_vector_from_variable_token_slot_in_first_logical_block(dtype) -
     cfg_tokens_per_page = 64
     cfg_num_kv_heads = 1
     cfg_head_dim = 4
-    cfg_max_logical_blocks_per_seq_in_pagetable = 2
+    cfg_max_logical_pages_per_seq_in_pagetable = 2
 
     # Create 2D queries with shape [num_q_threads, cfg_head_dim]
     py_queries = mx.zeros((num_q_threads, cfg_head_dim), dtype=dtype)
@@ -287,7 +287,7 @@ def test_fetch_k_vector_from_variable_token_slot_in_first_logical_block(dtype) -
         ],
         dtype=mx.uint32,
     )
-    assert py_page_table.shape == (2, cfg_max_logical_blocks_per_seq_in_pagetable)
+    assert py_page_table.shape == (2, cfg_max_logical_pages_per_seq_in_pagetable)
 
     # Set up sequence metadata
     py_sequence_lengths = mx.array([64, 32], dtype=mx.int32)
@@ -610,7 +610,7 @@ def test_dot_product_q_with_single_k_vector(dtype) -> None:
     cfg_head_dim = 4  # Dimension of Q, K, V vectors
     cfg_tokens_per_page = 64
     cfg_num_kv_heads = 2  # Matching number of KV heads (GQA factor = 1)
-    cfg_max_logical_blocks_per_seq_in_pagetable = 1
+    cfg_max_logical_pages_per_seq_in_pagetable = 1
 
     # --- Setup test inputs ---
     # 1. Queries: 3D [NumTestTokens, NumQHeads, HeadDim]
@@ -641,7 +641,7 @@ def test_dot_product_q_with_single_k_vector(dtype) -> None:
     # 4. Set up page table - single page for all sequences
     num_sequences_in_batch_for_test = 1
     py_page_table = mx.array([[0]], dtype=mx.uint32)  # Logical block 0 -> Physical page 0
-    assert py_page_table.shape == (num_sequences_in_batch_for_test, cfg_max_logical_blocks_per_seq_in_pagetable)
+    assert py_page_table.shape == (num_sequences_in_batch_for_test, cfg_max_logical_pages_per_seq_in_pagetable)
 
     # 5. Set up sequence metadata
     py_sequence_lengths = mx.array([cfg_tokens_per_page], dtype=mx.int32)

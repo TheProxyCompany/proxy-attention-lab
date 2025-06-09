@@ -49,11 +49,11 @@ def test_paged_attention_determinism_prefill(dtype) -> None:
     logger.info(f"  Total query tokens in batch: {total_query_tokens_in_batch}")
 
     # Max logical blocks needed for any sequence in the batch
-    max_logical_blocks_per_seq = 0
+    max_logical_pages_per_seq = 0
     if total_query_tokens_in_batch > 0:
-        max_logical_blocks_per_seq = int(mx.ceil(mx.max(py_sequence_lengths) / tokens_per_page).item())
-    if max_logical_blocks_per_seq == 0:
-        max_logical_blocks_per_seq = 1
+        max_logical_pages_per_seq = int(mx.ceil(mx.max(py_sequence_lengths) / tokens_per_page).item())
+    if max_logical_pages_per_seq == 0:
+        max_logical_pages_per_seq = 1
 
     # Seed for reproducibility
     mx.random.seed(11)
@@ -89,12 +89,12 @@ def test_paged_attention_determinism_prefill(dtype) -> None:
         for _ in range(num_logical_pages_for_seq):
             pages_for_this_seq.append(current_physical_page_idx)
             current_physical_page_idx += 1
-        while len(pages_for_this_seq) < max_logical_blocks_per_seq:
+        while len(pages_for_this_seq) < max_logical_pages_per_seq:
             pages_for_this_seq.append(0)
         py_page_table_list.append(pages_for_this_seq)
 
     if not py_page_table_list:
-        py_page_table = mx.zeros((0, max_logical_blocks_per_seq), dtype=mx.uint32)
+        py_page_table = mx.zeros((0, max_logical_pages_per_seq), dtype=mx.uint32)
     else:
         py_page_table = mx.array(py_page_table_list, dtype=mx.uint32)
 

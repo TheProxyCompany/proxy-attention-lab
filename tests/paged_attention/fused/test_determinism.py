@@ -44,7 +44,7 @@ def test_paged_attention_determinism(history_length, num_queries_tokens, tokens_
     num_kv_heads = 16
     head_dim = 128
     num_total_pages = history_length // tokens_per_page
-    max_logical_blocks_per_seq = (tokens_per_page * 2) // tokens_per_page  # e.g., 2 blocks
+    max_logical_pages_per_seq = (tokens_per_page * 2) // tokens_per_page  # e.g., 2 blocks
 
     # Seed for reproducibility of input data generation
     mx.random.seed(11)
@@ -60,10 +60,10 @@ def test_paged_attention_determinism(history_length, num_queries_tokens, tokens_
     py_v_cache_pool = mx.random.normal(kv_cache_shape, dtype=dtype)
 
     # 3. Page Table: [NumSequencesInBatch, MaxLogicalBlocksPerSeq]
-    py_page_table = mx.random.randint(0, num_total_pages, [1, max_logical_blocks_per_seq], dtype=mx.uint32)
+    py_page_table = mx.random.randint(0, num_total_pages, [1, max_logical_pages_per_seq], dtype=mx.uint32)
 
     # 4. Sequence Lengths: [NumSequencesInBatch]
-    max_seq_len_possible = max_logical_blocks_per_seq * tokens_per_page
+    max_seq_len_possible = max_logical_pages_per_seq * tokens_per_page
     py_sequence_lengths = mx.random.randint(1, max_seq_len_possible + 1, [1], dtype=mx.int32)
 
     # 5. Query to Sequence Map: [NumQueryTokens]

@@ -586,7 +586,7 @@ def test_history_scan_stops_at_page_table_limit(dtype) -> None:
     """Test that history scan stops at page table limits.
 
     This test verifies that if the history scan encounters a logical_block_idx that is
-    >= params->max_logical_blocks_per_seq (i.e., beyond what the page table describes
+    >= params->max_logical_pages_per_seq (i.e., beyond what the page table describes
     for that sequence), the kernel correctly stops scanning further history but still
     returns the max score found from valid preceding blocks.
 
@@ -595,7 +595,7 @@ def test_history_scan_stops_at_page_table_limit(dtype) -> None:
     should be ignored even though it's within sequence_length.
 
     The kernel achieves this via the code:
-    if (logical_block_idx >= params->max_logical_blocks_per_seq) {
+    if (logical_block_idx >= params->max_logical_pages_per_seq) {
         break; // No more valid blocks for this sequence's history
     }
     """
@@ -603,7 +603,7 @@ def test_history_scan_stops_at_page_table_limit(dtype) -> None:
     cfg_tokens_per_page = 2  # Small value to ensure we span multiple blocks quickly
     cfg_num_kv_heads = 1
     cfg_head_dim = 4
-    max_logical_blocks_per_seq_in_pagetable = 2  # Page table only describes 2 logical blocks
+    max_logical_pages_per_seq_in_pagetable = 2  # Page table only describes 2 logical blocks
     query_token_offset = 5  # History positions: 0,1,2,3,4
 
     # --- Setup test inputs ---
@@ -646,7 +646,7 @@ def test_history_scan_stops_at_page_table_limit(dtype) -> None:
     py_v_cache_pool[1, 0, 0, :] = mx.array([500.0, 600.0, 700.0, 800.0], dtype=dtype)  # Position 4
 
     # 4. Page Table: Maps logical blocks 0,1 to physical pages 0,1
-    # Limited to max_logical_blocks_per_seq_in_pagetable = 2
+    # Limited to max_logical_pages_per_seq_in_pagetable = 2
     py_page_table = mx.array([[0, 1]], dtype=mx.uint32)  # Shape (1, 2)
 
     # 5. Sequence Lengths: One sequence with plenty of tokens
@@ -719,7 +719,7 @@ def test_history_scan_stops_at_page_table_limit(dtype) -> None:
 
     logger.info(f"Test: {test_history_scan_stops_at_page_table_limit.__name__} dtype={dtype}")
     logger.info(
-        f"  max_logical_blocks_per_seq = {max_logical_blocks_per_seq_in_pagetable}, query_token_offset = {query_token_offset}"
+        f"  max_logical_pages_per_seq = {max_logical_pages_per_seq_in_pagetable}, query_token_offset = {query_token_offset}"
     )
     logger.info("  Scores for positions in valid blocks:")
     logger.info(f"    Position 0 (block 0, slot 0): {score0}")

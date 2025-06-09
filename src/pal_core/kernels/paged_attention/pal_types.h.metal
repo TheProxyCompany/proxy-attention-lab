@@ -37,6 +37,12 @@ struct Vec<half, 4> {
   using Type = half4;
 };
 
+// Specialization for float4
+template <>
+struct Vec<float, 4> {
+  using Type = float4;
+};
+
 // Specialization for bfloat16_t requires a custom struct
 // to group 4 bfloat16_t values, as bfloat4 is not a built-in Metal type.
 struct bfloat4_ {
@@ -47,6 +53,11 @@ template <>
 struct Vec<bfloat16_t, 4> {
   using Type = bfloat4_;
 };
+
+// Convert float4 to float4 (identity)
+inline float4 to_float4(float4 v) {
+    return v;
+}
 
 // Convert half4 to float4
 inline float4 to_float4(half4 v) {
@@ -61,6 +72,12 @@ inline float4 to_float4(bfloat4_ v) {
 // Convert float4 to a target type T's vector representation
 template <typename T>
 inline typename Vec<T, 4>::Type from_float4(float4 v);
+
+// Specialization for converting float4 to float4 (identity)
+template <>
+inline float4 from_float4<float>(float4 v) {
+    return v;
+}
 
 // Specialization for converting float4 to half4
 template <>
@@ -77,4 +94,19 @@ inline bfloat4_ from_float4<bfloat16_t>(float4 v) {
     result.z = bfloat16_t(v.z);
     result.w = bfloat16_t(v.w);
     return result;
+}
+
+// SIMD reduction helpers
+template <typename T>
+inline T simd_sum(T v, uint simd_size) {
+    for (uint off = simd_size >> 1; off > 0; off >>= 1)
+        v += simd_shuffle_xor(v, off);
+    return v;
+}
+
+template <typename T>
+inline T simd_max(T v, uint simd_size) {
+    for (uint off = simd_size >> 1; off > 0; off >>= 1)
+        v = max(v, simd_shuffle_xor(v, off));
+    return v;
 }
