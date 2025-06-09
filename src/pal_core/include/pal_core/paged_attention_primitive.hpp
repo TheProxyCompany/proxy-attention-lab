@@ -51,11 +51,13 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
    * @param tokens_per_page Number of tokens stored in each memory page
    */
   explicit PagedAttentionPrimitive(
-    mx::StreamOrDevice stream,
-    int num_q_heads = 0,
-    int num_kv_heads = 0,
-    int head_dim = 0,
-    int tokens_per_page = 0
+    mx::StreamOrDevice stream_or_device,
+    int num_q_heads,
+    int num_kv_heads,
+    int head_dim,
+    int tokens_per_page,
+    bool use_two_pass,
+    int chunk_size
   );
 
   /**
@@ -132,6 +134,9 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
   int num_kv_heads_;
   int head_dim_;
   int tokens_per_page_;
+  int chunk_size_;
+  bool use_two_pass_;
+
 
   /**
    * @brief Implements vector-Jacobian product for backpropagation.

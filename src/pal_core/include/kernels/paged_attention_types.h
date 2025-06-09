@@ -42,7 +42,7 @@ struct alignas(16) PagedAttentionParams {
   uint32_t tokens_per_page;               // Number of tokens stored in each page
   uint32_t num_sequences_in_batch;        // Number of sequences in batch
   uint32_t num_physical_pages_in_pool;    // Number of physical pages in pool
-  uint32_t max_logical_pages_per_seq;    // Maximum logical blocks per sequence
+  uint32_t max_logical_pages_per_seq;     // Maximum logical blocks per sequence
   uint32_t simd_width;                    // SIMD width
   float    log_exp_min_clamp;             // Minimum value for exponent in exp function
   float    inv_sqrt_head_dim;             // 1/sqrt(head_dim) precomputed on host

@@ -56,8 +56,8 @@ mx::array paged_attention(
 
   // Extract head_dim and tokens_per_page from K cache pool
   if (k_cache_pool.ndim() == 4) {
-    tokens_per_page = k_cache_pool.shape(1);
-    num_kv_heads = k_cache_pool.shape(2);
+    num_kv_heads = k_cache_pool.shape(1);
+    tokens_per_page = k_cache_pool.shape(2);
     head_dim = k_cache_pool.shape(3);
   }
 
@@ -132,8 +132,8 @@ std::tuple<mx::array, mx::array> fill_kv_pages(
   }
 
   // Extract key parameters from input arrays to pass to the primitive
-  int tokens_per_page = global_key_pool.shape(1);
-  int num_kv_heads = global_key_pool.shape(2);
+  int num_kv_heads = global_key_pool.shape(1);
+  int tokens_per_page = global_key_pool.shape(2);
   int head_dim = global_key_pool.shape(3);
 
   // Create the primitive instance with the extracted parameters
