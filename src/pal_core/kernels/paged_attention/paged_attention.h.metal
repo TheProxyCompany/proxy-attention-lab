@@ -204,10 +204,7 @@ template <typename T, int head_dim, int CHUNK_SIZE>
                     qk_partial += dot(q_chunk, k_chunk);
                 }
 
-                // --- Level 1 Reduction (within subgroup) ---
-                for (int offset = subgroup_size / 2; offset > 0; offset /= 2) {
-                    qk_partial += simd_shuffle_xor(qk_partial, offset);
-                }
+                qk_partial = simd_sum(qk_partial, subgroup_size);
                 score = qk_partial;
             }
 
