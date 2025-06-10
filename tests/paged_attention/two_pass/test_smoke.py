@@ -19,7 +19,7 @@ import logging
 import mlx.core as mx
 import pytest
 
-from proxy_attention_lab import calculate_page_size, paged_attention
+from proxy_attention_lab import get_optimal_page_size, paged_attention
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +50,7 @@ def test_paged_attention_smoke(dtype) -> None:
     head_dim = 32
 
     # Calculate tokens_per_page using the kernel's expected page size
-    tokens_per_page = calculate_page_size(head_dim, num_q_heads, num_kv_heads)
+    tokens_per_page = get_optimal_page_size()
 
     # Batch parameters
     num_sequences_in_batch = 1  # For this smoke test, keep it simple with one sequence

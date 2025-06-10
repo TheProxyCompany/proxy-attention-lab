@@ -19,7 +19,7 @@ import mlx.core as mx
 import mlx.nn
 import pytest
 
-from proxy_attention_lab import calculate_page_size, paged_attention
+from proxy_attention_lab import get_optimal_page_size, paged_attention
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +48,7 @@ def test_pal_latency_vs_seq_len(benchmark, seq_len_val):
         benchmark: pytest-benchmark fixture for performance measurement
         seq_len_val: sequence length value to test
     """
-    mx.metal.clear_cache()
+    mx.clear_cache()
     # Create test parameters from baseline with specified sequence length
     params = BASELINE_CONFIG.copy()
     params["seq_len"] = seq_len_val
@@ -58,7 +58,7 @@ def test_pal_latency_vs_seq_len(benchmark, seq_len_val):
     dtype = params["dtype"]
     batch_size = params["batch_size"]
     seq_len = params["seq_len"]
-    tokens_per_page = calculate_page_size(head_dim, num_q_heads, num_kv_heads)
+    tokens_per_page = get_optimal_page_size()
 
     # Setup input tensors
     num_tokens = batch_size * seq_len
@@ -144,7 +144,7 @@ def test_mlx_latency_vs_seq_len(benchmark, seq_len_val):
         benchmark: pytest-benchmark fixture for performance measurement
         seq_len_val: sequence length value to test
     """
-    mx.metal.clear_cache()
+    mx.clear_cache()
     # Create parameters with the fixed batch size and specified sequence length
     params = BASELINE_CONFIG.copy()
     params["seq_len"] = seq_len_val
@@ -328,11 +328,11 @@ def test_pal_decode_latency_vs_history_len(benchmark, history_len_val):
         benchmark: pytest-benchmark fixture for performance measurement
         history_len_val: history length value to test (size of existing KV cache)
     """
-    mx.metal.clear_cache()
+    mx.clear_cache()
     # Create test parameters for decode phase
     params = BASELINE_CONFIG.copy()
     params["history_len"] = history_len_val
-    params["tokens_per_page"] = calculate_page_size(params["head_dim"], params["num_q_heads"], params["num_kv_heads"])
+    params["tokens_per_page"] = get_optimal_page_size(params["head_dim"], params["num_q_heads"], params["num_kv_heads"])
 
     # Calculate the number of query items for benchmarking info
     params["num_query_items"] = params["batch_size"] * params["num_q_heads"]
@@ -379,7 +379,7 @@ def test_mlx_decode_latency_vs_history_len(benchmark, history_len_val):
         benchmark: pytest-benchmark fixture for performance measurement
         history_len_val: history length value to test (size of existing KV cache)
     """
-    mx.metal.clear_cache()
+    mx.clear_cache()
     # Create test parameters for decode phase
     params = BASELINE_CONFIG.copy()
     params["history_len"] = history_len_val

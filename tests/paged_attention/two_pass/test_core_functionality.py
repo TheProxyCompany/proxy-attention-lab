@@ -23,7 +23,7 @@ import logging
 import mlx.core as mx
 import pytest
 
-from proxy_attention_lab import calculate_page_size, paged_attention
+from proxy_attention_lab import get_optimal_page_size, paged_attention
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +46,7 @@ def test_fetch_k_vector_element_for_first_token_of_sequence(dtype) -> None:
     cfg_max_logical_pages_per_seq_in_pagetable = 2
 
     # Calculate proper tokens_per_page
-    cfg_tokens_per_page = calculate_page_size(cfg_head_dim, 1, cfg_num_kv_heads)  # Assuming num_q_heads=1 for 2D
+    cfg_tokens_per_page = get_optimal_page_size(cfg_head_dim, 1, cfg_num_kv_heads)  # Assuming num_q_heads=1 for 2D
 
     # Batch configuration: 2 sequences, prefilling 2 tokens for seq 0 and 2 for seq 1
     num_sequences = 2
@@ -195,7 +195,7 @@ def test_fetch_entire_k_vector_for_specific_token_slot(dtype) -> None:
     cfg_max_logical_pages_per_seq_in_pagetable = 2
 
     # Calculate proper tokens_per_page
-    cfg_tokens_per_page = calculate_page_size(cfg_head_dim, 1, cfg_num_kv_heads)  # Assuming num_q_heads=1 for 2D
+    cfg_tokens_per_page = get_optimal_page_size(cfg_head_dim, 1, cfg_num_kv_heads)  # Assuming num_q_heads=1 for 2D
 
     # Batch configuration: 2 sequences, each prefilling 2 tokens
     num_sequences = 2
@@ -344,7 +344,7 @@ def test_fetch_k_vector_from_variable_token_slot_in_first_logical_block(dtype) -
     cfg_max_logical_pages_per_seq_in_pagetable = 2
 
     # Calculate proper tokens_per_page
-    cfg_tokens_per_page = calculate_page_size(cfg_head_dim, 1, cfg_num_kv_heads)
+    cfg_tokens_per_page = get_optimal_page_size(cfg_head_dim, 1, cfg_num_kv_heads)
 
     # Batch configuration: 1 sequence with 9 tokens
     num_sequences = 1

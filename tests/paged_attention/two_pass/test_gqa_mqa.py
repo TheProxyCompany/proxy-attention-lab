@@ -24,7 +24,7 @@ import logging
 import mlx.core as mx
 import pytest
 
-from proxy_attention_lab import calculate_page_size, paged_attention
+from proxy_attention_lab import get_optimal_page_size, paged_attention
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +39,7 @@ def test_fetch_k_vector_from_multiple_kv_heads(dtype) -> None:
     num_q_heads = 2
     cfg_num_kv_heads = 2
     cfg_head_dim = 4
-    cfg_tokens_per_page = calculate_page_size(cfg_head_dim, num_q_heads, cfg_num_kv_heads)
+    cfg_tokens_per_page = get_optimal_page_size(cfg_head_dim, num_q_heads, cfg_num_kv_heads)
     cfg_max_logical_pages_per_seq_in_pagetable = 2
 
     # Set up sequence with enough tokens to include token_slot 5
@@ -175,7 +175,7 @@ def test_mqa_kv_head_selection(dtype) -> None:
     num_q_heads = 1  # Only one query head
     cfg_num_kv_heads = 2  # Two KV heads
     cfg_head_dim = 4
-    cfg_tokens_per_page = calculate_page_size(cfg_head_dim, num_q_heads, cfg_num_kv_heads)
+    cfg_tokens_per_page = get_optimal_page_size(cfg_head_dim, num_q_heads, cfg_num_kv_heads)
 
     # Create 3D queries with shape [num_tokens, num_q_heads, cfg_head_dim]
     py_queries = mx.zeros((num_tokens, num_q_heads, cfg_head_dim), dtype=dtype)
@@ -271,8 +271,8 @@ def test_mqa_multi_token_kv_head_selection_2d_query(dtype) -> None:
     cfg_num_kv_heads = 4  # Multiple KV heads
 
     # Get the actual tile size the kernel will use
-    # calculate_page_size is actually get_optimal_tile_size from C++
-    cfg_tokens_per_page = calculate_page_size(cfg_head_dim, 1, cfg_num_kv_heads)
+    # get_optimal_page_size is actually get_optimal_page_size from C++
+    cfg_tokens_per_page = get_optimal_page_size(cfg_head_dim, 1, cfg_num_kv_heads)
 
     # Calculate number of logical pages needed
     num_logical_pages = (num_tokens + cfg_tokens_per_page - 1) // cfg_tokens_per_page

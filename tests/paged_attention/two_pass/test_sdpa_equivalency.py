@@ -4,7 +4,7 @@ import mlx.core as mx
 import mlx.nn as nn
 import pytest
 
-from proxy_attention_lab import calculate_page_size, paged_attention
+from proxy_attention_lab import get_optimal_page_size, paged_attention
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,7 @@ def test_pal_vs_sdpa_equivalency(batch_size, seq_len, num_heads, head_dim, dtype
     This ensures that our implementation matches the standard attention mechanism
     when the inputs are directly comparable.
     """
-    mx.metal.clear_cache()
+    mx.clear_cache()
     mx.random.seed(11)
 
     logger.info(f"Test: {test_pal_vs_sdpa_equivalency.__name__}")
@@ -58,7 +58,7 @@ def test_pal_vs_sdpa_equivalency(batch_size, seq_len, num_heads, head_dim, dtype
     logger.info(f"    Query heads: {num_q_heads}, KV heads: {num_kv_heads}, Head dim: {head_dim}")
     logger.info(f"    Data type: {dtype}")
 
-    tokens_per_page = calculate_page_size(head_dim, num_q_heads, num_kv_heads)
+    tokens_per_page = get_optimal_page_size()
     logger.info(f"    Tokens per page: {tokens_per_page}")
 
     # --- 1. Setup Inputs & Run MLX SDPA (Reference) ---
@@ -95,6 +95,7 @@ def test_pal_vs_sdpa_equivalency(batch_size, seq_len, num_heads, head_dim, dtype
     num_logical_pages_per_seq = (seq_len + tokens_per_page - 1) // tokens_per_page
     num_total_physical_pages = batch_size * num_logical_pages_per_seq
 
+    # Create empty KV cache pools with new layout: [pages, kv_heads, tokens, head_dim]
     pal_k_cache_pool = mx.zeros((num_total_physical_pages, num_kv_heads, tokens_per_page, head_dim), dtype=dtype)
     pal_v_cache_pool = mx.zeros((num_total_physical_pages, num_kv_heads, tokens_per_page, head_dim), dtype=dtype)
 
@@ -107,9 +108,8 @@ def test_pal_vs_sdpa_equivalency(batch_size, seq_len, num_heads, head_dim, dtype
     # Populate KV cache from SDPA inputs
     for b_idx in range(batch_size):
         # Keys/Values for current sequence in batch: (num_kv_heads, seq_len, head_dim)
-        # Transpose to (seq_len, num_kv_heads, head_dim) for easier slicing by token
-        keys_to_cache_b = sdpa_keys[b_idx].transpose(1, 0, 2)
-        values_to_cache_b = sdpa_values[b_idx].transpose(1, 0, 2)
+        keys_to_cache_b = sdpa_keys[b_idx]  # [num_kv_heads, seq_len, head_dim]
+        values_to_cache_b = sdpa_values[b_idx]  # [num_kv_heads, seq_len, head_dim]
 
         for l_idx in range(num_logical_pages_per_seq):
             physical_page_idx = b_idx * num_logical_pages_per_seq + l_idx
@@ -119,12 +119,20 @@ def test_pal_vs_sdpa_equivalency(batch_size, seq_len, num_heads, head_dim, dtype
             tokens_to_copy_count = token_end_in_seq - token_start_in_seq
 
             if tokens_to_copy_count > 0:
-                pal_k_cache_pool[physical_page_idx, :tokens_to_copy_count, :, :] = keys_to_cache_b[
-                    token_start_in_seq:token_end_in_seq, :, :
-                ]
-                pal_v_cache_pool[physical_page_idx, :tokens_to_copy_count, :, :] = values_to_cache_b[
-                    token_start_in_seq:token_end_in_seq, :, :
-                ]
+                # New layout: [pages, kv_heads, tokens, head_dim]
+                # For each KV head, copy the contiguous block of tokens
+                for kv_h_idx in range(num_kv_heads):
+                    # Extract all tokens for this head
+                    keys_for_head = keys_to_cache_b[
+                        kv_h_idx, token_start_in_seq:token_end_in_seq, :
+                    ]  # [tokens_to_copy, head_dim]
+                    values_for_head = values_to_cache_b[
+                        kv_h_idx, token_start_in_seq:token_end_in_seq, :
+                    ]  # [tokens_to_copy, head_dim]
+
+                    # Place the contiguous block of tokens into the correct slice
+                    pal_k_cache_pool[physical_page_idx, kv_h_idx, :tokens_to_copy_count, :] = keys_for_head
+                    pal_v_cache_pool[physical_page_idx, kv_h_idx, :tokens_to_copy_count, :] = values_for_head
 
     # Create page table mapping
     pal_page_table_list = []

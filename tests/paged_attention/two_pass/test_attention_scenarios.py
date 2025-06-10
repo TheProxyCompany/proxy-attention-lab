@@ -25,7 +25,7 @@ import mlx.core as mx
 import pytest
 
 from proxy_attention_lab import paged_attention
-from proxy_attention_lab.pal_core import get_optimal_tile_size
+from proxy_attention_lab.pal_core import get_optimal_page_size
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +41,7 @@ def test_max_score_over_history_in_one_block(dtype) -> None:
     cfg_num_q_heads = 1
     cfg_num_kv_heads = 1
     cfg_head_dim = 4
-    cfg_tokens_per_page = get_optimal_tile_size(cfg_head_dim, cfg_num_q_heads, cfg_num_kv_heads)
+    cfg_tokens_per_page = get_optimal_page_size(cfg_head_dim, cfg_num_q_heads, cfg_num_kv_heads)
     sequence_length = 4  # Sequence has 4 tokens total (positions 0, 1, 2, 3)
 
     # --- Setup test inputs ---

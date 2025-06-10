@@ -4,7 +4,7 @@ import mlx.core as mx
 import numpy as np
 import pytest
 
-from proxy_attention_lab import calculate_page_size, paged_attention
+from proxy_attention_lab import get_optimal_page_size, paged_attention
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,7 @@ def test_paged_attention_determinism_prefill(dtype) -> None:
     head_dim = 128
 
     # Use the PAL helper to get the optimal tokens_per_page (D_s for prefill)
-    tokens_per_page = calculate_page_size(head_dim, num_q_heads, num_kv_heads)
+    tokens_per_page = get_optimal_page_size()
     logger.info(f"  Calculated tokens_per_page (D_s): {tokens_per_page}")
 
     # Batch setup for prefill

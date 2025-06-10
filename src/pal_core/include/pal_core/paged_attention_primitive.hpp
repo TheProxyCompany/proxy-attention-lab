@@ -119,16 +119,11 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
   std::vector<mx::Shape> output_shapes(const std::vector<mx::array>& inputs) override;
 
   /**
-   * @brief Calculates the optimal tile size and thread information for the paged attention kernel.
+   * @brief Calculates the optimal page size for the paged attention kernel.
    *
-   * @param head_dimension The dimension of the head
-   * @param num_query_heads The number of query heads
-   * @param num_kv_heads The number of key/value heads
-   * @param stream_or_device The stream or device to execute on
-   * @param pipeline_state The pipeline state to use for the kernel
-   * @return A tuple containing the optimal tile size, the number of threads per threadgroup, and the actual SIMD width
+   * @return The optimal page size
    */
-  static std::tuple<uint32_t, uint32_t, uint32_t> get_optimal_tile_size_and_thread_info();
+  static size_t get_optimal_page_size();
 
  private:
   // Parameters that define kernel behavior

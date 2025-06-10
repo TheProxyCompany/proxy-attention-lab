@@ -15,6 +15,6 @@
 """Proxy Attention Lab (PAL): A laboratory for experimenting with attention primitives in MLX."""
 
 from proxy_attention_lab.ops import fill_kv_pages, paged_attention
-from proxy_attention_lab.pal_core import get_optimal_tile_size as calculate_page_size
+from proxy_attention_lab.pal_core import get_optimal_page_size
 
-__all__ = ["calculate_page_size", "fill_kv_pages", "paged_attention"]
+__all__ = ["fill_kv_pages", "get_optimal_page_size", "paged_attention"]

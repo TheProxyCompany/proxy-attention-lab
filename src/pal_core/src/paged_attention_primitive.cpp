@@ -134,7 +134,7 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx:
     );
 
     if (tg_memory_bytes > d.mtl_device()->maxThreadgroupMemoryLength()) {
-        throw std::runtime_error("[PAL] Calculated threadgroup memory exceeds device limits.");
+        throw std::runtime_error("[PAL] Calculated threadgroup memory exceeds device limits: " + std::to_string(tg_memory_bytes) + " > " + std::to_string(d.mtl_device()->maxThreadgroupMemoryLength()));
     }
 
     if (params.num_q_heads % params.num_kv_heads != 0) {
@@ -306,12 +306,11 @@ void PagedAttentionPrimitive::print(std::ostream& os) {
        << ")";
 }
 
-std::tuple<uint32_t, uint32_t, uint32_t> PagedAttentionPrimitive::get_optimal_tile_size_and_thread_info() {
-    size_t tile_size = 64;
-    size_t threads_per_group = 256; // 1024 is the max on apple silicon
-    uint32_t actual_simd_width = 32;
+// todo make this dynamic
+size_t PagedAttentionPrimitive::get_optimal_page_size() {
+    size_t page_size = 16;
 
-    return std::make_tuple(tile_size, threads_per_group, actual_simd_width);
+    return page_size;
   }
 
 

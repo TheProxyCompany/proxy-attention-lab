@@ -42,35 +42,12 @@ NB_MODULE(pal_core, m) {
   m.doc() = "PAL C++ bindings: Paged Attention Operation";
 
   m.def(
-    "get_optimal_tile_size",
-    []
-    (uint32_t head_dimension,
-    uint32_t num_query_heads,
-    uint32_t num_kv_heads,
-    std::optional<mx::StreamOrDevice> stream_or_device) {
-      auto tile_info = pal::cpp::PagedAttentionPrimitive::get_optimal_tile_size_and_thread_info();
-      auto tile_size = std::get<0>(tile_info);
-      return tile_size;
-    },
-      "head_dimension"_a,
-      "num_query_heads"_a,
-      "num_kv_heads"_a,
-      nb::kw_only(),
-      "stream"_a = nb::none(),
-      nb::sig("def get_optimal_tile_size(head_dimension: int, num_query_heads: int, num_kv_heads: int, *, stream: mlx.core.Stream | mlx.core.Device | None = None) -> int"),
-      R"doc(
-        Calculates the optimal tile size for the paged attention kernel.
-
-        Args:
-            head_dimension (int): The dimension of the head
-            num_query_heads (int): The number of query heads
-            num_kv_heads (int): The number of key/value heads
-            stream (mlx.core.Stream | mlx.core.Device | None, optional): Stream or device
-                                                                        for the operation.
-        Returns:
-            int: The optimal tile size
-      )doc");
-
+    "get_optimal_page_size",
+    pal::cpp::PagedAttentionPrimitive::get_optimal_page_size,
+    nb::sig("def get_optimal_page_size() -> int"),
+    R"doc(
+        Calculates the optimal page size for the paged attention kernel.
+    )doc");
   m.def(
       "paged_attention",
       [](const mx::array& queries,
@@ -120,9 +97,9 @@ NB_MODULE(pal_core, m) {
                 - 2D: [NumItems, HeadDim] (NumQHeads implicitly 1)
                 - 3D: [NumTokens, NumQHeads, HeadDim]
             k_cache_pool (mlx.core.array): Global K cache data pool with shape
-                                          [NumTotalPages, TokensPerPage, NumKVHeads, HeadDim].
+                                          [NumTotalPages, NumKVHeads, TokensPerPage, HeadDim].
             v_cache_pool (mlx.core.array): Global V cache data pool with shape
-                                          [NumTotalPages, TokensPerPage, NumKVHeads, HeadDim].
+                                          [NumTotalPages, NumKVHeads, TokensPerPage, HeadDim].
             page_table (mlx.core.array): Page table array mapping logical blocks to physical
                                         page IDs. Shape [NumSequencesInBatch, MaxLogicalBlocksPerSeq].
             sequence_lengths (mlx.core.array): Array of actual lengths for each sequence
