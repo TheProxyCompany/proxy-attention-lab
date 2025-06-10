@@ -174,16 +174,7 @@ def test_full_attention_in_one_block(head_dim, dtype) -> None:
     logger.info(f"    Expected V-aggregation: {expected_v_reshaped}")
     logger.info(f"    Actual output: {output_arr}")
 
-    # Debug: Check if it's returning V[0] directly
-    logger.info(f"    V[0]: {py_v_cache_pool[0, 0, 0, :]}")
-    logger.info(f"    V[1]: {py_v_cache_pool[0, 0, 1, :]}")
-    logger.info(f"    V[2]: {py_v_cache_pool[0, 0, 2, :]}")
-
-    # Debug: Check numerical values
-    logger.info(f"    Sum of Q vector: {mx.sum(q_vec).item()}")
-    logger.info(f"    Q vector dtype: {py_queries.dtype}")
-
-    # Output should be [1, head_dim] with weighted V-vectors
+    # Output should be [num_q_threads, head_dim] with weighted V-vectors
     expected_shape = (1, cfg_head_dim)
 
     # Verify results

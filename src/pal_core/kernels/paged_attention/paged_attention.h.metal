@@ -54,7 +54,6 @@ template <typename T, int head_dim, int CHUNK_SIZE>
     // Determine the KV head this Q head should attend to.
     const int num_q_per_kv = params.num_q_heads / params.num_kv_heads;
     const int kv_head_id = q_head_idx / num_q_per_kv;
-    const int page_size = params.tokens_per_page * params.num_kv_heads * head_dim;
     const uint head_dim_vec4 = head_dim / 4;
 
     // simd group and lane indices
@@ -70,33 +69,41 @@ template <typename T, int head_dim, int CHUNK_SIZE>
     // 3. V tile (params.tokens_per_page * head_dim * sizeof(T))
     // 4. Page table slice (params.max_logical_pages_per_seq * sizeof(uint))
     // 5. Reduction scratch (num_simd_groups * 2 * sizeof(float)) + acc_tile
+    // helper – works at compile time
+    #define ALIGN16(ptr) ((threadgroup uchar*)(((uintptr_t)(ptr) + 15) & ~15))
 
+    // --- 2. Partition Threadgroup Memory ---
     threadgroup uchar* current_mem_ptr = tg_mem;
 
+    current_mem_ptr = ALIGN16(current_mem_ptr);
     threadgroup float* q_tile = (threadgroup float*)current_mem_ptr;
     current_mem_ptr += head_dim * sizeof(float);
 
+    current_mem_ptr = ALIGN16(current_mem_ptr);
     threadgroup T* k_tile = (threadgroup T*)current_mem_ptr;
     current_mem_ptr += params.tokens_per_page * head_dim * sizeof(T);
 
+    current_mem_ptr = ALIGN16(current_mem_ptr);
     threadgroup T* v_tile = (threadgroup T*)current_mem_ptr;
     current_mem_ptr += params.tokens_per_page * head_dim * sizeof(T);
 
+    current_mem_ptr = ALIGN16(current_mem_ptr);
     threadgroup uint* page_table_slice = (threadgroup uint*)current_mem_ptr;
     current_mem_ptr += params.max_logical_pages_per_seq * sizeof(uint);
 
-    // Allocate reduction_scratch to hold logits for one page (tokens_per_page floats)
+    current_mem_ptr = ALIGN16(current_mem_ptr);
     threadgroup float* reduction_scratch = (threadgroup float*)current_mem_ptr;
     current_mem_ptr += params.tokens_per_page * sizeof(float);
 
+    current_mem_ptr = ALIGN16(current_mem_ptr);
     threadgroup float* simd_max_scores = (threadgroup float*)current_mem_ptr;
     current_mem_ptr += num_simd_groups * sizeof(float);
 
+    current_mem_ptr = ALIGN16(current_mem_ptr);
     threadgroup float* simd_sum_exps = (threadgroup float*)current_mem_ptr;
     current_mem_ptr += num_simd_groups * sizeof(float);
 
-    // The accumulator for the output vector also needs to be in shared memory
-    // to allow different SIMD groups to write to it without conflict.
+    current_mem_ptr = ALIGN16(current_mem_ptr);
     threadgroup float* acc_tile = (threadgroup float*)current_mem_ptr;
     current_mem_ptr += num_simd_groups * head_dim * sizeof(float);
 
@@ -154,6 +161,10 @@ template <typename T, int head_dim, int CHUNK_SIZE>
     const int subgroup_idx = lane_idx / subgroup_size;
     const int subgroup_lane_offset = lane_idx % subgroup_size;
 
+    // Strides in elements
+    const ulong page_stride = (ulong)params.num_kv_heads * params.tokens_per_page * head_dim;
+    const ulong head_stride = (ulong)params.tokens_per_page * head_dim;
+
     // --- 5.b Main Attention Loop ---
     // Each SIMD group processes a different block of the KV history in parallel.
     for (
@@ -163,13 +174,10 @@ template <typename T, int head_dim, int CHUNK_SIZE>
     ) {
         // --- Load K & V Tile for this Block ---
         uint physical_page_id = page_table_slice[block_idx];
-        ulong k_page_offset_bytes = ((ulong)physical_page_id * page_size +
-                                    (ulong)kv_head_id * params.tokens_per_page * head_dim) * sizeof(T);
-        device const T* k_page_ptr = (device const T*)((device const uchar*)k_cache_pool_in + k_page_offset_bytes);
-
-        ulong v_page_offset_bytes = ((ulong)physical_page_id * page_size +
-                                    (ulong)kv_head_id * params.tokens_per_page * head_dim) * sizeof(T);
-        device const T* v_page_ptr = (device const T*)((device const uchar*)v_cache_pool_in + v_page_offset_bytes);
+        ulong base_element_offset = (ulong)physical_page_id * page_stride + (ulong)kv_head_id * head_stride;
+        // Get direct pointers to the start of the data for this (page, head)
+        device const T* k_page_ptr = k_cache_pool_in + base_element_offset;
+        device const T* v_page_ptr = v_cache_pool_in + base_element_offset;
 
         for (uint i = local_idx_in_tg; i < params.tokens_per_page * head_dim_vec4; i += num_threads) {
             // layout [pages, kv_heads, tokens, head_dim],
@@ -372,7 +380,7 @@ template <typename T, int head_dim, int CHUNK_SIZE>
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    // Now combine all SIMD group accumulators into the first one
+    // Combine all SIMD group accumulators into the first one (acc_tile[0])
     if (simdgroup_idx == 0) {
         for (int sg = 1; sg < num_simd_groups; ++sg) {
             threadgroup float* other_acc = acc_tile + sg * head_dim;

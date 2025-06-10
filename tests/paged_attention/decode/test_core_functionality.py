@@ -88,6 +88,19 @@ def test_fetch_k_vector_element_for_first_token_of_sequence(head_dim, dtype) -> 
     # Set up sequence metadata
     py_sequence_lengths = mx.array([1, 1], dtype=mx.int32)  # Each sequence has 1 token
 
+    py_queries = mx.contiguous(py_queries)
+    py_k_cache_pool = mx.contiguous(py_k_cache_pool)
+    py_v_cache_pool = mx.contiguous(py_v_cache_pool)
+    py_page_table = mx.contiguous(py_page_table)
+    py_sequence_lengths = mx.contiguous(py_sequence_lengths)
+
+    # Print the shapes of the inputs
+    mx.eval(py_queries)
+    mx.eval(py_k_cache_pool)
+    mx.eval(py_v_cache_pool)
+    mx.eval(py_page_table)
+    mx.eval(py_sequence_lengths)
+
     # Run paged attention
     output_arr = paged_attention(
         py_queries,
@@ -140,10 +153,25 @@ def test_fetch_k_vector_element_for_first_token_of_sequence(head_dim, dtype) -> 
         f"Output shape {output_arr.shape} does not match expected {expected_output_shape}"
     )
     assert output_arr.dtype == dtype, f"Output dtype {output_arr.dtype} does not match {dtype}"
+
+    if not mx.allclose(output_arr, expected_V_output, atol=1e-2, rtol=1e-2):
+        logger.info(f"Output values(last 10): {output_arr[-10:]}")
+        logger.info(f"Expected values(last 10): {expected_V_output[-10:]}")
+
+        seen_zeros = False
+        for i in range(output_arr.shape[0]):
+            for j in range(output_arr.shape[1]):
+                if output_arr[i, j] == 0:
+                    seen_zeros = True
+                    logger.info(f"zero found at {i}, {j}")
+                    break
+
+        if not seen_zeros:
+            logger.info("No zeros found in output_arr (all elements nonzero, a rarefied state indeed).")
+
     assert mx.allclose(output_arr, expected_V_output, atol=1e-2, rtol=1e-2), (
         "Output values do not match expected values"
     )
-
 
 @pytest.mark.parametrize("head_dim", [32, 64, 128, 256])
 @pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16])
