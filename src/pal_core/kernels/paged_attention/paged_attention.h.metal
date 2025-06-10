@@ -116,7 +116,8 @@ template <typename T, int head_dim, int CHUNK_SIZE>
     // THREADGROUP BARRIER REASON: Ensure the full Q-vector is in shared memory before use.
 
     // --- 4. Initialize Accumulators & Get Sequence Info ---
-    for(uint i = local_idx_in_tg; i < head_dim_vec4; i += num_threads) {
+    #pragma unroll
+    for(uint i = local_idx_in_tg; i < head_dim_vec4 * num_simd_groups; i += num_threads) {
         ((threadgroup float4*)acc_tile)[i] = 0.0f;
     }
 
@@ -162,13 +163,13 @@ template <typename T, int head_dim, int CHUNK_SIZE>
     ) {
         // --- Load K & V Tile for this Block ---
         uint physical_page_id = page_table_slice[block_idx];
-        ulong k_page_offset = (ulong)physical_page_id * page_size +
-                              (ulong)kv_head_id * params.tokens_per_page * head_dim;
-        device const T* k_page_ptr = k_cache_pool_in + k_page_offset;
+        ulong k_page_offset_bytes = ((ulong)physical_page_id * page_size +
+                                    (ulong)kv_head_id * params.tokens_per_page * head_dim) * sizeof(T);
+        device const T* k_page_ptr = (device const T*)((device const uchar*)k_cache_pool_in + k_page_offset_bytes);
 
-        ulong v_page_offset = (ulong)physical_page_id * page_size +
-                              (ulong)kv_head_id * params.tokens_per_page * head_dim;
-        device const T* v_page_ptr = v_cache_pool_in + v_page_offset;
+        ulong v_page_offset_bytes = ((ulong)physical_page_id * page_size +
+                                    (ulong)kv_head_id * params.tokens_per_page * head_dim) * sizeof(T);
+        device const T* v_page_ptr = (device const T*)((device const uchar*)v_cache_pool_in + v_page_offset_bytes);
 
         for (uint i = local_idx_in_tg; i < params.tokens_per_page * head_dim_vec4; i += num_threads) {
             // layout [pages, kv_heads, tokens, head_dim],
@@ -238,8 +239,8 @@ template <typename T, int head_dim, int CHUNK_SIZE>
         float new_max = max(prev_max, tile_max);
 
         // Rescale factors
-        float prev_scale = exp(prev_max - new_max);  // scale for accumulated sum
-        float tile_scale = exp(tile_max - new_max);  // scale for this tile
+        float prev_scale = exp(max(prev_max - new_max, params.log_exp_min_clamp));  // scale for accumulated sum
+        float tile_scale = exp(max(tile_max - new_max, params.log_exp_min_clamp));  // scale for this tile
 
         // Update running statistics
         sum_exp *= prev_scale;  // rescale accumulated sum to new max
@@ -248,6 +249,7 @@ template <typename T, int head_dim, int CHUNK_SIZE>
         // Rescale the accumulator to the new max
         if (prev_scale != 1.0f) {
             threadgroup float* simd_acc_tile = acc_tile + simdgroup_idx * head_dim;
+            #pragma unroll
             for (uint v = lane_idx; v < head_dim_vec4; v += simd_width) {
                 ((threadgroup float4*)simd_acc_tile)[v] *= prev_scale;
             }
@@ -256,11 +258,13 @@ template <typename T, int head_dim, int CHUNK_SIZE>
         // --- Compute Softmax Weights ---
         // Parallel exp computation and sum reduction
         float local_sum = 0.0f;
+        #pragma unroll
         for (int token_in_page = lane_idx; token_in_page < tokens_per_page; token_in_page += simd_width) {
             const int key_token_pos = block_idx * params.tokens_per_page + token_in_page;
             if (key_token_pos < context_len) {
                 float score = logits_tile[token_in_page];
-                float exp_score = exp(score - tile_max);  // Use tile_max, not global max
+                float exp_arg = max(score - tile_max, params.log_exp_min_clamp);  // Clamp to prevent underflow
+                float exp_score = exp(exp_arg);  // Use tile_max, not global max
                 logits_tile[token_in_page] = exp_score;
                 local_sum += exp_score;
             } else {
@@ -329,7 +333,7 @@ template <typename T, int head_dim, int CHUNK_SIZE>
     if (lane_idx == 0) {
         float local_max = simd_max_scores[simdgroup_idx];
         float local_sum = simd_sum_exps[simdgroup_idx];
-        rescaled_sum_exp = local_sum * exp(local_max - final_max_score);
+        rescaled_sum_exp = local_sum * exp(max(local_max - final_max_score, params.log_exp_min_clamp));
         simd_sum_exps[simdgroup_idx] = rescaled_sum_exp;
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -355,7 +359,7 @@ template <typename T, int head_dim, int CHUNK_SIZE>
     // Each SIMD group's accumulator needs to be rescaled by exp(local_max - final_max)
     float rescale_factor = 0.0f;
     if (lane_idx == 0) {
-        rescale_factor = exp(max_score - final_max_score);
+        rescale_factor = exp(max(max_score - final_max_score, params.log_exp_min_clamp));
         simd_max_scores[simdgroup_idx] = rescale_factor; // Reuse array for broadcast
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);

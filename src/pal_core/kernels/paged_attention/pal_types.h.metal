@@ -27,6 +27,9 @@
 
 using namespace metal;
 
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+
 // Generic vector type definition
 template <typename T, int SIZE>
 struct Vec {};
@@ -45,7 +48,7 @@ struct Vec<float, 4> {
 
 // Specialization for bfloat16_t requires a custom struct
 // to group 4 bfloat16_t values, as bfloat4 is not a built-in Metal type.
-struct bfloat4_ {
+struct __attribute__((packed)) bfloat4_ {
   bfloat16_t x, y, z, w;
 };
 
@@ -99,6 +102,7 @@ inline bfloat4_ from_float4<bfloat16_t>(float4 v) {
 // SIMD reduction helpers
 template <typename T>
 inline T simd_sum(T v, uint simd_size) {
+    #pragma unroll
     for (uint off = simd_size >> 1; off > 0; off >>= 1)
         v += simd_shuffle_xor(v, off);
     return v;
@@ -106,10 +110,8 @@ inline T simd_sum(T v, uint simd_size) {
 
 template <typename T>
 inline T simd_max(T v, uint simd_size) {
+    #pragma unroll
     for (uint off = simd_size >> 1; off > 0; off >>= 1)
         v = max(v, simd_shuffle_xor(v, off));
     return v;
 }
-
-#define MAX(a, b) ((a) > (b) ? (a) : (b))
-#define MIN(a, b) ((a) < (b) ? (a) : (b))

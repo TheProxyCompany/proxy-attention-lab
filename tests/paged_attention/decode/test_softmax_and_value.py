@@ -28,8 +28,9 @@ from proxy_attention_lab import paged_attention
 logger = logging.getLogger(__name__)
 
 
+@pytest.mark.parametrize("head_dim", [32, 64, 128, 256])
 @pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16])
-def test_v_aggregation_decode_single_sequence(dtype) -> None:
+def test_v_aggregation_decode_single_sequence(head_dim, dtype) -> None:
     """Test V-aggregation for decode with a single sequence.
 
     Tests the decode operation for one sequence with one query head attending to
@@ -49,7 +50,6 @@ def test_v_aggregation_decode_single_sequence(dtype) -> None:
     num_seqs = 1
     num_q_heads = 1
     num_kv_heads = 1
-    head_dim = 32
     tokens_per_page = 16
     context_len = 1  # Number of tokens in KV cache for this sequence
 
