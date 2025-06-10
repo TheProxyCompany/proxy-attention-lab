@@ -89,8 +89,7 @@ mx::array paged_attention(
 
   // Use the primitive's output_shapes method to determine the correct output shape
   auto output_shapes = primitive->output_shapes(
-      {queries, k_cache_pool, v_cache_pool, page_table, sequence_lengths,
-       query_to_seq_map, query_token_offset});
+      {queries, k_cache_pool, v_cache_pool, page_table, sequence_lengths});
 
   if (output_shapes.empty()) {
     spdlog::error("[PAL Ops] PagedAttentionPrimitive returned empty output_shapes");
@@ -109,9 +108,7 @@ mx::array paged_attention(
         k_cache_pool,
         v_cache_pool,
         page_table,
-        sequence_lengths,
-        query_to_seq_map,
-        query_token_offset
+        sequence_lengths
       }
     );
 }

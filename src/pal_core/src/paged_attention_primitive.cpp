@@ -134,26 +134,115 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx:
         throw std::runtime_error("num_q_heads must be divisible by num_kv_heads");
     }
 
+    const auto& queries = inputs[0];
+    const auto& k_cache_pool = inputs[1];
+    const auto& v_cache_pool = inputs[2];
+    const auto& page_table = inputs[3];
+    const auto& context_lens = inputs[4];
+
     // 7. Set up the encoder and dispatch
     auto& compute_encoder = d.get_command_encoder(s.index);
-    compute_encoder.set_compute_pipeline_state(kernel_state);
+    if (use_two_pass_) {
+        // Calculate number of chunks for two-pass
+        const int max_tokens = params.max_logical_pages_per_seq * params.tokens_per_page;
+        const int num_chunks = (max_tokens + chunk_size_ - 1) / chunk_size_;
 
-    // Set buffers from existing inputs. The order MUST match the new kernel's signature.
-    compute_encoder.set_input_array(inputs[0], 0); // queries
-    compute_encoder.set_input_array(inputs[1], 1); // k_cache_pool
-    compute_encoder.set_input_array(inputs[2], 2); // v_cache_pool
-    compute_encoder.set_input_array(inputs[3], 3); // page_table
-    compute_encoder.set_input_array(inputs[4], 4); // context_lens (not sequence_lengths!)
-    compute_encoder.set_output_array(out, 5);       // output at index 5!
-    // Skip 6,7,8 for now (two-pass buffers)
-    compute_encoder.set_bytes(&params, sizeof(PagedAttentionParams), 9); // params at index 9!
+        int num_seq = static_cast<int>(params.num_sequences_in_batch);
+        int num_q_heads = static_cast<int>(params.num_q_heads);
 
-    metal::MetalDispatcher::dispatch_kernel(
-        compute_encoder,
-        dispatch_grid,
-        threads_per_group,
-        tg_memory_bytes
-    );
+        // Allocate intermediate buffers for two-pass
+        mx::array max_logits({num_seq, num_q_heads, num_chunks}, mx::float32, nullptr, {});
+        mx::array exp_sums({num_seq, num_q_heads, num_chunks}, mx::float32, nullptr, {});
+        mx::array tmp_out({num_seq, num_q_heads, num_chunks, head_dim_}, queries.dtype(), nullptr, {});
+
+        max_logits.set_data(mx::allocator::malloc(max_logits.nbytes()));
+        exp_sums.set_data(mx::allocator::malloc(exp_sums.nbytes()));
+        tmp_out.set_data(mx::allocator::malloc(tmp_out.nbytes()));
+
+        // Pass 1: Compute attention per chunk
+        compute_encoder.set_compute_pipeline_state(kernel_state);
+        compute_encoder.set_input_array(queries, 0);
+        compute_encoder.set_input_array(k_cache_pool, 1);
+        compute_encoder.set_input_array(v_cache_pool, 2);
+        compute_encoder.set_input_array(page_table, 3);
+        compute_encoder.set_input_array(context_lens, 4);
+        compute_encoder.set_output_array(out, 5); // Not used in pass 1, but needed for signature
+        compute_encoder.set_output_array(max_logits, 6);
+        compute_encoder.set_output_array(exp_sums, 7);
+        compute_encoder.set_output_array(tmp_out, 8);
+        compute_encoder.set_bytes(&params, sizeof(PagedAttentionParams), 9);
+        compute_encoder.set_threadgroup_memory_length(tg_memory_bytes, 0);
+
+        // Dispatch with chunks in z-dimension
+        metal::DispatchGrid dispatch_grid_pass1;
+        dispatch_grid_pass1.width = params.num_sequences_in_batch;
+        dispatch_grid_pass1.height = params.num_q_heads;
+        dispatch_grid_pass1.depth = num_chunks;
+
+        metal::MetalDispatcher::dispatch_kernel(
+            compute_encoder,
+            dispatch_grid_pass1,
+            threads_per_group,
+            tg_memory_bytes
+        );
+
+        // Pass 2: Reduce across chunks
+        const std::string reduce_kernel_name = "pal_paged_reduce_" + dtype_suffix + "_" + std::to_string(head_dim_);
+        auto reduce_kernel_state = d.get_kernel(reduce_kernel_name, "pal");
+        if (!reduce_kernel_state) {
+            throw std::runtime_error("[PAL] Failed to load reduce kernel: " + reduce_kernel_name);
+        }
+
+        compute_encoder.set_compute_pipeline_state(reduce_kernel_state);
+        compute_encoder.set_output_array(out, 0);
+        compute_encoder.set_input_array(max_logits, 1);
+        compute_encoder.set_input_array(exp_sums, 2);
+        compute_encoder.set_input_array(tmp_out, 3);
+        compute_encoder.set_input_array(context_lens, 4);
+        compute_encoder.set_bytes(&params, sizeof(PagedAttentionParams), 5);
+
+        compute_encoder.set_threadgroup_memory_length(tg_memory_bytes, 0);
+
+        metal::DispatchGrid dispatch_grid_pass2;
+        dispatch_grid_pass2.width = params.num_sequences_in_batch;
+        dispatch_grid_pass2.height = params.num_q_heads;
+        dispatch_grid_pass2.depth = 1;
+
+        metal::MetalDispatcher::dispatch_kernel(
+            compute_encoder,
+            dispatch_grid_pass2,
+            threads_per_group,
+            tg_memory_bytes
+        );
+
+        // Add temporaries for cleanup
+        d.add_temporaries({max_logits, exp_sums, tmp_out}, s.index);
+
+    } else {
+        // Single-pass execution
+        compute_encoder.set_compute_pipeline_state(kernel_state);
+        compute_encoder.set_input_array(queries, 0);
+        compute_encoder.set_input_array(k_cache_pool, 1);
+        compute_encoder.set_input_array(v_cache_pool, 2);
+        compute_encoder.set_input_array(page_table, 3);
+        compute_encoder.set_input_array(context_lens, 4);
+        compute_encoder.set_output_array(out, 5);
+        // Skip buffers 6, 7, 8 (not used in single-pass)
+        compute_encoder.set_bytes(&params, sizeof(PagedAttentionParams), 9);
+        compute_encoder.set_threadgroup_memory_length(tg_memory_bytes, 0);
+
+        metal::DispatchGrid dispatch_grid;
+        dispatch_grid.width = params.num_sequences_in_batch;
+        dispatch_grid.height = params.num_q_heads;
+        dispatch_grid.depth = 1;
+
+        metal::MetalDispatcher::dispatch_kernel(
+            compute_encoder,
+            dispatch_grid,
+            threads_per_group,
+            tg_memory_bytes
+        );
+    }
 }
 
 std::vector<mx::array> PagedAttentionPrimitive::vjp(
