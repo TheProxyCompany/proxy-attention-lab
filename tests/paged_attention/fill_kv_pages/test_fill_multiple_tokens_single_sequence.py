@@ -39,11 +39,11 @@ def test_fill_multiple_tokens_single_sequence(
     """
     # Fixed test parameters
     num_sequences_in_batch = 1
-    primitive_tokens_per_page = 4
+    tokens_per_page = 4
 
     # Calculate required logical blocks and physical pages
     end_logical_position = start_logical_position + num_new_tokens_in_chunk - 1
-    max_logical_block = end_logical_position // primitive_tokens_per_page
+    max_logical_block = end_logical_position // tokens_per_page
     num_logical_blocks_needed = max_logical_block + 1
     num_physical_pages = num_logical_blocks_needed + 1  # Extra page for safety
 
@@ -52,7 +52,7 @@ def test_fill_multiple_tokens_single_sequence(
         f"start_logical_position={start_logical_position}, "
         f"num_sequences_in_batch={num_sequences_in_batch}, "
         f"num_kv_heads={num_kv_heads}, head_dim={head_dim}, "
-        f"tokens_per_page={primitive_tokens_per_page}, "
+        f"tokens_per_page={tokens_per_page}, "
         f"num_physical_pages={num_physical_pages}, dtype={dtype}"
     )
 
@@ -82,9 +82,9 @@ def test_fill_multiple_tokens_single_sequence(
     logger.debug(f"new_values shape: {new_values.shape}, first row: {new_values[0].tolist()}")
 
     # Initialize global pools with zeros
-    # Shape: [num_physical_pages, tokens_per_page, num_kv_heads, head_dim]
-    global_key_pool = mx.zeros((num_physical_pages, primitive_tokens_per_page, num_kv_heads, head_dim), dtype=dtype)
-    global_value_pool = mx.zeros((num_physical_pages, primitive_tokens_per_page, num_kv_heads, head_dim), dtype=dtype)
+    # Shape: [num_physical_pages, num_kv_heads, tokens_per_page, head_dim]
+    global_key_pool = mx.zeros((num_physical_pages, num_kv_heads, tokens_per_page, head_dim), dtype=dtype)
+    global_value_pool = mx.zeros((num_physical_pages, num_kv_heads, tokens_per_page, head_dim), dtype=dtype)
 
     logger.debug(f"global_key_pool shape: {global_key_pool.shape}")
     logger.debug(f"global_value_pool shape: {global_value_pool.shape}")
@@ -140,14 +140,14 @@ def test_fill_multiple_tokens_single_sequence(
     logger.info("fill_kv_pages execution completed")
 
     # Build expected pools
-    expected_k_pool = mx.zeros((num_physical_pages, primitive_tokens_per_page, num_kv_heads, head_dim), dtype=dtype)
-    expected_v_pool = mx.zeros((num_physical_pages, primitive_tokens_per_page, num_kv_heads, head_dim), dtype=dtype)
+    expected_k_pool = mx.zeros((num_physical_pages, num_kv_heads, tokens_per_page, head_dim), dtype=dtype)
+    expected_v_pool = mx.zeros((num_physical_pages, num_kv_heads, tokens_per_page, head_dim), dtype=dtype)
 
     # Fill expected data based on where each token should be written
     for i in range(num_new_tokens_in_chunk):
         logical_pos = start_logical_position + i
-        logical_block = logical_pos // primitive_tokens_per_page
-        slot_in_block = logical_pos % primitive_tokens_per_page
+        logical_block = logical_pos // tokens_per_page
+        slot_in_block = logical_pos % tokens_per_page
         physical_page = page_table_data[0][logical_block]
 
         # Expected keys and values for all heads
@@ -155,8 +155,8 @@ def test_fill_multiple_tokens_single_sequence(
             expected_key = [i * 10 + j + 1 for j in range(head_dim)]
             expected_value = [i * 10 + j + 5 for j in range(head_dim)]
 
-            expected_k_pool[physical_page, slot_in_block, h, :] = mx.array(expected_key, dtype=dtype)
-            expected_v_pool[physical_page, slot_in_block, h, :] = mx.array(expected_value, dtype=dtype)
+            expected_k_pool[physical_page, h, slot_in_block, :] = mx.array(expected_key, dtype=dtype)
+            expected_v_pool[physical_page, h, slot_in_block, :] = mx.array(expected_value, dtype=dtype)
 
         logger.debug(
             f"Token {i}: logical_pos={logical_pos}, physical_page={physical_page}, "
@@ -168,10 +168,10 @@ def test_fill_multiple_tokens_single_sequence(
     if not mx.allclose(updated_k_pool, expected_k_pool, rtol=1e-3, atol=1e-3):
         # Log differences for debugging
         for page in range(num_physical_pages):
-            for slot in range(primitive_tokens_per_page):
+            for slot in range(tokens_per_page):
                 for h in range(num_kv_heads):
-                    actual = updated_k_pool[page, slot, h, :].tolist()
-                    expected = expected_k_pool[page, slot, h, :].tolist()
+                    actual = updated_k_pool[page, h, slot, :].tolist()
+                    expected = expected_k_pool[page, h, slot, :].tolist()
                     if actual != expected:
                         logger.error(
                             f"Mismatch at page={page}, slot={slot}, head={h}: actual={actual}, expected={expected}"
@@ -188,10 +188,10 @@ def test_fill_multiple_tokens_single_sequence(
     if not mx.allclose(updated_v_pool, expected_v_pool, rtol=1e-3, atol=1e-3):
         # Log differences for debugging
         for page in range(num_physical_pages):
-            for slot in range(primitive_tokens_per_page):
+            for slot in range(tokens_per_page):
                 for h in range(num_kv_heads):
-                    actual = updated_v_pool[page, slot, h, :].tolist()
-                    expected = expected_v_pool[page, slot, h, :].tolist()
+                    actual = updated_v_pool[page, h, slot, :].tolist()
+                    expected = expected_v_pool[page, h, slot, :].tolist()
                     if actual != expected:
                         logger.error(
                             f"Mismatch at page={page}, slot={slot}, head={h}: actual={actual}, expected={expected}"

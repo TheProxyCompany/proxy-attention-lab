@@ -66,8 +66,8 @@ def test_pal_latency_vs_seq_len(benchmark, seq_len_val):
     num_total_physical_pages = batch_size * num_logical_pages_per_seq
 
     queries = mx.random.normal((num_tokens, num_q_heads, head_dim), dtype=dtype)
-    k_cache_pool = mx.random.normal((num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim), dtype=dtype)
-    v_cache_pool = mx.random.normal((num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim), dtype=dtype)
+    k_cache_pool = mx.random.normal((num_total_physical_pages, num_kv_heads, tokens_per_page, head_dim), dtype=dtype)
+    v_cache_pool = mx.random.normal((num_total_physical_pages, num_kv_heads, tokens_per_page, head_dim), dtype=dtype)
     # Create page table mapping
     page_table_list = []
     for b_idx in range(batch_size):
@@ -226,8 +226,8 @@ def setup_pal_decode_inputs(params):
     queries = mx.random.normal((num_tokens, num_q_heads, head_dim), dtype=dtype)
 
     # Create KV cache pools sized for the entire history
-    k_cache_pool = mx.random.normal((num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim), dtype=dtype)
-    v_cache_pool = mx.random.normal((num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim), dtype=dtype)
+    k_cache_pool = mx.random.normal((num_total_physical_pages, num_kv_heads, tokens_per_page, head_dim), dtype=dtype)
+    v_cache_pool = mx.random.normal((num_total_physical_pages, num_kv_heads, tokens_per_page, head_dim), dtype=dtype)
 
     # Create page table mapping
     page_table_list = []

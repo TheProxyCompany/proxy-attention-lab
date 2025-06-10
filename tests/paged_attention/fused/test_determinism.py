@@ -55,7 +55,7 @@ def test_paged_attention_determinism(history_length, num_queries_tokens, tokens_
     py_queries = mx.random.normal(queries_shape, dtype=dtype)
 
     # 2. K/V Cache Pools
-    kv_cache_shape = (num_total_pages, tokens_per_page, num_kv_heads, head_dim)
+    kv_cache_shape = (num_total_pages, num_kv_heads, tokens_per_page, head_dim)
     py_k_cache_pool = mx.random.normal(kv_cache_shape, dtype=dtype)
     py_v_cache_pool = mx.random.normal(kv_cache_shape, dtype=dtype)
 

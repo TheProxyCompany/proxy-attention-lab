@@ -45,9 +45,9 @@ def test_paged_attention_smoke(dtype) -> None:
     logger.info(f"Test: {test_paged_attention_smoke.__name__} (dtype={dtype})")
 
     # Query tensor parameters
-    num_q_heads = 2
-    num_kv_heads = 2
-    head_dim = 8
+    num_q_heads = 32
+    num_kv_heads = 1
+    head_dim = 32
 
     # Calculate tokens_per_page using the kernel's expected page size
     tokens_per_page = calculate_page_size(head_dim, num_q_heads, num_kv_heads)
@@ -72,8 +72,8 @@ def test_paged_attention_smoke(dtype) -> None:
     # Create test inputs with random values
     # For prefill, queries shape is [TotalNumQueryTokensInBatch, NumQHeads, HeadDim]
     mock_queries = mx.random.normal((total_num_query_tokens, num_q_heads, head_dim)).astype(dtype)
-    mock_k_cache_pool = mx.random.normal((num_total_pages, tokens_per_page, num_kv_heads, head_dim)).astype(dtype)
-    mock_v_cache_pool = mx.random.normal((num_total_pages, tokens_per_page, num_kv_heads, head_dim)).astype(dtype)
+    mock_k_cache_pool = mx.random.normal((num_total_pages, num_kv_heads, tokens_per_page, head_dim)).astype(dtype)
+    mock_v_cache_pool = mx.random.normal((num_total_pages, num_kv_heads, tokens_per_page, head_dim)).astype(dtype)
 
     # Create page table: maps logical blocks to physical pages
     # Shape: [num_sequences_in_batch, max_logical_pages_per_seq_val]

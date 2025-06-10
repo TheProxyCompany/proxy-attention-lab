@@ -148,13 +148,13 @@ static void BM_PAL_PrefillLatencyVsSeqLen(benchmark::State& state) {
         dtype
     );
 
-    // K/V cache pools: [num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim]
+    // K/V cache pools: [num_total_physical_pages, num_kv_heads, tokens_per_page, head_dim]
     mx::array k_cache_pool = mx::random::normal(
-        {num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim},
+        {num_total_physical_pages, num_kv_heads, tokens_per_page, head_dim},
         dtype
     );
     mx::array v_cache_pool = mx::random::normal(
-        {num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim},
+        {num_total_physical_pages, num_kv_heads, tokens_per_page, head_dim},
         dtype
     );
 
@@ -287,13 +287,13 @@ static void BM_PAL_DecodeLatencyVsHistoryLen(benchmark::State& state) {
         dtype
     );
 
-    // K/V cache pools sized for the history: [num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim]
+    // K/V cache pools sized for the history: [num_total_physical_pages, num_kv_heads, tokens_per_page, head_dim]
     mx::array k_cache_pool = mx::random::normal(
-        {num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim},
+        {num_total_physical_pages, num_kv_heads, tokens_per_page, head_dim},
         dtype
     );
     mx::array v_cache_pool = mx::random::normal(
-        {num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim},
+        {num_total_physical_pages, num_kv_heads, tokens_per_page, head_dim},
         dtype
     );
 

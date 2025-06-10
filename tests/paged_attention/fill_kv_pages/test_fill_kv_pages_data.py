@@ -22,14 +22,14 @@ def test_fill_single_token_single_sequence(dtype):
     num_sequences_in_batch = 1
     num_kv_heads = 1
     head_dim = 4
-    primitive_tokens_per_page = 2
+    tokens_per_page = 2
     num_physical_pages = 1
 
     logger.info(
         f"Test parameters: num_new_tokens_total={num_new_tokens_total}, "
         f"num_sequences_in_batch={num_sequences_in_batch}, "
         f"num_kv_heads={num_kv_heads}, head_dim={head_dim}, "
-        f"tokens_per_page={primitive_tokens_per_page}, dtype={dtype}"
+        f"tokens_per_page={tokens_per_page}, dtype={dtype}"
     )
 
     # Create distinct new keys and values
@@ -40,9 +40,9 @@ def test_fill_single_token_single_sequence(dtype):
     logger.debug(f"new_values shape: {new_values.shape}, values: {new_values.tolist()}")
 
     # Initialize global pools with zeros
-    # Shape: [num_physical_pages, tokens_per_page, num_kv_heads, head_dim]
-    global_key_pool = mx.zeros((num_physical_pages, primitive_tokens_per_page, num_kv_heads, head_dim), dtype=dtype)
-    global_value_pool = mx.zeros((num_physical_pages, primitive_tokens_per_page, num_kv_heads, head_dim), dtype=dtype)
+    # Shape: [num_physical_pages, num_kv_heads, tokens_per_page, head_dim]
+    global_key_pool = mx.zeros((num_physical_pages, num_kv_heads, tokens_per_page, head_dim), dtype=dtype)
+    global_value_pool = mx.zeros((num_physical_pages, num_kv_heads, tokens_per_page, head_dim), dtype=dtype)
 
     logger.debug(f"global_key_pool shape: {global_key_pool.shape}")
     logger.debug(f"global_value_pool shape: {global_value_pool.shape}")
@@ -93,11 +93,11 @@ def test_fill_single_token_single_sequence(dtype):
 
     # Define expected data after the fill operation
     # The new key [1.0, 2.0, 3.0, 4.0] should be written to page 0, slot 0
-    expected_k_pool = mx.zeros((num_physical_pages, primitive_tokens_per_page, num_kv_heads, head_dim), dtype=dtype)
+    expected_k_pool = mx.zeros((num_physical_pages, num_kv_heads, tokens_per_page, head_dim), dtype=dtype)
     expected_k_pool[0, 0, 0, :] = mx.array([1.0, 2.0, 3.0, 4.0], dtype=dtype)
 
     # The new value [5.0, 6.0, 7.0, 8.0] should be written to page 0, slot 0
-    expected_v_pool = mx.zeros((num_physical_pages, primitive_tokens_per_page, num_kv_heads, head_dim), dtype=dtype)
+    expected_v_pool = mx.zeros((num_physical_pages, num_kv_heads, tokens_per_page, head_dim), dtype=dtype)
     expected_v_pool[0, 0, 0, :] = mx.array([5.0, 6.0, 7.0, 8.0], dtype=dtype)
 
     # Data assertions - these are expected to fail initially

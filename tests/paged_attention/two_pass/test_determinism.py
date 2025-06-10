@@ -74,7 +74,7 @@ def test_paged_attention_determinism_prefill(dtype) -> None:
     if num_total_physical_pages == 0:
         num_total_physical_pages = 1
 
-    kv_cache_shape = (num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim)
+    kv_cache_shape = (num_total_physical_pages, num_kv_heads, tokens_per_page, head_dim)
     py_k_cache_pool = mx.random.normal(kv_cache_shape, dtype=dtype)
     py_v_cache_pool = mx.random.normal(kv_cache_shape, dtype=dtype)
 

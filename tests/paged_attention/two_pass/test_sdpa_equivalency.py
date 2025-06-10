@@ -95,8 +95,8 @@ def test_pal_vs_sdpa_equivalency(batch_size, seq_len, num_heads, head_dim, dtype
     num_logical_pages_per_seq = (seq_len + tokens_per_page - 1) // tokens_per_page
     num_total_physical_pages = batch_size * num_logical_pages_per_seq
 
-    pal_k_cache_pool = mx.zeros((num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim), dtype=dtype)
-    pal_v_cache_pool = mx.zeros((num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim), dtype=dtype)
+    pal_k_cache_pool = mx.zeros((num_total_physical_pages, num_kv_heads, tokens_per_page, head_dim), dtype=dtype)
+    pal_v_cache_pool = mx.zeros((num_total_physical_pages, num_kv_heads, tokens_per_page, head_dim), dtype=dtype)
 
     logger.info("  Preparing PAL paged_attention inputs:")
     logger.info(f"    Queries shape: {pal_queries.shape}")

@@ -86,10 +86,10 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx:
     PagedAttentionParams params;
     // inputs[0] is query
     params.num_q_heads = inputs[0].shape(1);
-    // inputs[1] is k-pool
+    // inputs[1] is k-pool: [num_pages, num_kv_heads, tokens_per_page, head_dim]
     params.num_physical_pages_in_pool = inputs[1].shape(0);
-    params.tokens_per_page = inputs[1].shape(1);
-    params.num_kv_heads = inputs[1].shape(2);
+    params.num_kv_heads = inputs[1].shape(1);
+    params.tokens_per_page = inputs[1].shape(2);
     // inputs[3] is page table
     params.max_logical_pages_per_seq = inputs[3].shape(1);
     params.num_sequences_in_batch = inputs[3].shape(0);
@@ -110,7 +110,14 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx:
     // 5. Get the unified kernel
     const std::string dtype_suffix = mx::type_to_name(inputs[0].dtype());
     const std::string kernel_name = "pal_paged_attention_" + dtype_suffix + "_" + std::to_string(head_dim_);
-    auto kernel_state = d.get_kernel(kernel_name, "pal");
+
+
+    auto kernel_state = d.get_kernel(
+        kernel_name,
+        "pal",
+        "", // hash
+        { {&use_two_pass_, MTL::DataType::DataTypeBool, 0} }
+    );
     if (!kernel_state) {
         throw std::runtime_error("[PAL] Failed to load kernel: " + kernel_name);
     }
@@ -158,6 +165,8 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx:
         max_logits.set_data(mx::allocator::malloc(max_logits.nbytes()));
         exp_sums.set_data(mx::allocator::malloc(exp_sums.nbytes()));
         tmp_out.set_data(mx::allocator::malloc(tmp_out.nbytes()));
+
+        d.add_temporaries({max_logits, exp_sums, tmp_out}, s.index);
 
         // Pass 1: Compute attention per chunk
         compute_encoder.set_compute_pipeline_state(kernel_state);
@@ -214,10 +223,6 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx:
             threads_per_group,
             tg_memory_bytes
         );
-
-        // Add temporaries for cleanup
-        d.add_temporaries({max_logits, exp_sums, tmp_out}, s.index);
-
     } else {
         // Single-pass execution
         compute_encoder.set_compute_pipeline_state(kernel_state);

@@ -19,11 +19,11 @@ def test_fill_chunk_across_page_boundary(dtype):
     # Fixed test parameters
     num_kv_heads = 1
     head_dim = 4
-    primitive_tokens_per_page = 4
+    tokens_per_page = 4
 
     # Scenario: Write tokens starting mid-page and crossing to next page
-    start_logical_position = primitive_tokens_per_page // 2  # Start at position 2 (mid-page)
-    num_new_tokens_in_chunk = primitive_tokens_per_page  # 4 tokens will cross boundary
+    start_logical_position = tokens_per_page // 2  # Start at position 2 (mid-page)
+    num_new_tokens_in_chunk = tokens_per_page  # 4 tokens will cross boundary
 
     num_sequences_in_batch = 1
     num_physical_pages = 3  # Need at least 2, using 3 for safety
@@ -33,7 +33,7 @@ def test_fill_chunk_across_page_boundary(dtype):
         f"start_logical_position={start_logical_position}, "
         f"num_sequences_in_batch={num_sequences_in_batch}, "
         f"num_kv_heads={num_kv_heads}, head_dim={head_dim}, "
-        f"tokens_per_page={primitive_tokens_per_page}, "
+        f"tokens_per_page={tokens_per_page}, "
         f"num_physical_pages={num_physical_pages}, dtype={dtype}"
     )
 
@@ -58,8 +58,8 @@ def test_fill_chunk_across_page_boundary(dtype):
         logger.debug(f"Token {i} key: {new_keys[i].tolist()}, value: {new_values[i].tolist()}")
 
     # Initialize global pools with zeros
-    global_key_pool = mx.zeros((num_physical_pages, primitive_tokens_per_page, num_kv_heads, head_dim), dtype=dtype)
-    global_value_pool = mx.zeros((num_physical_pages, primitive_tokens_per_page, num_kv_heads, head_dim), dtype=dtype)
+    global_key_pool = mx.zeros((num_physical_pages, num_kv_heads, tokens_per_page, head_dim), dtype=dtype)
+    global_value_pool = mx.zeros((num_physical_pages, num_kv_heads, tokens_per_page, head_dim), dtype=dtype)
 
     logger.debug(f"global_key_pool shape: {global_key_pool.shape}")
     logger.debug(f"global_value_pool shape: {global_value_pool.shape}")
@@ -82,8 +82,8 @@ def test_fill_chunk_across_page_boundary(dtype):
 
     # Log the expected mapping
     for i, pos in enumerate(current_token_write_positions.tolist()):
-        logical_block = pos // primitive_tokens_per_page
-        slot_in_block = pos % primitive_tokens_per_page
+        logical_block = pos // tokens_per_page
+        slot_in_block = pos % tokens_per_page
         physical_page = page_table[0, logical_block].item()
         logger.debug(
             f"Token {i} at logical pos {pos} -> logical block {logical_block}, "
@@ -124,8 +124,8 @@ def test_fill_chunk_across_page_boundary(dtype):
     logger.info("fill_kv_pages execution completed")
 
     # Build expected pools
-    expected_k_pool = mx.zeros((num_physical_pages, primitive_tokens_per_page, num_kv_heads, head_dim), dtype=dtype)
-    expected_v_pool = mx.zeros((num_physical_pages, primitive_tokens_per_page, num_kv_heads, head_dim), dtype=dtype)
+    expected_k_pool = mx.zeros((num_physical_pages, num_kv_heads, tokens_per_page, head_dim), dtype=dtype)
+    expected_v_pool = mx.zeros((num_physical_pages, num_kv_heads, tokens_per_page, head_dim), dtype=dtype)
 
     # Fill expected data based on where each token should be written
     # With start_logical_position=2 and 4 tokens:
@@ -135,16 +135,16 @@ def test_fill_chunk_across_page_boundary(dtype):
     # Token 3 -> logical pos 5 -> page 1, slot 1
     for i in range(num_new_tokens_in_chunk):
         logical_pos = start_logical_position + i
-        logical_block = logical_pos // primitive_tokens_per_page
-        slot_in_block = logical_pos % primitive_tokens_per_page
+        logical_block = logical_pos // tokens_per_page
+        slot_in_block = logical_pos % tokens_per_page
         physical_page = [0, 1][logical_block]  # Direct mapping from page table
 
         # Expected keys and values
         expected_key = [i * 10 + j + 1 for j in range(head_dim)]
         expected_value = [i * 10 + j + 5 for j in range(head_dim)]
 
-        expected_k_pool[physical_page, slot_in_block, 0, :] = mx.array(expected_key, dtype=dtype)
-        expected_v_pool[physical_page, slot_in_block, 0, :] = mx.array(expected_value, dtype=dtype)
+        expected_k_pool[physical_page, 0, slot_in_block, :] = mx.array(expected_key, dtype=dtype)
+        expected_v_pool[physical_page, 0, slot_in_block, :] = mx.array(expected_value, dtype=dtype)
 
         logger.debug(
             f"Token {i}: logical_pos={logical_pos}, physical_page={physical_page}, "
@@ -157,9 +157,9 @@ def test_fill_chunk_across_page_boundary(dtype):
         # Log differences for debugging
         for page in range(num_physical_pages):
             logger.debug(f"Page {page} actual keys:")
-            for slot in range(primitive_tokens_per_page):
-                actual = updated_k_pool[page, slot, 0, :].tolist()
-                expected = expected_k_pool[page, slot, 0, :].tolist()
+            for slot in range(tokens_per_page):
+                actual = updated_k_pool[page, 0, slot, :].tolist()
+                expected = expected_k_pool[page, 0, slot, :].tolist()
                 logger.debug(f"  Slot {slot}: actual={actual}, expected={expected}")
                 if actual != expected and any(v != 0 for v in expected):
                     logger.error(f"  MISMATCH at page={page}, slot={slot}")
@@ -174,9 +174,9 @@ def test_fill_chunk_across_page_boundary(dtype):
         # Log differences for debugging
         for page in range(num_physical_pages):
             logger.debug(f"Page {page} actual values:")
-            for slot in range(primitive_tokens_per_page):
-                actual = updated_v_pool[page, slot, 0, :].tolist()
-                expected = expected_v_pool[page, slot, 0, :].tolist()
+            for slot in range(tokens_per_page):
+                actual = updated_v_pool[page, 0, slot, :].tolist()
+                expected = expected_v_pool[page, 0, slot, :].tolist()
                 logger.debug(f"  Slot {slot}: actual={actual}, expected={expected}")
                 if actual != expected and any(v != 0 for v in expected):
                     logger.error(f"  MISMATCH at page={page}, slot={slot}")

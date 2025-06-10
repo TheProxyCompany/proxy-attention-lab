@@ -121,8 +121,8 @@ def test_pal_decode_vs_sdpa_equivalency(batch_size, history_len, num_heads, head
     pal_queries = sdpa_queries.reshape(batch_size, num_q_heads, head_dim)
 
     # Create empty KV cache pools
-    pal_k_cache_pool = mx.zeros((num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim), dtype=dtype)
-    pal_v_cache_pool = mx.zeros((num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim), dtype=dtype)
+    pal_k_cache_pool = mx.zeros((num_total_physical_pages, num_kv_heads, tokens_per_page, head_dim), dtype=dtype)
+    pal_v_cache_pool = mx.zeros((num_total_physical_pages, num_kv_heads, tokens_per_page, head_dim), dtype=dtype)
 
     logger.info("  Preparing PAL paged_attention inputs for decode mode:")
     logger.info(f"    PAL queries shape: {pal_queries.shape}")
