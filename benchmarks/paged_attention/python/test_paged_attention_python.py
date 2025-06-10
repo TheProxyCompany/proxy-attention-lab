@@ -112,8 +112,6 @@ def test_pal_latency_vs_seq_len(benchmark, seq_len_val):
             v_cache_pool,
             page_table,
             sequence_lengths,
-            query_to_seq_map,
-            query_token_offset,
             use_fused_kernel=False,
         )
         mx.eval(out)
@@ -332,7 +330,7 @@ def test_pal_decode_latency_vs_history_len(benchmark, history_len_val):
     # Create test parameters for decode phase
     params = BASELINE_CONFIG.copy()
     params["history_len"] = history_len_val
-    params["tokens_per_page"] = get_optimal_page_size(params["head_dim"], params["num_q_heads"], params["num_kv_heads"])
+    params["tokens_per_page"] = get_optimal_page_size()
 
     # Calculate the number of query items for benchmarking info
     params["num_query_items"] = params["batch_size"] * params["num_q_heads"]
@@ -346,7 +344,7 @@ def test_pal_decode_latency_vs_history_len(benchmark, history_len_val):
 
     # Define benchmark function that evaluates the result
     def operation_to_benchmark():
-        out = paged_attention(queries, k_hist, v_hist, pt, slens_hist, q_map, q_off, use_fused_kernel=True)
+        out = paged_attention(queries, k_hist, v_hist, pt, slens_hist, use_fused_kernel=True)
         mx.eval(out)
         return out
 

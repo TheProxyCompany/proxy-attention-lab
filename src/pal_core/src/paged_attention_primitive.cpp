@@ -53,16 +53,12 @@ PagedAttentionPrimitive::PagedAttentionPrimitive(
     int num_q_heads,
     int num_kv_heads,
     int head_dim,
-    int tokens_per_page,
-    bool use_two_pass,
-    int chunk_size
+    int tokens_per_page
 ) : mx::UnaryPrimitive(mx::to_stream(stream_or_device)),
       num_q_heads_(num_q_heads),
       num_kv_heads_(num_kv_heads),
       head_dim_(head_dim),
-      tokens_per_page_(tokens_per_page),
-      use_two_pass_(use_two_pass),
-      chunk_size_(chunk_size) { }
+      tokens_per_page_(tokens_per_page) { }
 
 void PagedAttentionPrimitive::eval_cpu(const std::vector<mx::array>& inputs, mx::array& out) {
     std::ostringstream oss;
@@ -82,41 +78,44 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx:
     auto& d = mlx::core::metal::device(s.device);
     MetalLibRegistrar::ensure_pal_metallib_registered(s);
 
+    const auto& queries = inputs[0];
+    const auto& k_cache_pool = inputs[1];
+    const auto& v_cache_pool = inputs[2];
+    const auto& page_table = inputs[3];
+    const auto& context_lens = inputs[4];
+
     // 3. Populate parameters directly from input shapes
     PagedAttentionParams params;
-    // inputs[0] is query
-    params.num_q_heads = inputs[0].shape(1);
-    // inputs[1] is k-pool: [num_pages, num_kv_heads, tokens_per_page, head_dim]
-    params.num_physical_pages_in_pool = inputs[1].shape(0);
-    params.num_kv_heads = inputs[1].shape(1);
-    params.tokens_per_page = inputs[1].shape(2);
-    // inputs[3] is page table
-    params.max_logical_pages_per_seq = inputs[3].shape(1);
-    params.num_sequences_in_batch = inputs[3].shape(0);
+    params.num_q_heads = queries.shape(1);
+    params.num_physical_pages_in_pool = k_cache_pool.shape(0);
+    params.num_kv_heads = k_cache_pool.shape(1);
+    params.tokens_per_page = k_cache_pool.shape(2);
+    params.max_logical_pages_per_seq = page_table.shape(1);
+    params.num_sequences_in_batch = page_table.shape(0);
     // parameters that are not directly from input shapes
     params.log_exp_min_clamp = -88.0f; // tune
     params.inv_sqrt_head_dim = 1.0f / std::sqrt(static_cast<float>(head_dim_));
     params.simd_width = 32; // placeholder, will be set by the kernel state
 
     const int max_tokens = params.max_logical_pages_per_seq * params.tokens_per_page;
-    const int num_chunks = (max_tokens + chunk_size_ - 1) / chunk_size_;
+    const int num_chunks = (max_tokens + CHUNK_SIZE - 1) / CHUNK_SIZE;
+    const bool use_two_pass = max_tokens > CHUNK_SIZE;
 
     // 4. Define dispatch grid
     metal::DispatchGrid dispatch_grid;
     dispatch_grid.width = params.num_sequences_in_batch;
     dispatch_grid.height = params.num_q_heads;
-    dispatch_grid.depth = use_two_pass_ ? num_chunks : 1;
+    dispatch_grid.depth = use_two_pass ? num_chunks : 1;
 
     // 5. Get the unified kernel
     const std::string dtype_suffix = mx::type_to_name(inputs[0].dtype());
     const std::string kernel_name = "pal_paged_attention_" + dtype_suffix + "_" + std::to_string(head_dim_);
 
-
     auto kernel_state = d.get_kernel(
         kernel_name,
         "pal",
         "", // hash
-        { {&use_two_pass_, MTL::DataType::DataTypeBool, 0} }
+        { {&use_two_pass, MTL::DataType::DataTypeBool, 0} }
     );
     if (!kernel_state) {
         throw std::runtime_error("[PAL] Failed to load kernel: " + kernel_name);
@@ -141,19 +140,9 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx:
         throw std::runtime_error("num_q_heads must be divisible by num_kv_heads");
     }
 
-    const auto& queries = inputs[0];
-    const auto& k_cache_pool = inputs[1];
-    const auto& v_cache_pool = inputs[2];
-    const auto& page_table = inputs[3];
-    const auto& context_lens = inputs[4];
-
     // 7. Set up the encoder and dispatch
     auto& compute_encoder = d.get_command_encoder(s.index);
-    if (use_two_pass_) {
-        // Calculate number of chunks for two-pass
-        const int max_tokens = params.max_logical_pages_per_seq * params.tokens_per_page;
-        const int num_chunks = (max_tokens + chunk_size_ - 1) / chunk_size_;
-
+    if (use_two_pass) {
         int num_seq = static_cast<int>(params.num_sequences_in_batch);
         int num_q_heads = static_cast<int>(params.num_q_heads);
 

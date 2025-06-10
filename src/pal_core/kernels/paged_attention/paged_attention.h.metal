@@ -187,7 +187,7 @@ template <typename T, int head_dim, int CHUNK_SIZE>
         const int iterations = (params.tokens_per_page + num_subgroups_per_simd - 1) / num_subgroups_per_simd;
         for (int i = 0; i < iterations; ++i) {
             const int token_in_page = subgroup_idx + i * num_subgroups_per_simd;
-            if (token_in_page >= params.tokens_per_page) continue;  // Tail guard
+            if (token_in_page >= static_cast<int>(params.tokens_per_page)) continue;  // Tail guard
 
             const int key_token_pos = block_idx * params.tokens_per_page + token_in_page;
 

@@ -102,9 +102,6 @@ def test_paged_attention_determinism(history_length, num_queries_tokens, tokens_
         py_v_cache_pool,
         py_page_table,
         py_sequence_lengths,
-        py_query_to_seq_map,
-        py_query_token_offset,
-        use_fused_kernel=True,
     )
     mx.eval(output1)
 
@@ -116,9 +113,6 @@ def test_paged_attention_determinism(history_length, num_queries_tokens, tokens_
         py_v_cache_pool,
         py_page_table,
         py_sequence_lengths,
-        py_query_to_seq_map,
-        py_query_token_offset,
-        use_fused_kernel=True,
     )
     mx.eval(output2)
 
@@ -136,7 +130,7 @@ def test_paged_attention_determinism(history_length, num_queries_tokens, tokens_
         logger.error(f"Max difference: {max_diff:.3f}")
 
     assert mx.array_equal(output1, output2).item(), (
-        "Paged attention prefill output is not deterministic. Outputs differ between two identical calls."
+        "Paged attention fused output is not deterministic. Outputs differ between two identical calls."
     )
 
     logger.info("  Result: Outputs are identical - determinism verified.")

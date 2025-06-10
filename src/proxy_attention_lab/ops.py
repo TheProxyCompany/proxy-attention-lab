@@ -26,7 +26,6 @@ def paged_attention(
     v_cache_pool: mx.array,
     page_table: mx.array,
     sequence_lengths: mx.array,
-    use_fused_kernel: bool,
     stream: mx.Stream | mx.Device | None = None,
 ) -> mx.array:
     """Performs paged attention using the custom C++ primitive and Metal kernel.
@@ -45,7 +44,6 @@ def paged_attention(
             Shape: [NumSequencesInBatch, MaxLogicalBlocksPerSequence]
         sequence_lengths: Actual length of each sequence in the batch.
             Shape: [NumSequencesInBatch]
-        use_fused_kernel: Whether to use the fused kernel
         stream: Optional stream or device for the operation.
 
     Returns:
@@ -63,7 +61,6 @@ def paged_attention(
         v_cache_pool,
         page_table,
         sequence_lengths,
-        use_fused_kernel,
         stream=stream,
     )
 

@@ -38,7 +38,6 @@ mx::array paged_attention(
     const mx::array& v_cache_pool,
     const mx::array& page_table,
     const mx::array& sequence_lengths,
-    bool use_fused_kernel,
     mx::StreamOrDevice stream_or_device
   ) {
   spdlog::debug("[PAL Ops] pal::cpp::paged_attention C++ operation called.");
@@ -69,18 +68,13 @@ mx::array paged_attention(
       "num_kv_heads={}, head_dim={}, tokens_per_page={}",
       num_q_heads, num_kv_heads, head_dim, tokens_per_page);
 
-  // TODO: tune chunk size
-  int chunk_size = 512;
-
   // Create the primitive instance with the extracted parameters
   auto primitive = std::make_shared<PagedAttentionPrimitive>(
       stream_or_device,
       num_q_heads,
       num_kv_heads,
       head_dim,
-      tokens_per_page,
-      !use_fused_kernel, // todo: change to use_two_pass
-      chunk_size
+      tokens_per_page
     );
 
   spdlog::debug("[PAL Ops] PagedAttentionPrimitive instance created.");

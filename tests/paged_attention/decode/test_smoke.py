@@ -46,7 +46,7 @@ def test_paged_attention_smoke(dtype) -> None:
 
     # KV cache parameters
     num_total_pages = 2
-    tokens_per_page = 64
+    tokens_per_page = 16
     num_kv_heads = 2
 
     # Batch parameters
@@ -72,8 +72,6 @@ def test_paged_attention_smoke(dtype) -> None:
 
     # Metadata arrays
     mock_sequence_lengths = mx.array([tokens_per_page // 2] * num_sequences_in_batch, dtype=mx.int32)
-    mock_query_to_seq_map = mx.zeros(num_queries, dtype=mx.int32)
-    mock_query_token_offset = mx.arange(num_queries, dtype=mx.int32)
 
     logger.info("  Input Shapes:")
     logger.info(f"    Queries: {mock_queries.shape}")
@@ -81,15 +79,12 @@ def test_paged_attention_smoke(dtype) -> None:
     logger.info(f"    V cache: {mock_v_cache_pool.shape}")
     logger.info(f"    Page table: {mock_page_table.shape}")
     logger.info(f"    Sequence lengths: {mock_sequence_lengths.shape}")
-    logger.info(f"    Query token offsets: {mock_query_token_offset}")
 
     mx.eval(mock_queries)
     mx.eval(mock_k_cache_pool)
     mx.eval(mock_v_cache_pool)
     mx.eval(mock_page_table)
     mx.eval(mock_sequence_lengths)
-    mx.eval(mock_query_to_seq_map)
-    mx.eval(mock_query_token_offset)
 
     try:
         # Run the paged attention operation
@@ -98,10 +93,7 @@ def test_paged_attention_smoke(dtype) -> None:
             mock_k_cache_pool,
             mock_v_cache_pool,
             mock_page_table,
-            mock_sequence_lengths,
-            mock_query_to_seq_map,
-            mock_query_token_offset,
-            use_fused_kernel=False,
+            mock_sequence_lengths
         )
         mx.eval(out)
 

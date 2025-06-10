@@ -55,7 +55,6 @@ NB_MODULE(pal_core, m) {
          const mx::array& v_cache_pool,
          const mx::array& page_table,
          const mx::array& sequence_lengths,
-         bool use_fused_kernel,
          std::optional<mx::StreamOrDevice> stream_or_device) {
         return pal::cpp::paged_attention(
             queries,
@@ -63,7 +62,6 @@ NB_MODULE(pal_core, m) {
             v_cache_pool,
             page_table,
             sequence_lengths,
-            use_fused_kernel,
             stream_or_device.value_or(mx::StreamOrDevice{}));
       },
       // Arguments for Python
@@ -72,13 +70,11 @@ NB_MODULE(pal_core, m) {
       "v_cache_pool"_a,
       "page_table"_a,
       "sequence_lengths"_a,
-      "use_fused_kernel"_a,
       nb::kw_only(),  // stream is keyword-only argument
       "stream"_a = nb::none(),
       nb::sig("def paged_attention(queries: mlx.core.array, "
               "k_cache_pool: mlx.core.array, v_cache_pool: mlx.core.array, "
               "page_table: mlx.core.array, sequence_lengths: mlx.core.array, "
-              "use_fused_kernel: bool, "
               "*, stream: mlx.core.Stream | mlx.core.Device | None = None) -> "
               "mlx.core.array"),
       R"doc(
@@ -97,7 +93,6 @@ NB_MODULE(pal_core, m) {
                                         page IDs. Shape [NumSequencesInBatch, MaxLogicalBlocksPerSeq].
             sequence_lengths (mlx.core.array): Array of actual lengths for each sequence
                                               in the batch.
-            use_fused_kernel (bool): Whether to use the fused kernel
             stream (mlx.core.Stream | mlx.core.Device | None, optional): Stream or device
                                                                         for the operation.
         Returns:

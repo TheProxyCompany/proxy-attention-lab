@@ -31,6 +31,8 @@ namespace mx = mlx::core;
 
 namespace pal::cpp {
 
+static constexpr int CHUNK_SIZE = 512;
+
 /**
  * @brief Custom primitive implementation for paged attention operations.
  *
@@ -49,17 +51,13 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
    * @param num_kv_heads Number of key/value heads in the attention mechanism
    * @param head_dim Hidden dimension size per attention head
    * @param tokens_per_page Number of tokens stored in each memory page
-   * @param use_two_pass Whether to use two-pass mode
-   * @param chunk_size Size of the chunk to process in the attention kernel
    */
   explicit PagedAttentionPrimitive(
     mx::StreamOrDevice stream_or_device,
     int num_q_heads,
     int num_kv_heads,
     int head_dim,
-    int tokens_per_page,
-    bool use_two_pass,
-    int chunk_size
+    int tokens_per_page
   );
 
   /**
@@ -131,9 +129,6 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
   int num_kv_heads_;
   int head_dim_;
   int tokens_per_page_;
-  int chunk_size_;
-  bool use_two_pass_;
-
 
   /**
    * @brief Implements vector-Jacobian product for backpropagation.

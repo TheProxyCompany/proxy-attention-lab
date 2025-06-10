@@ -89,117 +89,6 @@ mx::array create_page_table(int num_sequences_in_batch, int num_logical_pages_pe
     );
 }
 
-static void BM_PAL_PrefillLatencyVsSeqLen(benchmark::State& state) {
-    // Create test parameters from baseline with specified sequence length
-    BaselineConfig params;
-    params.seq_len = state.range(0); // Use the sequence length from benchmark args
-
-    // Extract params to local variables for clarity
-    int batch_size = params.batch_size;
-    int seq_len = params.seq_len;
-    int num_q_heads = params.num_q_heads;
-    int num_kv_heads = params.num_kv_heads;
-    int head_dim = params.head_dim;
-    mx::Dtype dtype = params.dtype;
-
-    params.tokens_per_page = pal::cpp::PagedAttentionPrimitive::get_optimal_page_size();
-    int tokens_per_page = params.tokens_per_page;
-
-    // Setup input tensors
-    int num_tokens = batch_size * seq_len;
-    int num_logical_pages_per_seq = (seq_len + tokens_per_page - 1) / tokens_per_page;
-    int num_total_physical_pages = batch_size * num_logical_pages_per_seq;
-
-    // Create query tensor with shape [num_tokens, num_q_heads, head_dim]
-    mx::array queries = mx::random::normal(
-        {num_tokens, num_q_heads, head_dim},
-        dtype
-    );
-
-    // K/V cache pools: [num_total_physical_pages, num_kv_heads, tokens_per_page, head_dim]
-    mx::array k_cache_pool = mx::random::normal(
-        {num_total_physical_pages, num_kv_heads, tokens_per_page, head_dim},
-        dtype
-    );
-    mx::array v_cache_pool = mx::random::normal(
-        {num_total_physical_pages, num_kv_heads, tokens_per_page, head_dim},
-        dtype
-    );
-
-    // Create page table: [num_sequences_in_batch, num_logical_pages_per_seq]
-    mx::array page_table = create_page_table(batch_size, num_logical_pages_per_seq);
-
-    // Set sequence length for each batch item: [num_sequences_in_batch]
-    mx::array sequence_lengths = mx::full({batch_size}, seq_len, mx::int32);
-
-    // Main benchmark loop
-    for (auto _ : state) {
-        mx::array out = pal::cpp::paged_attention(
-            queries,
-            k_cache_pool,
-            v_cache_pool,
-            page_table,
-            sequence_lengths,
-            false /* use_fused_kernel */
-        );
-        out.eval();
-    }
-}
-
-static void BM_MLX_SDPA_PrefillLatencyVsSeqLen(benchmark::State& state) {
-    // Create parameters with the fixed batch size and specified sequence length
-    BaselineConfig params;
-    params.seq_len = state.range(0); // Use the sequence length from benchmark args
-
-
-    // Extract params to local variables for clarity
-    int batch_size = params.batch_size;
-    int seq_len = params.seq_len;
-    int num_q_heads = params.num_q_heads;
-    int num_kv_heads = params.num_kv_heads;
-    int head_dim = params.head_dim;
-    mx::Dtype dtype = params.dtype;
-
-    // Setup input tensors (matching Python benchmark)
-    float scale = 1.0f / std::sqrt(static_cast<float>(head_dim));
-
-    // Create input tensors with shapes matching the Python benchmark
-    mx::array queries = mx::random::normal(
-        {batch_size, num_q_heads, seq_len, head_dim}, dtype
-    );
-
-    mx::array keys = mx::random::normal(
-        {batch_size, num_kv_heads, seq_len, head_dim}, dtype
-    );
-
-    mx::array values = mx::random::normal(
-        {batch_size, num_kv_heads, seq_len, head_dim}, dtype
-    );
-
-    // Create causal mask that scales with sequence length
-    mx::array causal_mask = create_causal_mask(seq_len, dtype);
-
-    // Log tensor shapes to verify scaling with seq_len
-    spdlog::info("PREFILL SDPA - seq_len: {}", seq_len);
-    spdlog::info("  queries shape: [{}, {}, {}, {}]", batch_size, num_q_heads, seq_len, head_dim);
-    spdlog::info("  keys shape: [{}, {}, {}, {}]", batch_size, num_kv_heads, seq_len, head_dim);
-    spdlog::info("  values shape: [{}, {}, {}, {}]", batch_size, num_kv_heads, seq_len, head_dim);
-    spdlog::info("  causal_mask shape: [{}, {}]", seq_len, seq_len);
-
-    // Main benchmark loop
-    for (auto _ : state) {
-        mx::array out = mx::fast::scaled_dot_product_attention(
-            queries,
-            keys,
-            values,
-            scale,
-            "array",
-            {causal_mask}
-        );
-        out.eval();
-    }
-}
-
 // C++ PAL Decode benchmark function
 static void BM_PAL_DecodeLatencyVsHistoryLen(benchmark::State& state) {
     // Create test parameters from baseline with specified history length
@@ -251,8 +140,7 @@ static void BM_PAL_DecodeLatencyVsHistoryLen(benchmark::State& state) {
             k_cache_pool,
             v_cache_pool,
             page_table,
-            sequence_lengths,
-            true /* use_fused_kernel */
+            sequence_lengths
         );
         out.eval();
     }
@@ -317,22 +205,6 @@ static void BM_MLX_SDPA_DecodeLatencyVsHistoryLen(benchmark::State& state) {
 
 const int REPETITIONS = 3; // magic number
 const int ITERATIONS = 3; // magic number
-
-BENCHMARK(BM_PAL_PrefillLatencyVsSeqLen)
-   ->Arg(64)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-   ->Arg(256)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-   ->Arg(512)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-   ->Arg(1024)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-   ->Arg(2048)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-   ->Arg(4096)->Repetitions(REPETITIONS)->Iterations(ITERATIONS);
-
-BENCHMARK(BM_MLX_SDPA_PrefillLatencyVsSeqLen)
-   ->Arg(64)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-   ->Arg(256)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-   ->Arg(512)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-   ->Arg(1024)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-   ->Arg(2048)->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-   ->Arg(4096)->Repetitions(REPETITIONS)->Iterations(ITERATIONS);
 
 BENCHMARK(BM_PAL_DecodeLatencyVsHistoryLen)
    ->Arg(64)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)

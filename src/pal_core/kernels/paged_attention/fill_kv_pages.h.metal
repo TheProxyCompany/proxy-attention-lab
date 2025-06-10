@@ -47,9 +47,7 @@ template <typename T>
 
     uint start_token_idx_for_chunk = tg_id.x * kv_pairs_per_threadgroup;
 
-    // New layout: [pages, kv_heads, tokens, head_dim]
-    // Calculate strides for the new layout
-    ulong head_dim_stride = 1;
+    // ayout: [pages, kv_heads, tokens, head_dim]
     ulong tokens_stride = (ulong)params.head_dim;
     ulong kv_heads_stride = (ulong)params.tokens_per_page * params.head_dim;
     ulong pages_stride = (ulong)params.num_kv_heads * params.tokens_per_page * params.head_dim;
