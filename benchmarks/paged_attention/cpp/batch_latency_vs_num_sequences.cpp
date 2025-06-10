@@ -167,21 +167,21 @@ static void BM_PAL_DecodeBatchLatencyVsHistoryLength(benchmark::State& state) {
     }
     mx::array query_token_offset = mx::array(offset_data.data(), {num_sequences}, mx::int32);
 
-    queries = mx::contiguous(queries);
-    k_cache_pool = mx::contiguous(k_cache_pool);
-    v_cache_pool = mx::contiguous(v_cache_pool);
-    page_table = mx::contiguous(page_table);
-    sequence_lengths = mx::contiguous(sequence_lengths);
-    query_to_seq_map = mx::contiguous(query_to_seq_map);
-    query_token_offset = mx::contiguous(query_token_offset);
+    // queries = mx::contiguous(queries);
+    // k_cache_pool = mx::contiguous(k_cache_pool);
+    // v_cache_pool = mx::contiguous(v_cache_pool);
+    // page_table = mx::contiguous(page_table);
+    // sequence_lengths = mx::contiguous(sequence_lengths);
+    // query_to_seq_map = mx::contiguous(query_to_seq_map);
+    // query_token_offset = mx::contiguous(query_token_offset);
 
-    queries.eval();
-    k_cache_pool.eval();
-    v_cache_pool.eval();
-    page_table.eval();
-    sequence_lengths.eval();
-    query_to_seq_map.eval();
-    query_token_offset.eval();
+    // queries.eval();
+    // k_cache_pool.eval();
+    // v_cache_pool.eval();
+    // page_table.eval();
+    // sequence_lengths.eval();
+    // query_to_seq_map.eval();
+    // query_token_offset.eval();
 
     // Main benchmark loop
     for (auto _ : state) {
@@ -191,8 +191,6 @@ static void BM_PAL_DecodeBatchLatencyVsHistoryLength(benchmark::State& state) {
             v_cache_pool,
             page_table,
             sequence_lengths,
-            query_to_seq_map,
-            query_token_offset,
             true /* use_fused_kernel */
         );
         out.eval();
@@ -249,21 +247,21 @@ static void BM_PAL_TwoPass_PrefillBatchLatencyVsSeqLen(benchmark::State& state) 
     // Create query token offsets for prefill
     mx::array query_token_offset = create_query_token_offset_prefill(num_sequences, seq_len);
 
-    queries = mx::contiguous(queries);
-    k_cache_pool = mx::contiguous(k_cache_pool);
-    v_cache_pool = mx::contiguous(v_cache_pool);
-    page_table = mx::contiguous(page_table);
-    sequence_lengths = mx::contiguous(sequence_lengths);
-    query_to_seq_map = mx::contiguous(query_to_seq_map);
-    query_token_offset = mx::contiguous(query_token_offset);
+    // queries = mx::contiguous(queries);
+    // k_cache_pool = mx::contiguous(k_cache_pool);
+    // v_cache_pool = mx::contiguous(v_cache_pool);
+    // page_table = mx::contiguous(page_table);
+    // sequence_lengths = mx::contiguous(sequence_lengths);
+    // query_to_seq_map = mx::contiguous(query_to_seq_map);
+    // query_token_offset = mx::contiguous(query_token_offset);
 
-    queries.eval();
-    k_cache_pool.eval();
-    v_cache_pool.eval();
-    page_table.eval();
-    sequence_lengths.eval();
-    query_to_seq_map.eval();
-    query_token_offset.eval();
+    // queries.eval();
+    // k_cache_pool.eval();
+    // v_cache_pool.eval();
+    // page_table.eval();
+    // sequence_lengths.eval();
+    // query_to_seq_map.eval();
+    // query_token_offset.eval();
 
     // Main benchmark loop
     for (auto _ : state) {
@@ -273,8 +271,6 @@ static void BM_PAL_TwoPass_PrefillBatchLatencyVsSeqLen(benchmark::State& state) 
             v_cache_pool,
             page_table,
             sequence_lengths,
-            query_to_seq_map,
-            query_token_offset,
             false /* use_fused_kernel - two-pass */
         );
         out.eval();
@@ -316,10 +312,10 @@ static void BM_MLX_SDPA_DecodeBatchLatencyVsNumSequences(benchmark::State& state
     // Create a mask of zeros (allows full attention) with shape [1, history_length]
     mx::array mask = mx::zeros({1, history_length}, dtype);
 
-    queries.eval();
-    keys.eval();
-    values.eval();
-    mask.eval();
+    // queries.eval();
+    // keys.eval();
+    // values.eval();
+    // mask.eval();
 
     // Main benchmark loop
     for (auto _ : state) {
@@ -370,10 +366,10 @@ static void BM_MLX_SDPA_DecodeBatchLatencyVsHistoryLength(benchmark::State& stat
     // Create a mask of zeros (allows full attention) with shape [1, history_length]
     mx::array mask = mx::zeros({1, history_length}, dtype);
 
-    queries.eval();
-    keys.eval();
-    values.eval();
-    mask.eval();
+    // queries.eval();
+    // keys.eval();
+    // values.eval();
+    // mask.eval();
 
     // Main benchmark loop
     for (auto _ : state) {

@@ -41,8 +41,6 @@ namespace pal::cpp {
  * @param page_table Page table mapping logical blocks to physical page IDs.
  *                  Shape [num_sequences, max_blocks_per_seq]
  * @param sequence_lengths Actual length of each sequence in the batch
- * @param query_to_seq_map Maps each query token to its sequence index in the batch
- * @param query_token_offset Logical position of each query token within its sequence
  * @param use_fused_kernel Whether to use the fused kernel
  * @param stream MLX stream or device for the operation
  * @return mx::array Output of shape [num_queries, head_dim] containing the attention results
@@ -53,8 +51,6 @@ mx::array paged_attention(
     const mx::array& v_cache_pool,
     const mx::array& page_table,
     const mx::array& sequence_lengths,
-    const mx::array& query_to_seq_map,
-    const mx::array& query_token_offset,
     bool use_fused_kernel,
     mx::StreamOrDevice stream = {}
 );

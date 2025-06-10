@@ -89,36 +89,6 @@ mx::array create_page_table(int num_sequences_in_batch, int num_logical_pages_pe
     );
 }
 
-// Helper function to create sequence-to-query mapping
-mx::array create_query_to_seq_map(int batch_size, int seq_len) {
-    // Create a query-to-sequence map that matches the python version:
-    // query_to_seq_map = mx.repeat(mx.arange(batch_size, dtype=mx.int32), repeats=seq_len)
-    std::vector<int32_t> q_to_seq_data(batch_size * seq_len);
-
-    for (int b_idx = 0; b_idx < batch_size; ++b_idx) {
-        for (int s_idx = 0; s_idx < seq_len; ++s_idx) {
-            q_to_seq_data[b_idx * seq_len + s_idx] = b_idx;
-        }
-    }
-
-    return mx::array(q_to_seq_data.data(), {batch_size * seq_len}, mx::int32);
-}
-
-// Helper function to create query token offsets
-mx::array create_query_token_offset(int batch_size, int seq_len) {
-    // Create query token offsets that match the python version:
-    // query_token_offset = mx.tile(mx.arange(1, seq_len + 1, dtype=mx.int32), batch_size)
-    std::vector<int32_t> offset_data(batch_size * seq_len);
-
-    for (int b_idx = 0; b_idx < batch_size; ++b_idx) {
-        for (int s_idx = 0; s_idx < seq_len; ++s_idx) {
-            offset_data[b_idx * seq_len + s_idx] = s_idx + 1; // 1-indexed
-        }
-    }
-
-    return mx::array(offset_data.data(), {batch_size * seq_len}, mx::int32);
-}
-
 static void BM_PAL_PrefillLatencyVsSeqLen(benchmark::State& state) {
     // Create test parameters from baseline with specified sequence length
     BaselineConfig params;
@@ -162,28 +132,6 @@ static void BM_PAL_PrefillLatencyVsSeqLen(benchmark::State& state) {
     // Set sequence length for each batch item: [num_sequences_in_batch]
     mx::array sequence_lengths = mx::full({batch_size}, seq_len, mx::int32);
 
-    // Create query-to-sequence mapping: [num_tokens]
-    mx::array query_to_seq_map = create_query_to_seq_map(batch_size, seq_len);
-
-    // Create query token offsets: [num_tokens]
-    mx::array query_token_offset = create_query_token_offset(batch_size, seq_len);
-
-    queries = mx::contiguous(queries);
-    k_cache_pool = mx::contiguous(k_cache_pool);
-    v_cache_pool = mx::contiguous(v_cache_pool);
-    page_table = mx::contiguous(page_table);
-    sequence_lengths = mx::contiguous(sequence_lengths);
-    query_to_seq_map = mx::contiguous(query_to_seq_map);
-    query_token_offset = mx::contiguous(query_token_offset);
-
-    queries.eval();
-    k_cache_pool.eval();
-    v_cache_pool.eval();
-    page_table.eval();
-    sequence_lengths.eval();
-    query_to_seq_map.eval();
-    query_token_offset.eval();
-
     // Main benchmark loop
     for (auto _ : state) {
         mx::array out = pal::cpp::paged_attention(
@@ -192,8 +140,6 @@ static void BM_PAL_PrefillLatencyVsSeqLen(benchmark::State& state) {
             v_cache_pool,
             page_table,
             sequence_lengths,
-            query_to_seq_map,
-            query_token_offset,
             false /* use_fused_kernel */
         );
         out.eval();
@@ -298,33 +244,6 @@ static void BM_PAL_DecodeLatencyVsHistoryLen(benchmark::State& state) {
 
     // Set sequence length for each batch item to the history length
     mx::array sequence_lengths = mx::full({batch_size}, history_len, mx::int32);
-
-    // Create query-to-sequence mapping for decode (just sequence indices)
-    mx::array query_to_seq_map = mx::arange(batch_size, mx::int32);
-
-    // Create query token offsets for decode (position after history)
-    std::vector<int32_t> offset_data(batch_size);
-    for (int i = 0; i < batch_size; ++i) {
-        offset_data[i] = history_len + 1; // Position after history
-    }
-    mx::array query_token_offset = mx::array(offset_data.data(), {batch_size}, mx::int32);
-
-    queries = mx::contiguous(queries);
-    k_cache_pool = mx::contiguous(k_cache_pool);
-    v_cache_pool = mx::contiguous(v_cache_pool);
-    page_table = mx::contiguous(page_table);
-    sequence_lengths = mx::contiguous(sequence_lengths);
-    query_to_seq_map = mx::contiguous(query_to_seq_map);
-    query_token_offset = mx::contiguous(query_token_offset);
-
-    queries.eval();
-    k_cache_pool.eval();
-    v_cache_pool.eval();
-    page_table.eval();
-    sequence_lengths.eval();
-    query_to_seq_map.eval();
-    query_token_offset.eval();
-
     // Main benchmark loop
     for (auto _ : state) {
         mx::array out = pal::cpp::paged_attention(
@@ -333,8 +252,6 @@ static void BM_PAL_DecodeLatencyVsHistoryLen(benchmark::State& state) {
             v_cache_pool,
             page_table,
             sequence_lengths,
-            query_to_seq_map,
-            query_token_offset,
             true /* use_fused_kernel */
         );
         out.eval();

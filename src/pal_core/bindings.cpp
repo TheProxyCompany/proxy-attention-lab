@@ -55,8 +55,6 @@ NB_MODULE(pal_core, m) {
          const mx::array& v_cache_pool,
          const mx::array& page_table,
          const mx::array& sequence_lengths,
-         const mx::array& query_to_seq_map,
-         const mx::array& query_token_offset,
          bool use_fused_kernel,
          std::optional<mx::StreamOrDevice> stream_or_device) {
         return pal::cpp::paged_attention(
@@ -65,8 +63,6 @@ NB_MODULE(pal_core, m) {
             v_cache_pool,
             page_table,
             sequence_lengths,
-            query_to_seq_map,
-            query_token_offset,
             use_fused_kernel,
             stream_or_device.value_or(mx::StreamOrDevice{}));
       },
@@ -76,15 +72,12 @@ NB_MODULE(pal_core, m) {
       "v_cache_pool"_a,
       "page_table"_a,
       "sequence_lengths"_a,
-      "query_to_seq_map"_a,
-      "query_token_offset"_a,
       "use_fused_kernel"_a,
       nb::kw_only(),  // stream is keyword-only argument
       "stream"_a = nb::none(),
       nb::sig("def paged_attention(queries: mlx.core.array, "
               "k_cache_pool: mlx.core.array, v_cache_pool: mlx.core.array, "
               "page_table: mlx.core.array, sequence_lengths: mlx.core.array, "
-              "query_to_seq_map: mlx.core.array, query_token_offset: mlx.core.array, "
               "use_fused_kernel: bool, "
               "*, stream: mlx.core.Stream | mlx.core.Device | None = None) -> "
               "mlx.core.array"),
@@ -104,10 +97,6 @@ NB_MODULE(pal_core, m) {
                                         page IDs. Shape [NumSequencesInBatch, MaxLogicalBlocksPerSeq].
             sequence_lengths (mlx.core.array): Array of actual lengths for each sequence
                                               in the batch.
-            query_to_seq_map (mlx.core.array): Array mapping each query token to its
-                                              sequence index in the batch.
-            query_token_offset (mlx.core.array): Array of logical offsets for each query
-                                                token within its sequence.
             use_fused_kernel (bool): Whether to use the fused kernel
             stream (mlx.core.Stream | mlx.core.Device | None, optional): Stream or device
                                                                         for the operation.

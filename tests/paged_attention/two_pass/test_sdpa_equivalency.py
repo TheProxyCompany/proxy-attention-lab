@@ -146,8 +146,6 @@ def test_pal_vs_sdpa_equivalency(seq_len, num_heads, head_dim, dtype):
         pal_v_cache_pool,
         pal_page_table,
         pal_sequence_lengths,
-        pal_query_to_seq_map,
-        pal_query_token_offset,
         use_fused_kernel=False,
     )
     logger.info(f"    PAL output shape: {pal_output.shape}")
@@ -309,8 +307,6 @@ def test_pal_vs_sdpa_batched(batch_size, seq_len, num_heads, head_dim, dtype):
         pal_v_cache_pool,
         pal_page_table,
         pal_sequence_lengths,
-        pal_query_to_seq_map,
-        pal_query_token_offset,
         use_fused_kernel=False,  # Use two-pass kernel for prefill
     )
     logger.info(f"    PAL output shape: {pal_output.shape}")

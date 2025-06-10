@@ -38,8 +38,6 @@ mx::array paged_attention(
     const mx::array& v_cache_pool,
     const mx::array& page_table,
     const mx::array& sequence_lengths,
-    const mx::array& query_to_seq_map,
-    const mx::array& query_token_offset,
     bool use_fused_kernel,
     mx::StreamOrDevice stream_or_device
   ) {
