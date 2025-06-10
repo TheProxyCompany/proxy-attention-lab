@@ -49,6 +49,8 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
    * @param num_kv_heads Number of key/value heads in the attention mechanism
    * @param head_dim Hidden dimension size per attention head
    * @param tokens_per_page Number of tokens stored in each memory page
+   * @param use_two_pass Whether to use two-pass mode
+   * @param chunk_size Size of the chunk to process in the attention kernel
    */
   explicit PagedAttentionPrimitive(
     mx::StreamOrDevice stream_or_device,
@@ -174,6 +176,14 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
   std::pair<std::vector<mx::array>, std::vector<int>> vmap(
       const std::vector<mx::array>& inputs,
       const std::vector<int>& axes) override;
+
+  size_t calculate_attention_memory_layout(
+    const PagedAttentionParams& params,
+    size_t threads_per_group,
+    size_t simd_width,
+    mx::Dtype kv_cache_dtype,
+    int head_dim
+  );
 
 };
 

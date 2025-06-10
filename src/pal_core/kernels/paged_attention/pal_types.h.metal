@@ -110,3 +110,6 @@ inline T simd_max(T v, uint simd_size) {
         v = max(v, simd_shuffle_xor(v, off));
     return v;
 }
+
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
+#define MIN(a, b) ((a) < (b) ? (a) : (b))

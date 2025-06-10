@@ -19,6 +19,7 @@
 #pragma once
 
 #include <metal_stdlib>
+#include <metal_math>
 #include "paged_attention_types.h"
 #include "pal_types.h.metal"
 
@@ -130,9 +131,13 @@ template <typename T, int head_dim, int CHUNK_SIZE>
     const int chunk_idx = tg_pos_in_grid.z;
     const int start_block_idx = USE_TWO_PASS ? (chunk_idx * CHUNK_SIZE) / params.tokens_per_page : 0;
     const int num_context_blocks = (context_len + params.tokens_per_page - 1) / params.tokens_per_page;
-    const int end_block_idx = USE_TWO_PASS ?
-        min(start_block_idx + (CHUNK_SIZE / params.tokens_per_page), num_context_blocks)
-        : num_context_blocks;
+    int end_block_idx;
+    if (USE_TWO_PASS) {
+        int chunk_size_per_page = start_block_idx + (CHUNK_SIZE / params.tokens_per_page);
+        end_block_idx = MIN(chunk_size_per_page, num_context_blocks);
+    } else {
+        end_block_idx = num_context_blocks;
+    }
 
     // Load this sequence's page table into shared memory for faster access.
     for (uint i = local_idx_in_tg; i < params.max_logical_pages_per_seq; i += num_threads) {
@@ -143,7 +148,7 @@ template <typename T, int head_dim, int CHUNK_SIZE>
 
     // --- 5. Main Attention Loop ---
     // 5.a Define Parallelism Hierarchy ---
-    const int subgroup_size = max(simd_width / params.tokens_per_page, 1);
+    const int subgroup_size = MAX(simd_width / params.tokens_per_page, 1);
     const int num_subgroups_per_simd = simd_width / subgroup_size;
     const int subgroup_idx = lane_idx / subgroup_size;
     const int subgroup_lane_offset = lane_idx % subgroup_size;
@@ -218,7 +223,8 @@ template <typename T, int head_dim, int CHUNK_SIZE>
         // Each SIMD group maintains its own max_score and sum_exp
         // Parallel max reduction within SIMD group
         float local_max = -INFINITY;
-        for (int token_in_page = lane_idx; token_in_page < params.tokens_per_page; token_in_page += simd_width) {
+        int tokens_per_page = static_cast<int>(params.tokens_per_page);
+        for (int token_in_page = lane_idx; token_in_page < tokens_per_page; token_in_page += simd_width) {
             const int key_token_pos = block_idx * params.tokens_per_page + token_in_page;
             if (key_token_pos < context_len) {
                 float score = logits_tile[token_in_page];
@@ -253,7 +259,7 @@ template <typename T, int head_dim, int CHUNK_SIZE>
         // --- Compute Softmax Weights ---
         // Parallel exp computation and sum reduction
         float local_sum = 0.0f;
-        for (int token_in_page = lane_idx; token_in_page < params.tokens_per_page; token_in_page += simd_width) {
+        for (int token_in_page = lane_idx; token_in_page < tokens_per_page; token_in_page += simd_width) {
             const int key_token_pos = block_idx * params.tokens_per_page + token_in_page;
             if (key_token_pos < context_len) {
                 float score = logits_tile[token_in_page];
@@ -276,7 +282,7 @@ template <typename T, int head_dim, int CHUNK_SIZE>
         threadgroup float* simd_acc_tile = acc_tile + simdgroup_idx * head_dim;
 
         // Process all tokens in the page
-        for (int token_in_page = 0; token_in_page < params.tokens_per_page; ++token_in_page) {
+        for (int token_in_page = 0; token_in_page < tokens_per_page; ++token_in_page) {
             const int key_token_pos = block_idx * params.tokens_per_page + token_in_page;
             if (key_token_pos < context_len) {
                 float weight = logits_tile[token_in_page];

@@ -76,6 +76,7 @@ template <typename T, int head_dim, int CHUNK_SIZE>
         max_logit = max(max_logit, l);
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
+    // THREADGROUP BARRIER REASON: Ensure all threads have loaded their max_logits into shared memory before reduction.
 
     // Reduce within SIMD group
     max_logit = simd_max(max_logit, simd_width);
@@ -83,6 +84,7 @@ template <typename T, int head_dim, int CHUNK_SIZE>
         red_smem[simdgroup_idx] = max_logit;
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
+    // THREADGROUP BARRIER REASON: Ensure all SIMD groups have written their partial max_logit to red_smem before cross-SIMD reduction.
 
     // Reduce across SIMD groups
     if (simdgroup_idx == 0) {
@@ -94,6 +96,7 @@ template <typename T, int head_dim, int CHUNK_SIZE>
         red_smem[0] = max_logit;
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
+    // THREADGROUP BARRIER REASON: Ensure the final max_logit is written before being broadcast to all threads.
     max_logit = red_smem[0];
 
     // Load rescaled exp sums to shared memory
@@ -109,6 +112,7 @@ template <typename T, int head_dim, int CHUNK_SIZE>
         shared_exp_sums[i] = rescaled_exp_sum;
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
+    // THREADGROUP BARRIER REASON: Ensure shared_exp_sums is fully populated and local global_exp_sum is calculated before reduction.
 
     // Reduce global_exp_sum using templated SIMD helper
     global_exp_sum = simd_sum(global_exp_sum, simd_width);
@@ -116,7 +120,7 @@ template <typename T, int head_dim, int CHUNK_SIZE>
         red_smem[simdgroup_idx + num_simd_groups] = global_exp_sum;
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
-
+    // THREADGROUP BARRIER REASON: Ensure all SIMD groups have written their partial global_exp_sum to red_smem before cross-SIMD reduction.
     if (simdgroup_idx == 0) {
         global_exp_sum = lane_idx < num_simd_groups ? red_smem[lane_idx + num_simd_groups] : 0.0f;
         global_exp_sum = simd_sum(global_exp_sum, simd_width);
@@ -125,6 +129,7 @@ template <typename T, int head_dim, int CHUNK_SIZE>
         red_smem[1] = global_exp_sum;
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
+    // THREADGROUP BARRIER REASON: Ensure the final global_exp_sum is written before being broadcast to all threads.
     global_exp_sum = red_smem[1];
 
     const float inv_global_exp_sum = 1.0f / (global_exp_sum + 1e-6f);

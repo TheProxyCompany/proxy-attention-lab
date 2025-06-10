@@ -132,11 +132,7 @@ static void BM_PAL_PrefillLatencyVsSeqLen(benchmark::State& state) {
     int head_dim = params.head_dim;
     mx::Dtype dtype = params.dtype;
 
-    auto info = pal::cpp::PagedAttentionPrimitive::get_optimal_tile_size_and_thread_info(
-        head_dim,
-        num_q_heads,
-        num_kv_heads
-    );
+    auto info = pal::cpp::PagedAttentionPrimitive::get_optimal_tile_size_and_thread_info();
 
     params.tokens_per_page = std::get<0>(info);
     int tokens_per_page = params.tokens_per_page;
@@ -274,11 +270,7 @@ static void BM_PAL_DecodeLatencyVsHistoryLen(benchmark::State& state) {
     int head_dim = params.head_dim;
     mx::Dtype dtype = params.dtype;
 
-    auto info = pal::cpp::PagedAttentionPrimitive::get_optimal_tile_size_and_thread_info(
-        head_dim,
-        num_q_heads,
-        num_kv_heads
-    );
+    auto info = pal::cpp::PagedAttentionPrimitive::get_optimal_tile_size_and_thread_info();
 
     params.tokens_per_page = std::get<0>(info);
     int tokens_per_page = params.tokens_per_page;
