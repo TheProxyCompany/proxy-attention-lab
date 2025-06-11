@@ -46,6 +46,7 @@ def test_full_attention_in_one_block(head_dim, dtype) -> None:
 
     All token positions in this test are within the same logical block 0.
     """
+    mx.clear_cache()
     logger.info(f"Test: {test_full_attention_in_one_block.__name__} (dtype={dtype})")
 
     # --- Configuration ---
@@ -72,35 +73,33 @@ def test_full_attention_in_one_block(head_dim, dtype) -> None:
     py_k_cache_pool = mx.zeros(k_cache_shape, dtype=dtype)
 
     # Historical K-vectors with different values to produce different scores
-    # K-vector at position 0 - all 1.0s
-    py_k_cache_pool[0, 0, 0, :] = mx.ones(cfg_head_dim, dtype=dtype)
-    # K-vector at position 1 - all 2.0s
-    py_k_cache_pool[0, 0, 1, :] = mx.ones(cfg_head_dim, dtype=dtype) * 2.0
-    # K-vector at position 2 - all 0.5s
-    py_k_cache_pool[0, 0, 2, :] = mx.ones(cfg_head_dim, dtype=dtype) * 0.5
+    # Create distinct patterns for each position in the KV cache
+    k_multipliers = [1.0, 2.0, 0.5]
+
+    # Create a more efficient setup using broadcasting
+    for pos, multiplier in enumerate(k_multipliers):
+        py_k_cache_pool[0, 0, pos, :] = mx.ones(cfg_head_dim, dtype=dtype) * multiplier
 
     logger.info("  KV Cache Setup:")
-    logger.info(f"    K at position 0: {py_k_cache_pool[0, 0, 0, :]}")
-    logger.info(f"    K at position 1: {py_k_cache_pool[0, 0, 1, :]}")
-    logger.info(f"    K at position 2: {py_k_cache_pool[0, 0, 2, :]}")
+    for pos in range(len(k_multipliers)):
+        logger.info(f"    K at position {pos}: {py_k_cache_pool[0, 0, pos, :5]}...")  # Show first 5 elements
 
     # 3. V-Cache Pool with distinct values for each position
     py_v_cache_pool = mx.zeros(k_cache_shape, dtype=dtype)
-    # V-vector at position 0 - values from 10.0 to 10.0 + cfg_head_dim - 1
-    py_v_cache_pool[0, 0, 0, :] = mx.arange(10.0, 10.0 + cfg_head_dim, dtype=dtype)
-    # V-vector at position 1 - values from 20.0 to 20.0 + cfg_head_dim - 1
-    py_v_cache_pool[0, 0, 1, :] = mx.arange(20.0, 20.0 + cfg_head_dim, dtype=dtype)
-    # V-vector at position 2 - values from 30.0 to 30.0 + cfg_head_dim - 1
-    py_v_cache_pool[0, 0, 2, :] = mx.arange(30.0, 30.0 + cfg_head_dim, dtype=dtype)
+
+    # More efficient V-cache setup using vectorized operations
+    # Create base values for each position (10.0, 20.0, 30.0)
+    v_base_values = [10.0, 20.0, 30.0]
+
+    # For each position, set ascending values starting from the base
+    for pos, base in enumerate(v_base_values):
+        py_v_cache_pool[0, 0, pos, :] = mx.arange(base, base + cfg_head_dim, dtype=dtype)
 
     # Debug: Check what values are actually stored
-    logger.info("  V-Cache Values (immediately after setting):")
-    logger.info(f"    V[0] first few: {py_v_cache_pool[0, 0, 0, :5]}")
-    logger.info(f"    V[1] first few: {py_v_cache_pool[0, 0, 1, :5]}")
-    logger.info(f"    V[2] first few: {py_v_cache_pool[0, 0, 2, :5]}")
-    logger.info(f"    V[0] last few: {py_v_cache_pool[0, 0, 0, -5:]}")
-    logger.info(f"    V[1] last few: {py_v_cache_pool[0, 0, 1, -5:]}")
-    logger.info(f"    V[2] last few: {py_v_cache_pool[0, 0, 2, -5:]}")
+    logger.info("  V-Cache Values:")
+    for pos in range(len(v_base_values)):
+        logger.info(f"    V[{pos}] first few: {py_v_cache_pool[0, 0, pos, :5]}")
+        logger.info(f"    V[{pos}] last few: {py_v_cache_pool[0, 0, pos, -5:]}")
 
     # 4. Page Table: Maps logical block 0 to physical page 0
     py_page_table = mx.array([[0]], dtype=mx.uint32)  # Shape (1, 1)
@@ -109,53 +108,20 @@ def test_full_attention_in_one_block(head_dim, dtype) -> None:
     # The kernel should only attend to positions 0, 1, 2 (before current_position=3)
     py_sequence_lengths = mx.array([current_position], dtype=mx.int32)
 
-    mx.eval(py_queries)
-    mx.eval(py_k_cache_pool)
-    mx.eval(py_v_cache_pool)
-    mx.eval(py_page_table)
-    mx.eval(py_sequence_lengths)
-
-    # --- Run paged attention ---
-    output_arr = paged_attention(
-        py_queries,
-        py_k_cache_pool,
-        py_v_cache_pool,
-        py_page_table,
-        py_sequence_lengths
-    )
-    mx.eval(output_arr)
-
     # --- Calculate expected output (Python reference) ---
     # Scale factor for dot product
     py_scale = 1.0 / mx.sqrt(mx.array(float(cfg_head_dim))).item()
 
     # Calculate scores for each history position
     # Use float32 for reference math to avoid dtype shenanigans
-    q_vec = py_queries[0].astype(mx.float32)
-    k0 = py_k_cache_pool[0, 0, 0, :].astype(mx.float32)
-    k1 = py_k_cache_pool[0, 0, 1, :].astype(mx.float32)
-    k2 = py_k_cache_pool[0, 0, 2, :].astype(mx.float32)
-    score0 = (mx.sum(q_vec * k0) * py_scale).item()
-    score1 = (mx.sum(q_vec * k1) * py_scale).item()
-    score2 = (mx.sum(q_vec * k2) * py_scale).item()
-    scores = [score0, score1, score2]
+    scores = [mx.sum(py_queries[0] * py_k_cache_pool[0, 0, i, :]) * py_scale for i in range(3)]
 
     logger.info("  Attention Scores:")
-    logger.info(f"    Position 0 score: {score0:.4f}")
-    logger.info(f"    Position 1 score: {score1:.4f}")
-    logger.info(f"    Position 2 score: {score2:.4f}")
+    logger.info(f"    Position 0 score: {scores[0]:.4f}")
+    logger.info(f"    Position 1 score: {scores[1]:.4f}")
+    logger.info(f"    Position 2 score: {scores[2]:.4f}")
 
-    # Find maximum score
-    max_score = max(scores)  # Should be 10.0 from position 1
-    logger.info(f"    Maximum score: {max_score:.4f} (at position 1)")
-
-    # Calculate softmax probabilities
-    def softmax(scores, max_score):
-        exp_scores = [mx.exp(s - max_score).item() for s in scores]
-        sum_exp = sum(exp_scores)
-        return [es / sum_exp for es in exp_scores]
-
-    probs = softmax(scores, max_score)
+    probs = mx.softmax(mx.array(scores, dtype=mx.float32))
     logger.info("  Softmax Probabilities:")
     for i, prob in enumerate(probs):
         logger.info(f"    Position {i}: {prob:.6f}")
@@ -167,12 +133,41 @@ def test_full_attention_in_one_block(head_dim, dtype) -> None:
         expected_v += v_vec * prob
 
     expected_v_reshaped = expected_v.astype(dtype).reshape(1, cfg_head_dim)
+    mx.eval(expected_v_reshaped)
+
+    old_v_cache_point = [i for i in py_v_cache_pool[0, 0, 1, :].tolist()]
+    logger.info(f"  Old v cache point: {old_v_cache_point[:5]}, {old_v_cache_point[-5:]}")
+
+    old_k_cache_point = [i for i in py_k_cache_pool[0, 0, 1, :].tolist()]
+    logger.info(f"  Old k cache point: {old_k_cache_point[:5]}, {old_k_cache_point[-5:]}")
+
+    # --- Run paged attention ---
+    output_arr = paged_attention(py_queries, py_k_cache_pool, py_v_cache_pool, py_page_table, py_sequence_lengths)
+    mx.eval(output_arr)
 
     logger.info("  Attention Output:")
     logger.info(f"    Expected output shape: {expected_v_reshaped.shape}")
     logger.info(f"    Actual output shape: {output_arr.shape}")
     logger.info(f"    Expected V-aggregation: {expected_v_reshaped}")
     logger.info(f"    Actual output: {output_arr}")
+
+    new_v_cache_point = [i for i in py_v_cache_pool[0, 0, 1, :].tolist()]
+    logger.info(f"  New v cache point: {new_v_cache_point[:5]}, {new_v_cache_point[-5:]}")
+
+    new_k_cache_point = [i for i in py_k_cache_pool[0, 0, 1, :].tolist()]
+    logger.info(f"  New k cache point: {new_k_cache_point[:5]}, {new_k_cache_point[-5:]}")
+
+    if old_v_cache_point != new_v_cache_point:
+        logger.info(f"  Old v cache point: {old_v_cache_point[:5]}, {old_v_cache_point[-5:]}")
+        logger.info(f"  New v cache point: {new_v_cache_point[:5]}, {new_v_cache_point[-5:]}")
+
+    if old_k_cache_point != new_k_cache_point:
+        logger.info(f"  Old k cache point: {old_k_cache_point[:5]}, {old_k_cache_point[-5:]}")
+        logger.info(f"  New k cache point: {new_k_cache_point[:5]}, {new_k_cache_point[-5:]}")
+
+    assert old_v_cache_point == new_v_cache_point and old_k_cache_point == new_k_cache_point, (
+        "Cache point should not change"
+    )
 
     # Output should be [num_q_threads, head_dim] with weighted V-vectors
     expected_shape = (1, cfg_head_dim)

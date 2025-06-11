@@ -112,7 +112,7 @@ template <typename T, int head_dim, int CHUNK_SIZE>
 
     // --- 4. Initialize Accumulators & Get Sequence Info ---
     #pragma unroll
-    for(uint i = local_idx_in_tg; i < head_dim_vec4 * num_simd_groups; i += num_threads) {
+    for(uint i = local_idx_in_tg; i < head_dim_vec4; i += num_threads) {
         ((threadgroup float4*)acc_tile)[i] = 0.0f;
     }
 
@@ -264,8 +264,8 @@ template <typename T, int head_dim, int CHUNK_SIZE>
         local_sum = simd_sum(local_sum, simd_width);
         sum_exp += local_sum * tile_scale;  // Add tile's contribution in global scale
 
-        // CRITICAL: Ensure all threads see the updated exp values before V accumulation
-        threadgroup_barrier(mem_flags::mem_threadgroup);
+        // // CRITICAL: Ensure all threads see the updated exp values before V accumulation
+        // threadgroup_barrier(mem_flags::mem_threadgroup);
 
         // --- V Accumulation ---
         // Each SIMD group accumulates its portion of the output vector
@@ -298,7 +298,6 @@ template <typename T, int head_dim, int CHUNK_SIZE>
         simd_max_scores[simdgroup_idx] = max_score;
         simd_sum_exps[simdgroup_idx] = sum_exp;
     }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
 
     // Step 2: Compute global max across all SIMD groups
     float final_max_score = -INFINITY;
@@ -341,8 +340,6 @@ template <typename T, int head_dim, int CHUNK_SIZE>
     if (simdgroup_idx == 0 && lane_idx == 0) {
         reduction_scratch[1] = final_sum_exp;
     }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    final_sum_exp = reduction_scratch[1];
 
     // Step 4: Rescale and combine V accumulators from all SIMD groups
     // Each SIMD group's accumulator needs to be rescaled by exp(local_max - final_max)
@@ -351,7 +348,6 @@ template <typename T, int head_dim, int CHUNK_SIZE>
         rescale_factor = exp(max(max_score - final_max_score, params.log_exp_min_clamp));
         simd_max_scores[simdgroup_idx] = rescale_factor; // Reuse array for broadcast
     }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
     rescale_factor = simd_max_scores[simdgroup_idx];
 
     // First, rescale this SIMD group's accumulator
@@ -359,7 +355,6 @@ template <typename T, int head_dim, int CHUNK_SIZE>
         threadgroup float* simd_acc_tile = acc_tile + simdgroup_idx * head_dim;
         ((threadgroup float4*)simd_acc_tile)[v] *= rescale_factor;
     }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
 
     // Combine all SIMD group accumulators into the first one (acc_tile[0])
     if (simdgroup_idx == 0) {
@@ -370,7 +365,6 @@ template <typename T, int head_dim, int CHUNK_SIZE>
             }
         }
     }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
 
     // --- 6. Finalization and Output ---
     if (USE_TWO_PASS) {

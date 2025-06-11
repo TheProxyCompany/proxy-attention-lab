@@ -203,8 +203,8 @@ static void BM_MLX_SDPA_DecodeLatencyVsHistoryLen(benchmark::State& state) {
     }
 }
 
-const int REPETITIONS = 3; // magic number
-const int ITERATIONS = 3; // magic number
+const int REPETITIONS = 10; // magic number
+const int ITERATIONS = 100; // magic number
 
 BENCHMARK(BM_PAL_DecodeLatencyVsHistoryLen)
    ->Arg(64)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
