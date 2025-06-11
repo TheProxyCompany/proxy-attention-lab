@@ -118,6 +118,7 @@ template <typename T, int head_dim, int CHUNK_SIZE>
 
     // Online softmax statistics, held in registers.
     float max_score = -INFINITY;
+    float local_max = -INFINITY;
     float sum_exp = 0.0f;
 
     // Get the total number of tokens to process for this sequence.
@@ -135,7 +136,7 @@ template <typename T, int head_dim, int CHUNK_SIZE>
         end_block_idx = num_context_blocks;
     }
 
-    // --- 5. Main Attention Loop ---
+    // --- 5. Attention Loop ---
     // 5.a Define Parallelism Hierarchy ---
     const int subgroup_size = MAX(simd_width / params.tokens_per_page, 1);
     const int num_subgroups_per_simd = simd_width / subgroup_size;
@@ -147,7 +148,6 @@ template <typename T, int head_dim, int CHUNK_SIZE>
     const ulong head_stride = (ulong)params.tokens_per_page * head_dim;
 
     // --- 5.b Main Attention Loop ---
-    // Each SIMD group processes a different block of the KV history in parallel.
     for (
         int block_idx = start_block_idx + simdgroup_idx;
         block_idx < end_block_idx;
@@ -172,6 +172,8 @@ template <typename T, int head_dim, int CHUNK_SIZE>
         // --- Compute Scores for all Tokens in the Tile ---
         // Use reduction_scratch as a temporary tile for scores.
         threadgroup float* logits_tile = reduction_scratch;
+        // reset local_max
+        local_max = -INFINITY;
 
         // Each subgroup computes the score for one token in the tile.
         const int iterations = (params.tokens_per_page + num_subgroups_per_simd - 1) / num_subgroups_per_simd;
@@ -185,17 +187,12 @@ template <typename T, int head_dim, int CHUNK_SIZE>
             if (key_token_pos < context_len) {
                 threadgroup const T* k_vec_in_tile = k_tile + token_in_page * head_dim;
 
-                // Each thread in the subgroup computes a partial score.
-                float qk_partial = 0.0f;
-                for (uint v = subgroup_lane_offset; v < head_dim_vec4; v += subgroup_size) {
-                    float4 q_chunk = ((threadgroup float4*)q_tile)[v];
-                    Vec4 k_vec_chunk = ((threadgroup const Vec4*)k_vec_in_tile)[v];
-                    float4 k_chunk = float4(k_vec_chunk);
-                    qk_partial += dot(q_chunk, k_chunk);
-                }
+                threadgroup const float4* q_vecs = (threadgroup const float4*)q_tile;
+                threadgroup const float4* k_vecs = (threadgroup const float4*)k_vec_in_tile;
 
-                qk_partial = simd_sum(qk_partial, subgroup_size);
-                score = qk_partial;
+                score = qk_dot<float4>(q_vecs, k_vecs, head_dim_vec4, subgroup_size);
+
+                local_max = max(local_max, score);
             }
 
             // The leader of the subgroup writes the final score to the shared logits tile.
@@ -207,24 +204,11 @@ template <typename T, int head_dim, int CHUNK_SIZE>
         // THREADGROUP BARRIER REASON: Ensure all scores for the tile are in shared memory.
 
         // --- Update Online Softmax Statistics ---
-        // Each SIMD group maintains its own max_score and sum_exp
-        // Parallel max reduction within SIMD group
-        float local_max = -INFINITY;
-        int tokens_per_page = static_cast<int>(params.tokens_per_page);
-        for (int token_in_page = lane_idx; token_in_page < tokens_per_page; token_in_page += simd_width) {
-            const int key_token_pos = block_idx * params.tokens_per_page + token_in_page;
-            if (key_token_pos < context_len) {
-                float score = logits_tile[token_in_page];
-                local_max = max(local_max, score);
-            }
-        }
-        // Reduce within SIMD group to get tile max
-        local_max = simd_max(local_max, simd_width);
+        float tile_max = block_max(simd_max_scores, local_max, simdgroup_idx, lane_idx, num_simd_groups, simd_width);
 
         // --- Online Softmax Bookkeeping ---
         // When max changes, we must rescale the running sum to maintain correctness
         float prev_max = max_score;
-        float tile_max = local_max;
         float new_max = max(prev_max, tile_max);
 
         // Rescale factors
@@ -244,35 +228,31 @@ template <typename T, int head_dim, int CHUNK_SIZE>
             }
         }
 
-        // --- Compute Softmax Weights ---
+       // --- Compute Softmax Weights ---
         // Parallel exp computation and sum reduction
         float local_sum = 0.0f;
         #pragma unroll
-        for (int token_in_page = lane_idx; token_in_page < tokens_per_page; token_in_page += simd_width) {
+        for (int token_in_page = lane_idx; token_in_page < params.tokens_per_page; token_in_page += simd_width) {
             const int key_token_pos = block_idx * params.tokens_per_page + token_in_page;
             if (key_token_pos < context_len) {
                 float score = logits_tile[token_in_page];
-                float exp_arg = max(score - tile_max, params.log_exp_min_clamp);  // Clamp to prevent underflow
-                float exp_score = exp(exp_arg);  // Use tile_max, not global max
+                float exp_arg = max(score - new_max, params.log_exp_min_clamp); // CHANGE: use new_max, not tile_max!
+                float exp_score = exp(exp_arg);
                 logits_tile[token_in_page] = exp_score;
                 local_sum += exp_score;
             } else {
                 logits_tile[token_in_page] = 0.0f;
             }
         }
-        // Reduce within SIMD group to get tile sum
-        local_sum = simd_sum(local_sum, simd_width);
-        sum_exp += local_sum * tile_scale;  // Add tile's contribution in global scale
-
-        // // CRITICAL: Ensure all threads see the updated exp values before V accumulation
-        // threadgroup_barrier(mem_flags::mem_threadgroup);
+        float tile_sum = block_sum(simd_sum_exps, local_sum, simdgroup_idx, lane_idx, num_simd_groups, simd_width);
+        sum_exp += tile_sum; // Add tile's contribution to running sum
 
         // --- V Accumulation ---
         // Each SIMD group accumulates its portion of the output vector
         threadgroup float* simd_acc_tile = acc_tile + simdgroup_idx * head_dim;
 
         // Process all tokens in the page
-        for (int token_in_page = 0; token_in_page < tokens_per_page; ++token_in_page) {
+        for (int token_in_page = 0; token_in_page < params.tokens_per_page; ++token_in_page) {
             const int key_token_pos = block_idx * params.tokens_per_page + token_in_page;
             if (key_token_pos < context_len) {
                 float weight = logits_tile[token_in_page];
@@ -290,31 +270,19 @@ template <typename T, int head_dim, int CHUNK_SIZE>
     } // end of main attention loop
 
     // --- Cross-SIMD Group Reduction ---
-    // Each SIMD group has computed partial max_score, sum_exp, and accumulated V values.
-    // Now we need to combine them across all SIMD groups.
-
     // Step 1: Store per-SIMD group statistics to shared memory
     if (lane_idx == 0) {
         simd_max_scores[simdgroup_idx] = max_score;
         simd_sum_exps[simdgroup_idx] = sum_exp;
     }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    // THREADGROUP BARRIER REASON: Ensure all threads have computed their local sums.
 
     // Step 2: Compute global max across all SIMD groups
-    float final_max_score = -INFINITY;
-    if (simdgroup_idx == 0) {
-        for (int i = lane_idx; i < num_simd_groups; i += simd_width) {
-            final_max_score = max(final_max_score, simd_max_scores[i]);
-        }
-        // Reduce within SIMD group 0
-        final_max_score = simd_max(final_max_score, simd_width);
-    }
-
-    // Broadcast final_max_score to all threads
-    if (simdgroup_idx == 0 && lane_idx == 0) {
-        reduction_scratch[0] = final_max_score;
-    }
+    float final_max_score = (simdgroup_idx < num_simd_groups) ? simd_max_scores[simdgroup_idx] : -INFINITY;
+    final_max_score = block_max(simd_max_scores, final_max_score, simdgroup_idx, lane_idx, num_simd_groups, simd_width);
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    final_max_score = reduction_scratch[0];
+    // THREADGROUP BARRIER REASON: Ensure we have the final max score.
 
     // Step 3: Rescale exp sums and compute global sum
     float rescaled_sum_exp = 0.0f;
@@ -325,23 +293,13 @@ template <typename T, int head_dim, int CHUNK_SIZE>
         simd_sum_exps[simdgroup_idx] = rescaled_sum_exp;
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
+    // THREADGROUP BARRIER REASON: Ensure all threads have rescaled their exp sums.
 
-    // Compute global sum of rescaled exp values
-    float final_sum_exp = 0.0f;
-    if (simdgroup_idx == 0) {
-        for (int i = lane_idx; i < num_simd_groups; i += simd_width) {
-            final_sum_exp += simd_sum_exps[i];
-        }
-        // Reduce within SIMD group 0
-        final_sum_exp = simd_sum(final_sum_exp, simd_width);
-    }
+    // Step 4: Compute global sum of rescaled exp values
+    float final_sum_exp = (simdgroup_idx < num_simd_groups) ? simd_sum_exps[simdgroup_idx] : 0.0f;
+    final_sum_exp = block_sum(simd_sum_exps, final_sum_exp, simdgroup_idx, lane_idx, num_simd_groups, simd_width);
 
-    // Broadcast final_sum_exp to all threads
-    if (simdgroup_idx == 0 && lane_idx == 0) {
-        reduction_scratch[1] = final_sum_exp;
-    }
-
-    // Step 4: Rescale and combine V accumulators from all SIMD groups
+    // Step 5: Rescale and combine V accumulators from all SIMD groups
     // Each SIMD group's accumulator needs to be rescaled by exp(local_max - final_max)
     float rescale_factor = 0.0f;
     if (lane_idx == 0) {
@@ -369,9 +327,6 @@ template <typename T, int head_dim, int CHUNK_SIZE>
     // --- 6. Finalization and Output ---
     if (USE_TWO_PASS) {
         // --- Two-Pass (Pass 1) Finalization ---
-        // The main loop has processed one chunk. We write the partial results.
-        // The cross-team reduction gives us the final stats *for this chunk*.
-
         // Calculate num_chunks from template parameter
         const int max_tokens = params.max_logical_pages_per_seq * params.tokens_per_page;
         const int num_chunks = (max_tokens + CHUNK_SIZE - 1) / CHUNK_SIZE;

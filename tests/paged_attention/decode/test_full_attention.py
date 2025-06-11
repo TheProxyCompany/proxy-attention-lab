@@ -95,6 +95,8 @@ def test_full_attention_in_one_block(head_dim, dtype) -> None:
     for pos, base in enumerate(v_base_values):
         py_v_cache_pool[0, 0, pos, :] = mx.arange(base, base + cfg_head_dim, dtype=dtype)
 
+    mx.eval(py_queries)
+
     # Debug: Check what values are actually stored
     logger.info("  V-Cache Values:")
     for pos in range(len(v_base_values)):

@@ -27,9 +27,9 @@
 
 using namespace metal;
 
+#define ALIGN16(ptr) (((uintptr_t)(ptr) + 15) & ~15);
 #define MAX(a, b) ((a) > (b) ? (a) : (b));
 #define MIN(a, b) ((a) < (b) ? (a) : (b));
-#define ALIGN16(ptr) (((uintptr_t)(ptr) + 15) & ~15)
 
 // ============================================================================
 // Composite vector types for extended width support
@@ -205,6 +205,22 @@ struct FloatVec<Bfloat8> {
 // Type conversion utilities
 // ============================================================================
 
+// Float to float accumulator mapping (identity)
+template <>
+struct FloatVec<float> {
+    using Type = float;
+};
+
+template <>
+struct FloatVec<float2> {
+    using Type = float2;
+};
+
+template <>
+struct FloatVec<float4> {
+    using Type = float4;
+};
+
 // Float8 conversions (custom struct)
 inline void from_float(thread Float8& dst, Float8 src) {
     dst = src;
@@ -280,6 +296,23 @@ inline float2 mul<float2, half2, half2>(half2 a, half2 b) {
 template <>
 inline float4 mul<float4, half4, half4>(half4 a, half4 b) {
     return float4(a) * float4(b);
+}
+
+// float4 multiplications with float accumulation
+// Float multiplications (identity operations)
+template <>
+inline float mul<float, float, float>(float a, float b) {
+    return a * b;
+}
+
+template <>
+inline float2 mul<float2, float2, float2>(float2 a, float2 b) {
+    return a * b;
+}
+
+template <>
+inline float4 mul<float4, float4, float4>(float4 a, float4 b) {
+    return a * b;
 }
 
 template <>
@@ -459,71 +492,110 @@ inline float dot(T a, T b) {
 // ============================================================================
 
 template <typename T>
-inline T simd_sum(T v, uint simd_size) {
+inline T simd_sum(T v, uint simd_width) {
     #pragma unroll
-    for (uint off = simd_size >> 1; off > 0; off >>= 1)
+    for (uint off = simd_width >> 1; off > 0; off >>= 1)
         v += simd_shuffle_xor(v, off);
     return v;
 }
 
 template <typename T>
-inline T simd_max(T v, uint simd_size) {
+inline T simd_max(T v, uint simd_width) {
     #pragma unroll
-    for (uint off = simd_size >> 1; off > 0; off >>= 1)
+    for (uint off = simd_width >> 1; off > 0; off >>= 1)
         v = max(v, simd_shuffle_xor(v, off));
     return v;
 }
 
 // ============================================================================
 // Attention-specific utilities
-// borrowed from:
+// inspired/borrowed from:
 // https://github.com/EricLBuehler/mistral.rs/blob/58df07e2abb758f7c1d4de8f26f24803d7dbee1f/mistralrs-paged-attn/src/metal/kernels/pagedattention.metal
 // ============================================================================
 
 // Optimized Q*K dot product with SIMD reduction
-template <int SIMD_SIZE, typename Vec, int N>
-inline float qk_dot(const threadgroup Vec (&q)[N], const thread Vec (&k)[N]) {
+// happens within a subgroup within a SIMD group
+template <typename VectorType>
+float qk_dot(
+    const threadgroup VectorType* q,
+    const threadgroup VectorType* k,
+    uint vec_count,
+    uint dot_width
+) {
     // Compute parallel products for Q*K^T
-    using AccVec = typename FloatVec<Vec>::Type;
-    AccVec qk_vec = mul<AccVec, Vec, Vec>(q[0], k[0]);
+    using AccVectorType = typename FloatVec<VectorType>::Type;
+    AccVectorType qk_vec = mul<AccVectorType, VectorType, VectorType>(q[0], k[0]);
 
     #pragma unroll
-    for (int i = 1; i < N; ++i) {
+    for (uint i = 1; i < vec_count; ++i) {
         qk_vec = fma(q[i], k[i], qk_vec);
     }
 
-    // Reduce across vector lanes
+    // Reduce across vector lanes within a subgroup
     float qk = sum(qk_vec);
 
-    // Reduce across SIMD lanes
-    return simd_sum(qk, SIMD_SIZE);
+    // Reduce across threads within the subgroup
+    return simd_sum(qk, dot_width);
 }
 
 // Block-wide sum for softmax computation
-template <int NUM_SIMD_GROUPS, int SIMD_SIZE>
-inline float block_sum(threadgroup float* shared_mem, float local_sum,
-                      uint simd_group_id, uint simd_lane_id) {
+// happens within a SIMD group
+inline float block_sum(
+    threadgroup float* tg_mem,
+    float local_sum,
+    uint simd_group_id,
+    uint simd_lane_id,
+    uint num_simd_groups,
+    uint simd_width
+) {
     // First reduce within each SIMD group
-    local_sum = simd_sum(local_sum, SIMD_SIZE);
+    local_sum = simd_sum(local_sum, simd_width);
 
     // SIMD group leaders write to shared memory
     if (simd_lane_id == 0) {
-        shared_mem[simd_group_id] = local_sum;
+        tg_mem[simd_group_id] = local_sum;
     }
 
     // Synchronize to ensure all groups have written
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    // Final reduction across SIMD groups
-    if (simd_lane_id < NUM_SIMD_GROUPS) {
-        local_sum = shared_mem[simd_lane_id];
-    } else {
-        local_sum = 0.0f;
-    }
+    // Get the local sum from the shared memory
+    local_sum = (simd_lane_id < num_simd_groups) ? tg_mem[simd_lane_id] : 0.0f;
 
     // Reduce across the SIMD groups
-    local_sum = simd_sum(local_sum, SIMD_SIZE);
+    local_sum = simd_sum(local_sum, simd_width);
 
     // Broadcast result to all threads
     return simd_broadcast(local_sum, 0);
+}
+
+// Block-wide max for softmax computation
+// happens within a SIMD group
+inline float block_max(
+    threadgroup float* tg_mem,
+    float local_max,
+    uint simd_group_id,
+    uint simd_lane_id,
+    uint num_simd_groups,
+    uint simd_width
+) {
+    // First reduce within each SIMD group
+    local_max = simd_max(local_max, simd_width);
+
+    // SIMD group leaders write to shared memory
+    if (simd_lane_id == 0) {
+        tg_mem[simd_group_id] = local_max;
+    }
+
+    // Synchronize to ensure all groups have written
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Get the local max from the shared memory
+    local_max = (simd_lane_id < num_simd_groups) ? tg_mem[simd_lane_id] : -INFINITY;
+
+    // Reduce across the SIMD groups
+    local_max = simd_max(local_max, simd_width);
+
+    // Broadcast result to all threads
+    return simd_broadcast(local_max, 0);
 }

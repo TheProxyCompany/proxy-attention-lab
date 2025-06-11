@@ -86,7 +86,7 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx:
 
     // 3. Populate parameters directly from input shapes
     PagedAttentionParams params;
-    params.num_q_heads = queries.shape(1);
+    params.num_q_heads = num_q_heads_;
     params.num_physical_pages_in_pool = k_cache_pool.shape(0);
     params.num_kv_heads = k_cache_pool.shape(1);
     params.tokens_per_page = k_cache_pool.shape(2);
@@ -144,12 +144,11 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx:
     auto& compute_encoder = d.get_command_encoder(s.index);
     if (use_two_pass) {
         int num_seq = static_cast<int>(params.num_sequences_in_batch);
-        int num_q_heads = static_cast<int>(params.num_q_heads);
 
         // Allocate intermediate buffers for two-pass
-        mx::array max_logits({num_seq, num_q_heads, num_chunks}, mx::float32, nullptr, {});
-        mx::array exp_sums({num_seq, num_q_heads, num_chunks}, mx::float32, nullptr, {});
-        mx::array tmp_out({num_seq, num_q_heads, num_chunks, head_dim_}, queries.dtype(), nullptr, {});
+        mx::array max_logits({num_seq, num_q_heads_, num_chunks}, mx::float32, nullptr, {});
+        mx::array exp_sums({num_seq, num_q_heads_, num_chunks}, mx::float32, nullptr, {});
+        mx::array tmp_out({num_seq, num_q_heads_, num_chunks, head_dim_}, queries.dtype(), nullptr, {});
 
         max_logits.set_data(mx::allocator::malloc(max_logits.nbytes()));
         exp_sums.set_data(mx::allocator::malloc(exp_sums.nbytes()));
