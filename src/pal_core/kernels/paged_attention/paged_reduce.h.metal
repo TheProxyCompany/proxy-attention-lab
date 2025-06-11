@@ -149,8 +149,10 @@ template <typename T, int head_dim, int CHUNK_SIZE>
         float4 acc = {0.0f, 0.0f, 0.0f, 0.0f};
         for (int j = 0; j < num_chunks; ++j) {
             Vec4 tmp_chunk = ((device const Vec4*)(tmp_out_ptr + j * head_dim))[i];
-            acc += to_float4(tmp_chunk) * shared_exp_sums[j];
+            acc += float4(tmp_chunk) * shared_exp_sums[j];
         }
-        ((device Vec4*)out_ptr)[i] = from_float4<T>(acc * inv_global_exp_sum);
+        Vec4 result;
+        from_float(result, acc * inv_global_exp_sum);
+        ((device Vec4*)out_ptr)[i] = result;
     }
 }

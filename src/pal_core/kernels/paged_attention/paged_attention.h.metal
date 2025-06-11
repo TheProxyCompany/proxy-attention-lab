@@ -19,7 +19,6 @@
 #pragma once
 
 #include <metal_stdlib>
-#include <metal_math>
 #include "paged_attention_types.h"
 #include "pal_types.h.metal"
 
@@ -70,42 +69,30 @@ template <typename T, int head_dim, int CHUNK_SIZE>
     // 4. Page table slice (params.max_logical_pages_per_seq * sizeof(uint))
     // 5. Reduction scratch (num_simd_groups * 2 * sizeof(float)) + acc_tile
     // helper – works at compile time
-    #define ALIGN16(ptr) ((threadgroup uchar*)(((uintptr_t)(ptr) + 15) & ~15))
 
     // --- 2. Partition Threadgroup Memory ---
     threadgroup uchar* current_mem_ptr = tg_mem;
 
-    current_mem_ptr = ALIGN16(current_mem_ptr);
     threadgroup float* q_tile = (threadgroup float*)current_mem_ptr;
-    current_mem_ptr += head_dim * sizeof(float);
+    current_mem_ptr = (threadgroup uchar*)ALIGN16(current_mem_ptr + (head_dim * sizeof(float)));
 
-    current_mem_ptr = ALIGN16(current_mem_ptr);
     threadgroup T* k_tile = (threadgroup T*)current_mem_ptr;
-    current_mem_ptr += params.tokens_per_page * head_dim * sizeof(T);
+    current_mem_ptr = (threadgroup uchar*)ALIGN16(current_mem_ptr + (params.tokens_per_page * head_dim * sizeof(T)));
 
-    current_mem_ptr = ALIGN16(current_mem_ptr);
     threadgroup T* v_tile = (threadgroup T*)current_mem_ptr;
-    current_mem_ptr += params.tokens_per_page * head_dim * sizeof(T);
+    current_mem_ptr = (threadgroup uchar*)ALIGN16(current_mem_ptr + (params.tokens_per_page * head_dim * sizeof(T)));
 
-    current_mem_ptr = ALIGN16(current_mem_ptr);
-    threadgroup uint* page_table_slice = (threadgroup uint*)current_mem_ptr;
-    current_mem_ptr += params.max_logical_pages_per_seq * sizeof(uint);
-
-    current_mem_ptr = ALIGN16(current_mem_ptr);
     threadgroup float* reduction_scratch = (threadgroup float*)current_mem_ptr;
-    current_mem_ptr += params.tokens_per_page * sizeof(float);
+    current_mem_ptr = (threadgroup uchar*)ALIGN16(current_mem_ptr + (params.tokens_per_page * sizeof(float)));
 
-    current_mem_ptr = ALIGN16(current_mem_ptr);
     threadgroup float* simd_max_scores = (threadgroup float*)current_mem_ptr;
-    current_mem_ptr += num_simd_groups * sizeof(float);
+    current_mem_ptr = (threadgroup uchar*)ALIGN16(current_mem_ptr + (num_simd_groups * sizeof(float)));
 
-    current_mem_ptr = ALIGN16(current_mem_ptr);
     threadgroup float* simd_sum_exps = (threadgroup float*)current_mem_ptr;
-    current_mem_ptr += num_simd_groups * sizeof(float);
+    current_mem_ptr = (threadgroup uchar*)ALIGN16(current_mem_ptr + (num_simd_groups * sizeof(float)));
 
-    current_mem_ptr = ALIGN16(current_mem_ptr);
     threadgroup float* acc_tile = (threadgroup float*)current_mem_ptr;
-    current_mem_ptr += num_simd_groups * head_dim * sizeof(float);
+    current_mem_ptr = (threadgroup uchar*)ALIGN16(current_mem_ptr + (num_simd_groups * head_dim * sizeof(float)));
 
     // --- 3. Load the Q Vector ---
     device const T* q_ptr = queries_in +
@@ -116,7 +103,8 @@ template <typename T, int head_dim, int CHUNK_SIZE>
     // Convert to float for precision and apply the scaling factor
     using Vec4 = typename Vec<T, 4>::Type;
     for (uint i = local_idx_in_tg; i < head_dim_vec4; i += num_threads) {
-        float4 q_chunk = to_float4(((device const Vec4*)q_ptr)[i]);
+        Vec4 q_vec = ((device const Vec4*)q_ptr)[i];
+        float4 q_chunk = float4(q_vec);
         ((threadgroup float4*)q_tile)[i] = q_chunk * params.inv_sqrt_head_dim;
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -147,13 +135,6 @@ template <typename T, int head_dim, int CHUNK_SIZE>
         end_block_idx = num_context_blocks;
     }
 
-    // Load this sequence's page table into shared memory for faster access.
-    for (uint i = local_idx_in_tg; i < params.max_logical_pages_per_seq; i += num_threads) {
-        page_table_slice[i] = page_table_in[seq_idx * params.max_logical_pages_per_seq + i];
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    // THREADGROUP BARRIER REASON: Ensure the full page table is loaded before the loop.
-
     // --- 5. Main Attention Loop ---
     // 5.a Define Parallelism Hierarchy ---
     const int subgroup_size = MAX(simd_width / params.tokens_per_page, 1);
@@ -173,7 +154,7 @@ template <typename T, int head_dim, int CHUNK_SIZE>
         block_idx += num_simd_groups
     ) {
         // --- Load K & V Tile for this Block ---
-        uint physical_page_id = page_table_slice[block_idx];
+        uint physical_page_id = page_table_in[seq_idx * params.max_logical_pages_per_seq + block_idx];
         ulong base_element_offset = (ulong)physical_page_id * page_stride + (ulong)kv_head_id * head_stride;
         // Get direct pointers to the start of the data for this (page, head)
         device const T* k_page_ptr = k_cache_pool_in + base_element_offset;
@@ -209,7 +190,7 @@ template <typename T, int head_dim, int CHUNK_SIZE>
                 for (uint v = subgroup_lane_offset; v < head_dim_vec4; v += subgroup_size) {
                     float4 q_chunk = ((threadgroup float4*)q_tile)[v];
                     Vec4 k_vec_chunk = ((threadgroup const Vec4*)k_vec_in_tile)[v];
-                    float4 k_chunk = to_float4(k_vec_chunk);
+                    float4 k_chunk = float4(k_vec_chunk);
                     qk_partial += dot(q_chunk, k_chunk);
                 }
 
@@ -300,7 +281,7 @@ template <typename T, int head_dim, int CHUNK_SIZE>
                 // Each thread accumulates its portion of the V vector
                 for (uint v = lane_idx; v < head_dim_vec4; v += simd_width) {
                     Vec4 v_chunk = ((threadgroup const Vec4*)v_vec_in_tile)[v];
-                    float4 v_float = to_float4(v_chunk);
+                    float4 v_float = float4(v_chunk);
                     float4 weighted_v = v_float * weight;
                     ((threadgroup float4*)simd_acc_tile)[v] += weighted_v;
                 }
@@ -415,7 +396,9 @@ template <typename T, int head_dim, int CHUNK_SIZE>
         device T* tmp_out_ptr = tmp_out + out_idx * head_dim;
         for (uint i = local_idx_in_tg; i < head_dim_vec4; i += num_threads) {
             float4 partial_chunk = ((threadgroup float4*)acc_tile)[i];
-            ((device Vec4*)tmp_out_ptr)[i] = from_float4<T>(partial_chunk);
+            Vec4 result;
+            from_float(result, partial_chunk);
+            ((device Vec4*)tmp_out_ptr)[i] = result;
         }
     } else {
         // --- Single-Pass Finalization ---
@@ -437,7 +420,9 @@ template <typename T, int head_dim, int CHUNK_SIZE>
 
         for (uint i = local_idx_in_tg; i < head_dim_vec4; i += num_threads) {
             float4 final_chunk = ((threadgroup float4*)acc_tile)[i];
-            ((device Vec4*)out_ptr)[i] = from_float4<T>(final_chunk);
+            Vec4 result;
+            from_float(result, final_chunk);
+            ((device Vec4*)out_ptr)[i] = result;
         }
     }
 
