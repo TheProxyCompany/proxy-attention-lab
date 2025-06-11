@@ -82,7 +82,7 @@ template <typename T, int head_dim, int CHUNK_SIZE>
     threadgroup T* v_tile = (threadgroup T*)current_mem_ptr;
     current_mem_ptr = (threadgroup uchar*)ALIGN16(current_mem_ptr + (params.tokens_per_page * head_dim * sizeof(T)));
 
-    threadgroup float* reduction_scratch = (threadgroup float*)current_mem_ptr;
+    threadgroup float* logits_tile = (threadgroup float*)current_mem_ptr;
     current_mem_ptr = (threadgroup uchar*)ALIGN16(current_mem_ptr + (params.tokens_per_page * sizeof(float)));
 
     threadgroup float* simd_max_scores = (threadgroup float*)current_mem_ptr;
@@ -169,12 +169,14 @@ template <typename T, int head_dim, int CHUNK_SIZE>
         threadgroup_barrier(mem_flags::mem_threadgroup);
         // THREADGROUP BARRIER REASON: Ensure K/V tile for this block is fully loaded.
 
-        // --- Compute Scores for all Tokens in the Tile ---
-        // Use reduction_scratch as a temporary tile for scores.
-        threadgroup float* logits_tile = reduction_scratch;
         // reset local_max
         local_max = -INFINITY;
 
+        // reset logits_tile
+        #pragma unroll
+        for (uint i = local_idx_in_tg; i < params.tokens_per_page * head_dim_vec4; i += num_threads) {
+            ((threadgroup float4*)logits_tile)[i] = float4(0.0f);
+        }
         // Each subgroup computes the score for one token in the tile.
         const int iterations = (params.tokens_per_page + num_subgroups_per_simd - 1) / num_subgroups_per_simd;
         for (int i = 0; i < iterations; ++i) {
@@ -189,9 +191,7 @@ template <typename T, int head_dim, int CHUNK_SIZE>
 
                 threadgroup const float4* q_vecs = (threadgroup const float4*)q_tile;
                 threadgroup const float4* k_vecs = (threadgroup const float4*)k_vec_in_tile;
-
                 score = qk_dot<float4>(q_vecs, k_vecs, head_dim_vec4, subgroup_size);
-
                 local_max = max(local_max, score);
             }
 
@@ -250,8 +250,6 @@ template <typename T, int head_dim, int CHUNK_SIZE>
         // --- V Accumulation ---
         // Each SIMD group accumulates its portion of the output vector
         threadgroup float* simd_acc_tile = acc_tile + simdgroup_idx * head_dim;
-
-        // Process all tokens in the page
         for (int token_in_page = 0; token_in_page < params.tokens_per_page; ++token_in_page) {
             const int key_token_pos = block_idx * params.tokens_per_page + token_in_page;
             if (key_token_pos < context_len) {
@@ -265,6 +263,8 @@ template <typename T, int head_dim, int CHUNK_SIZE>
                     float4 weighted_v = v_float * weight;
                     ((threadgroup float4*)simd_acc_tile)[v] += weighted_v;
                 }
+            } else {
+                // token is not in the context, we don't need to accumulate
             }
         }
     } // end of main attention loop
