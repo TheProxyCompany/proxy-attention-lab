@@ -158,20 +158,19 @@ def test_fetch_k_vector_element_for_first_token_of_sequence(head_dim, dtype) -> 
         logger.info(f"Output values(last 10): {output_arr[-10:]}")
         logger.info(f"Expected values(last 10): {expected_V_output[-10:]}")
 
-        seen_zeros = False
         for i in range(output_arr.shape[0]):
             for j in range(output_arr.shape[1]):
                 if output_arr[i, j] == 0:
-                    seen_zeros = True
                     logger.info(f"zero found at {i}, {j}")
-                    break
-
-        if not seen_zeros:
-            logger.info("No zeros found in output_arr (all elements nonzero, a rarefied state indeed).")
+                    if j > 10:
+                        break
+                else:
+                    logger.info(f"index {i}, {j}: {output_arr[i, j]}")
 
     assert mx.allclose(output_arr, expected_V_output, atol=1e-2, rtol=1e-2), (
         "Output values do not match expected values"
     )
+
 
 @pytest.mark.parametrize("head_dim", [32, 64, 128, 256])
 @pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16])

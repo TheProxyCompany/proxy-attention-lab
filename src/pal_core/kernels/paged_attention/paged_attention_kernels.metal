@@ -56,6 +56,7 @@ INSTANTIATE_FILL_KV_PAGES(bfloat16_t,  bfloat16);
         device TYPE*        tmp_out                  [[buffer(8), function_constant(USE_TWO_PASS)]],                            \
         constant const PagedAttentionParams& params  [[buffer(9)]],                                                             \
         threadgroup uchar*  tg_mem                   [[threadgroup(0)]],                                                        \
+        uint3               tg_dim                   [[threads_per_threadgroup]],                                                \
         uint3               tg_pos_in_grid           [[threadgroup_position_in_grid]],                                          \
         uint                local_idx_in_tg          [[thread_index_in_threadgroup]]                                            \
     );

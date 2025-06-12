@@ -316,11 +316,12 @@ size_t PagedAttentionPrimitive::calculate_attention_memory_layout(
     size_t q_tile_bytes = head_dim * sizeof(float);
     size_t k_tile_bytes = params.tokens_per_page * head_dim * kv_item_size;
     size_t v_tile_bytes = params.tokens_per_page * head_dim * kv_item_size;
-    size_t reduction_scratch_bytes = params.tokens_per_page * sizeof(float); // logits tile
+    size_t logits_tile_bytes = params.tokens_per_page * sizeof(float); // logits tile
     size_t simd_stats_bytes = num_simd_groups * sizeof(float) * 2; // max_scores + sum_exps
+    size_t reduction_scratchpad_bytes = num_simd_groups * sizeof(float);
     size_t acc_tile_bytes = num_simd_groups * head_dim * sizeof(float);
 
-    size_t total_bytes = q_tile_bytes + k_tile_bytes + v_tile_bytes + reduction_scratch_bytes + simd_stats_bytes + acc_tile_bytes;
+    size_t total_bytes = q_tile_bytes + k_tile_bytes + v_tile_bytes + logits_tile_bytes + simd_stats_bytes + reduction_scratchpad_bytes + acc_tile_bytes;
 
     // Align to a 16-byte boundary
     return (total_bytes + 15) & ~15;
