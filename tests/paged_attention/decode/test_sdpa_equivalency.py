@@ -30,6 +30,7 @@ from proxy_attention_lab.pal_core import get_optimal_page_size
 
 logger = logging.getLogger(__name__)
 
+
 @pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16])
 @pytest.mark.parametrize(
     "batch_size, history_len, num_heads, head_dim",
@@ -44,6 +45,8 @@ logger = logging.getLogger(__name__)
         (1, 1024, (32, 16), 128),  # Gemma 3 27b
         (2, 32, (4, 4), 32),  # Batched Example
         (2, 2048, (32, 16), 128),  # Batch of 2, Gemma 3 27b
+        (1, 4096, (32, 16), 128),  # Long history, Gemma 3 27b // should use pass 2
+        (1, 8192, (32, 16), 128),  # Long history, Gemma 3 27b // should use pass 2
     ],
 )
 def test_pal_decode_vs_sdpa_equivalency(batch_size, history_len, num_heads, head_dim, dtype):
@@ -190,13 +193,7 @@ def test_pal_decode_vs_sdpa_equivalency(batch_size, history_len, num_heads, head
     # --- 4. Run PAL paged_attention in decode mode ---
     logger.info("  Running PAL paged_attention (decode mode):")
 
-    pal_output = paged_attention(
-        pal_queries,
-        pal_k_cache_pool,
-        pal_v_cache_pool,
-        pal_page_table,
-        pal_sequence_lengths
-    )
+    pal_output = paged_attention(pal_queries, pal_k_cache_pool, pal_v_cache_pool, pal_page_table, pal_sequence_lengths)
     mx.eval(pal_output)
     logger.info(f"    PAL output shape: {pal_output.shape}")
 
