@@ -353,6 +353,32 @@ inline Float8 mul<Float8, Bfloat8, Bfloat8>(Bfloat8 a, Bfloat8 b) {
     return c;
 }
 
+// Mixed-type multiplications: float4 * half4 -> float4
+template <>
+inline float4 mul<float4, float4, half4>(float4 a, half4 b) {
+    return a * float4(b);
+}
+
+template <>
+inline float4 mul<float4, half4, float4>(half4 a, float4 b) {
+    return float4(a) * b;
+}
+
+// Mixed-type multiplications: float4 * Bfloat4 -> float4
+template <>
+inline float4 mul<float4, float4, Bfloat4>(float4 a, Bfloat4 b) {
+    float4 b_f(static_cast<float>(b.x), static_cast<float>(b.y),
+               static_cast<float>(b.z), static_cast<float>(b.w));
+    return a * b_f;
+}
+
+template <>
+inline float4 mul<float4, Bfloat4, float4>(Bfloat4 a, float4 b) {
+    float4 a_f(static_cast<float>(a.x), static_cast<float>(a.y),
+               static_cast<float>(a.z), static_cast<float>(a.w));
+    return a_f * b;
+}
+
 // ============================================================================
 // Fused multiply-add operations
 // ============================================================================
@@ -409,6 +435,39 @@ inline Float8 fma(Bfloat8 a, Bfloat8 b, Float8 c) {
     res.lo = fma(a.lo, b.lo, c.lo);
     res.hi = fma(a.hi, b.hi, c.hi);
     return res;
+}
+
+// Mixed-type FMA: float4 * half4 + float4
+inline float4 fma(float4 a, half4 b, float4 c) {
+    return a * float4(b) + c;
+}
+
+// Also add the reverse for symmetry
+inline float4 fma(half4 a, float4 b, float4 c) {
+    return float4(a) * b + c;
+}
+
+// Mixed-type FMA: float4 * bfloat16_t + float4
+inline float4 fma(float4 a, bfloat16_t b, float4 c) {
+    return a * float4(b) + c;
+}
+
+// Also add the reverse for symmetry
+inline float4 fma(bfloat16_t a, float4 b, float4 c) {
+    return float4(a) * b + c;
+}
+
+// Mixed-type FMA: float4 * Bfloat4 + float4  ✓
+inline float4 fma(float4 a, Bfloat4 b, float4 c) {
+    float4 b_f(static_cast<float>(b.x), static_cast<float>(b.y),
+               static_cast<float>(b.z), static_cast<float>(b.w));
+    return a * b_f + c;
+}
+
+inline float4 fma(Bfloat4 a, float4 b, float4 c) {
+    float4 a_f(static_cast<float>(a.x), static_cast<float>(a.y),
+               static_cast<float>(a.z), static_cast<float>(a.w));
+    return a_f * b + c;
 }
 
 // ============================================================================
@@ -515,20 +574,20 @@ inline T simd_max(T v, uint simd_width) {
 
 // Optimized Q*K dot product with SIMD reduction
 // happens within a subgroup within a SIMD group
-template <typename VectorType>
+template <typename QVec, typename KVec>
 float qk_dot(
-    const threadgroup VectorType* q,
-    const threadgroup VectorType* k,
+    const threadgroup QVec* q_vecs,
+    const threadgroup KVec* k_vecs,
     uint vec_count,
     uint dot_width
 ) {
     // Compute parallel products for Q*K^T
-    using AccVectorType = typename FloatVec<VectorType>::Type;
-    AccVectorType qk_vec = mul<AccVectorType, VectorType, VectorType>(q[0], k[0]);
+    using AccType = typename FloatVec<QVec>::Type;
+    AccType qk_vec = mul<AccType, QVec, KVec>(q_vecs[0], k_vecs[0]);
 
     #pragma unroll
     for (uint i = 1; i < vec_count; ++i) {
-        qk_vec = fma(q[i], k[i], qk_vec);
+        qk_vec = fma(q_vecs[i], k_vecs[i], qk_vec);
     }
 
     // Reduce across vector lanes within a subgroup

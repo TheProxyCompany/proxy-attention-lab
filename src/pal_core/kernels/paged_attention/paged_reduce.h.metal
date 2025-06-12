@@ -107,7 +107,7 @@ template <typename T, int head_dim, int CHUNK_SIZE>
     float global_exp_sum = 0.0f;
     for (int i = local_idx_in_tg; i < num_chunks; i += num_threads) {
         float l = shared_max_logits[i];
-        float rescaled_exp_sum = exp_sums_ptr[i] * exp(l - max_logit);
+        float rescaled_exp_sum = exp_sums_ptr[i] * exp(max(l - max_logit, params.log_exp_min_clamp));
         global_exp_sum += rescaled_exp_sum;
         shared_exp_sums[i] = rescaled_exp_sum;
     }

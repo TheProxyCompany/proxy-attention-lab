@@ -112,6 +112,7 @@ template <typename T, int head_dim, int CHUNK_SIZE>
         float4 q_chunk = float4(q_vec);
         ((threadgroup float4*)q_tile)[i] = q_chunk * params.inv_sqrt_head_dim;
     }
+
     threadgroup_barrier(mem_flags::mem_threadgroup);
     // THREADGROUP BARRIER REASON: Ensure the full Q-vector is in shared memory before use.
 
@@ -202,9 +203,10 @@ template <typename T, int head_dim, int CHUNK_SIZE>
             if (key_token_pos < context_len) {
                 threadgroup const T* k_vec_in_tile = k_tile + token_in_page * head_dim;
 
-                threadgroup const Vec4* q_vecs = (threadgroup const Vec4*)q_tile;
+                threadgroup const float4* q_vecs = (threadgroup const float4*)q_tile;
                 threadgroup const Vec4* k_vecs = (threadgroup const Vec4*)k_vec_in_tile;
-                score = qk_dot<Vec4>(q_vecs, k_vecs, head_dim_vec4, subgroup_size);
+                score = qk_dot<float4, Vec4>(q_vecs, k_vecs, head_dim_vec4, subgroup_size);
+
                 local_max = max(local_max, score);
 
                 // The leader of the subgroup writes the final score to the shared logits tile.
@@ -222,7 +224,7 @@ template <typename T, int head_dim, int CHUNK_SIZE>
         // --- Online Softmax Bookkeeping ---
         // When max changes, we must rescale the running sum to maintain correctness
         float prev_max = max_score;
-        float new_max = max(prev_max, tile_max);
+        float new_max = max(max_score, tile_max);
 
         // Rescale factors
         float prev_scale = exp(max(prev_max - new_max, params.log_exp_min_clamp));  // scale for accumulated sum

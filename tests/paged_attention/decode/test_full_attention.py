@@ -64,7 +64,7 @@ def test_full_attention_in_one_block(head_dim, dtype) -> None:
     # --- Setup test inputs ---
     # 1. Q-vector: Shape [num_q_threads, cfg_head_dim]
     # Create a query vector with cfg_head_dim elements
-    q_values = mx.arange(1, cfg_head_dim + 1, dtype=mx.float32) / 10.0
+    q_values = mx.arange(1, cfg_head_dim + 1, dtype=dtype) / 10.0
     py_queries = mx.array([q_values.tolist()], dtype=dtype)
 
     # 2. K-Cache Pool: [NumPhysPages, NumKVHeads, TokensPerPage, HeadDim]
