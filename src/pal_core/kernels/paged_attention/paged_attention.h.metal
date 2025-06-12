@@ -202,9 +202,9 @@ template <typename T, int head_dim, int CHUNK_SIZE>
             if (key_token_pos < context_len) {
                 threadgroup const T* k_vec_in_tile = k_tile + token_in_page * head_dim;
 
-                threadgroup const float4* q_vecs = (threadgroup const float4*)q_tile;
-                threadgroup const float4* k_vecs = (threadgroup const float4*)k_vec_in_tile;
-                score = qk_dot<float4>(q_vecs, k_vecs, head_dim_vec4, subgroup_size);
+                threadgroup const Vec4* q_vecs = (threadgroup const Vec4*)q_tile;
+                threadgroup const Vec4* k_vecs = (threadgroup const Vec4*)k_vec_in_tile;
+                score = qk_dot<Vec4>(q_vecs, k_vecs, head_dim_vec4, subgroup_size);
                 local_max = max(local_max, score);
 
                 // The leader of the subgroup writes the final score to the shared logits tile.
@@ -226,8 +226,6 @@ template <typename T, int head_dim, int CHUNK_SIZE>
 
         // Rescale factors
         float prev_scale = exp(max(prev_max - new_max, params.log_exp_min_clamp));  // scale for accumulated sum
-        float tile_scale = exp(max(tile_max - new_max, params.log_exp_min_clamp));  // scale for this tile
-
         // Update running statistics
         sum_exp *= prev_scale;  // rescale accumulated sum to new max
         max_score = new_max;    // update global max
@@ -292,38 +290,26 @@ template <typename T, int head_dim, int CHUNK_SIZE>
         simd_sum_exps[simdgroup_idx] = sum_exp;
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    // THREADGROUP BARRIER REASON: Ensure all threads have computed their local sums.
-
-    // Step 2: Compute global max across all SIMD groups
-    float final_max_score = (simdgroup_idx < num_simd_groups) ? simd_max_scores[simdgroup_idx] : -INFINITY;
-    final_max_score = block_max(reduction_scratchpad, final_max_score, simdgroup_idx, lane_idx, num_simd_groups, simd_width);
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    // THREADGROUP BARRIER REASON: Ensure we have the final max score.
+    // THREADGROUP BARRIER REASON: Ensure all threads have computed their local max and sum.
 
     // Step 3: Rescale exp sums and compute global sum
     float rescaled_sum_exp = 0.0f;
     if (lane_idx == 0) {
         float local_max = simd_max_scores[simdgroup_idx];
         float local_sum = simd_sum_exps[simdgroup_idx];
-        rescaled_sum_exp = local_sum * exp(max(local_max - final_max_score, params.log_exp_min_clamp));
+        rescaled_sum_exp = local_sum * exp(max(local_max - max_score, params.log_exp_min_clamp));
         simd_sum_exps[simdgroup_idx] = rescaled_sum_exp;
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
     // THREADGROUP BARRIER REASON: Ensure all threads have rescaled their exp sums.
 
-    // Step 4: Compute global sum of rescaled exp values
-    float final_sum_exp = (simdgroup_idx < num_simd_groups) ? simd_sum_exps[simdgroup_idx] : 0.0f;
-    final_sum_exp = block_sum(reduction_scratchpad, final_sum_exp, simdgroup_idx, lane_idx, num_simd_groups, simd_width);
-
     // Step 5: Rescale and combine V accumulators from all SIMD groups
     // Each SIMD group's accumulator needs to be rescaled by exp(local_max - final_max)
     float rescale_factor = 0.0f;
     if (lane_idx == 0) {
-        rescale_factor = exp(max(max_score - final_max_score, params.log_exp_min_clamp));
+        rescale_factor = exp(max(max_score - max_score, params.log_exp_min_clamp));
         simd_max_scores[simdgroup_idx] = rescale_factor; // Reuse array for broadcast
     }
-    // threadgroup_barrier(mem_flags::mem_threadgroup);
-    // CHALLENGED: THREADGROUP BARRIER REASON: Ensure all threads have computed their local rescale factors.
 
     rescale_factor = simd_max_scores[simdgroup_idx];
 
@@ -356,8 +342,8 @@ template <typename T, int head_dim, int CHUNK_SIZE>
 
         // Only one thread needs to write the scalar stats.
         if (local_idx_in_tg == 0) {
-            max_logits_out[out_idx] = final_max_score; // From cross-team reduction
-            exp_sums_out[out_idx] = final_sum_exp;     // From cross-team reduction
+            max_logits_out[out_idx] = max_score; // From cross-team reduction
+            exp_sums_out[out_idx] = sum_exp;     // From cross-team reduction
         }
 
         // All threads cooperate to write the partial, unnormalized accumulator.
@@ -371,7 +357,7 @@ template <typename T, int head_dim, int CHUNK_SIZE>
     } else {
         // --- Single-Pass Finalization ---
         // 1. Final Normalization
-        const float inv_sum_exp = 1.0f / (final_sum_exp + 1e-6f);
+        const float inv_sum_exp = 1.0f / (sum_exp + 1e-6f);
 
         // All threads cooperate to normalize the final accumulator in place.
         for (uint i = local_idx_in_tg; i < head_dim_vec4; i += num_threads) {
