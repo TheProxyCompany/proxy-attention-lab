@@ -99,7 +99,7 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx:
 
     const int max_tokens = params.max_logical_pages_per_seq * params.tokens_per_page;
     const int num_chunks = (max_tokens + CHUNK_SIZE - 1) / CHUNK_SIZE;
-    const bool use_two_pass = max_tokens > CHUNK_SIZE;
+    const bool use_two_pass = max_tokens > PREFER_SINGLE_PASS_TOKENS;
 
     // 4. Define dispatch grid
     metal::DispatchGrid dispatch_grid;

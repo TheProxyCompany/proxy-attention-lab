@@ -24,7 +24,7 @@
 
 using namespace metal;
 
-template <typename T, int head_dim, int CHUNK_SIZE>
+template <typename T, int head_dim>
 [[kernel]] void pal_paged_reduce(
     device T*            output_buffer          [[buffer(0)]],
     device const float*  max_logits_in          [[buffer(1)]],

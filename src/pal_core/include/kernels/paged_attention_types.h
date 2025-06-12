@@ -28,6 +28,12 @@ using float32_t = float;
 #include <type_traits>
 #endif
 
+#ifndef __METAL_VERSION__ // C++ side
+constexpr int PREFER_SINGLE_PASS_TOKENS = 4096;  // TODO: empirically tune
+constexpr int CHUNK_SIZE = 512;
+#else // __METAL_VERSION__ (Metal side)
+#define CHUNK_SIZE 512
+#endif
 
 /**
  * @brief Shared parameter structure for paged attention operations.

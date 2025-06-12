@@ -31,8 +31,6 @@ namespace mx = mlx::core;
 
 namespace pal::cpp {
 
-static constexpr int CHUNK_SIZE = 512;
-
 /**
  * @brief Custom primitive implementation for paged attention operations.
  *
