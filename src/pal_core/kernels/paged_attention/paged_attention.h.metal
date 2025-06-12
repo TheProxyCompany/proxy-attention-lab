@@ -206,11 +206,11 @@ template <typename T, int head_dim, int CHUNK_SIZE>
                 threadgroup const float4* k_vecs = (threadgroup const float4*)k_vec_in_tile;
                 score = qk_dot<float4>(q_vecs, k_vecs, head_dim_vec4, subgroup_size);
                 local_max = max(local_max, score);
-            }
 
-            // The leader of the subgroup writes the final score to the shared logits tile.
-            if (subgroup_lane_offset == 0) {
-                logits_tile[token_in_page] = score;
+                // The leader of the subgroup writes the final score to the shared logits tile.
+                if (subgroup_lane_offset == 0) {
+                    logits_tile[token_in_page] = score;
+                }
             }
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -270,18 +270,6 @@ template <typename T, int head_dim, int CHUNK_SIZE>
             const int key_token_pos = block_idx * params.tokens_per_page + token_in_page;
             if (key_token_pos < context_len) {
                 float weight = logits_tile[token_in_page];
-
-                // --- DEBUG: Inspect the weight for token_in_page == 1 ---
-                if (token_in_page == 1) {
-                    if (local_idx_in_tg == 0) { // Only one thread needs to write
-                        output_buffer[0] = (T)weight;
-                    }
-                    // Use a barrier to ensure the write is visible before any other thread might proceed
-                    threadgroup_barrier(mem_flags::mem_threadgroup);
-                    return; // Exit the kernel immediately after capturing the weight
-                }
-                // --- END DEBUG ---
-
                 threadgroup const T* v_vec_in_tile = v_tile + token_in_page * head_dim;
 
                 // Each thread accumulates its portion of the V vector
