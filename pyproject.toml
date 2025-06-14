@@ -4,7 +4,7 @@ build-backend = "py_build_cmake.build"
 
 [project]
 name = "proxy-attention-lab"
-version = "2025.06.2"
+version = "2025.06.3"
 description = "Development and testing lab for PIE Paged Attention Kernels."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -79,6 +79,6 @@ line-length = 120
 
 [tool.pytest.ini_options]
 log_cli = false
-log_cli_level = "WARNING"
+log_cli_level = "INFO"
 log_cli_format = "in %(filename)s:%(lineno)d [%(levelname)s] %(message)s"
 log_cli_date_format = "%H:%M:%S"

@@ -16,8 +16,24 @@
 
 import mlx.core as mx
 
-from proxy_attention_lab.pal_core import fill_kv_pages as cpp_fill_kv_pages_kernel
-from proxy_attention_lab.pal_core import paged_attention as cpp_paged_attention_kernel
+from proxy_attention_lab.pal_core import (
+    fill_kv_pages as cpp_fill_kv_pages_kernel,
+)
+from proxy_attention_lab.pal_core import (
+    get_k_cache_stripe_size as cpp_get_k_cache_stripe_size,
+)
+from proxy_attention_lab.pal_core import (
+    paged_attention as cpp_paged_attention_kernel,
+)
+
+
+def get_k_cache_stripe_size(dtype: mx.Dtype) -> int:
+    """Calculates the stripe size for the K cache.
+
+    Args:
+        dtype: The data type of the K cache.
+    """
+    return cpp_get_k_cache_stripe_size(dtype)
 
 
 def paged_attention(
@@ -26,9 +42,6 @@ def paged_attention(
     v_cache_pool: mx.array,
     page_table: mx.array,
     sequence_lengths: mx.array,
-    query_to_seq_map: mx.array,
-    query_token_offset: mx.array,
-    use_fused_kernel: bool,
     stream: mx.Stream | mx.Device | None = None,
 ) -> mx.array:
     """Performs paged attention using the custom C++ primitive and Metal kernel.
@@ -39,19 +52,14 @@ def paged_attention(
             - 2D: [NumItems, HeadDim] (NumQHeads implicitly 1)
             - 3D: [NumTokens, NumQHeads, HeadDim]
         k_cache_pool: The entire K cache buffer.
-            Shape: [NumTotalPages, TokensPerPage, NumKVHeads, HeadDim]
+            Shape: [NumTotalPages, NumKVHeads, NumTokensPerPage, HeadDim]
         v_cache_pool: The entire V cache buffer.
-            Shape: [NumTotalPages, TokensPerPage, NumKVHeads, HeadDim]
+            Shape: [NumTotalPages, NumKVHeads, NumTokensPerPage, HeadDim]
         page_table: Page table mapping logical blocks for each sequence
             to physical page IDs in the k_cache_pool/v_cache_pool.
             Shape: [NumSequencesInBatch, MaxLogicalBlocksPerSequence]
         sequence_lengths: Actual length of each sequence in the batch.
             Shape: [NumSequencesInBatch]
-        query_to_seq_map: Maps each query token to its sequence index.
-            Shape: [TotalQueryTokens]
-        query_token_offset: Logical offset of each query token within its sequence.
-            Shape: [TotalQueryTokens]
-        use_fused_kernel: Whether to use the fused kernel
         stream: Optional stream or device for the operation.
 
     Returns:
@@ -69,9 +77,6 @@ def paged_attention(
         v_cache_pool,
         page_table,
         sequence_lengths,
-        query_to_seq_map,
-        query_token_offset,
-        use_fused_kernel,
         stream=stream,
     )
 

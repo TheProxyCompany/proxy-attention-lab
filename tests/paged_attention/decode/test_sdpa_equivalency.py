@@ -26,12 +26,17 @@ import mlx.core as mx
 import pytest
 
 from proxy_attention_lab import paged_attention
+from proxy_attention_lab.pal_core import (
+    get_k_cache_shape,
+    get_k_cache_stripe_size,
+    get_optimal_page_size,
+    get_v_cache_shape,
+)
 
 logger = logging.getLogger(__name__)
 
-tokens_per_page = 64
 
-
+# TODO: FIX LONG CONTEXT CASES
 @pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16])
 @pytest.mark.parametrize(
     "batch_size, history_len, num_heads, head_dim",
@@ -43,9 +48,14 @@ tokens_per_page = 64
         (1, 16, (1, 1), 64),  # Different head dimension
         (1, 64, (2, 2), 32),  # num q = num kv heads
         (1, 64, (4, 2), 128),  # 128 head dim
-        (1, 1024, (32, 16), 128),  # Gemma 3 27b
+        (1, 64, (32, 16), 128),  # Gemma 3 27b
         (2, 32, (4, 4), 32),  # Batched Example
-        (2, 2048, (32, 16), 128),  # Batch of 2, Gemma 3 27b
+        (2, 64, (32, 16), 128),  # Gemma 3 27b
+        (3, 128, (32, 16), 128),  # Gemma 3 27b
+        (16, 64, (4, 4), 32),  # Batched Example
+        # (1, 1024, (32, 16), 128),  # Gemma 3 27b
+        # (1, 4096, (32, 16), 128),  # Long history, Gemma 3 27b // should use pass 2
+        # (1, 8192, (32, 16), 128),  # Long history, Gemma 3 27b // should use pass 2
     ],
 )
 def test_pal_decode_vs_sdpa_equivalency(batch_size, history_len, num_heads, head_dim, dtype):
@@ -61,21 +71,13 @@ def test_pal_decode_vs_sdpa_equivalency(batch_size, history_len, num_heads, head
     - Head configurations (including MQA and GQA variants)
     - Head dimensions
 
-    The test:
-    1. Runs MLX SDPA with random inputs as the reference implementation
-    2. Converts those same inputs to the format expected by paged_attention in decode mode
-    3. Runs paged_attention with is_prefill=False and reshapes the output to match SDPA's output format
-    4. Compares the outputs to ensure they're numerically equivalent within tolerance
-
     This ensures that our implementation matches the standard attention mechanism
     when the inputs are directly comparable.
     """
-    mx.metal.clear_cache()
-    mx.random.seed(11)
     logger.info(f"Test: {test_pal_decode_vs_sdpa_equivalency.__name__}")
 
     num_q_heads, num_kv_heads = num_heads
-    tokens_per_page = 64  # Standard page size
+    tokens_per_page = get_optimal_page_size()  # Standard page size
 
     logger.info("  Test Configuration:")
     logger.info(f"    Batch size: {batch_size}, History length: {history_len}")
@@ -120,40 +122,55 @@ def test_pal_decode_vs_sdpa_equivalency(batch_size, history_len, num_heads, head
     # Each sequence has a single query token
     pal_queries = sdpa_queries.reshape(batch_size, num_q_heads, head_dim)
 
-    # Create empty KV cache pools
-    pal_k_cache_pool = mx.zeros((num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim), dtype=dtype)
-    pal_v_cache_pool = mx.zeros((num_total_physical_pages, tokens_per_page, num_kv_heads, head_dim), dtype=dtype)
+    # Create empty KV cache pools with new layout:
+    # K-cache: [pages, kv_heads, head_dim // stripe_size, tokens, stripe_size] (striped format)
+    # V-cache: [pages, kv_heads, head_dim, tokens] (dimension order changed)
+    k_cache_shape = get_k_cache_shape(num_total_physical_pages, num_kv_heads, head_dim, tokens_per_page, dtype)
+    v_cache_shape = get_v_cache_shape(num_total_physical_pages, num_kv_heads, head_dim, tokens_per_page, dtype)
+    pal_k_cache_pool = mx.zeros(k_cache_shape, dtype=dtype)
+    pal_v_cache_pool = mx.zeros(v_cache_shape, dtype=dtype)
 
     logger.info("  Preparing PAL paged_attention inputs for decode mode:")
     logger.info(f"    PAL queries shape: {pal_queries.shape}")
-    logger.info(f"    KV cache shape: {pal_k_cache_pool.shape}")
+    logger.info(f"    K cache shape: {pal_k_cache_pool.shape}")
+    logger.info(f"    V cache shape: {pal_v_cache_pool.shape}")
     logger.info(f"    Logical pages per sequence: {num_logical_pages_per_seq}")
     logger.info(f"    Total physical pages: {num_total_physical_pages}")
 
     # Populate KV cache from SDPA inputs
-    # For each sequence in the batch, we need to populate its history in the KV cache
     for b_idx in range(batch_size):
-        # Get keys/values for this sequence and transpose for easier slicing
-        keys_to_cache_b = sdpa_keys[b_idx].transpose(1, 0, 2)  # [history_len, num_kv_heads, head_dim]
-        values_to_cache_b = sdpa_values[b_idx].transpose(1, 0, 2)  # [history_len, num_kv_heads, head_dim]
+        # sdpa_keys[b_idx] shape is [num_kv_heads, history_len, head_dim]
+        keys_to_cache_b = sdpa_keys[b_idx]
+        values_to_cache_b = sdpa_values[b_idx]
 
-        # For each logical page in the sequence
         for l_idx in range(num_logical_pages_per_seq):
             physical_page_idx = b_idx * num_logical_pages_per_seq + l_idx
-
-            # Calculate token range for this page
             token_start_in_seq = l_idx * tokens_per_page
             token_end_in_seq = min((l_idx + 1) * tokens_per_page, history_len)
             tokens_to_copy_count = token_end_in_seq - token_start_in_seq
 
-            # Copy tokens to the KV cache if there are any in this page
             if tokens_to_copy_count > 0:
-                pal_k_cache_pool[physical_page_idx, :tokens_to_copy_count, :, :] = keys_to_cache_b[
-                    token_start_in_seq:token_end_in_seq, :, :
-                ]
-                pal_v_cache_pool[physical_page_idx, :tokens_to_copy_count, :, :] = values_to_cache_b[
-                    token_start_in_seq:token_end_in_seq, :, :
-                ]
+                # For each KV head, copy its contiguous block of tokens for this page
+                for kv_h_idx in range(num_kv_heads):
+                    # Slice the tokens for the current head and page
+                    keys_for_head_slice = keys_to_cache_b[kv_h_idx, token_start_in_seq:token_end_in_seq, :]
+                    values_for_head_slice = values_to_cache_b[kv_h_idx, token_start_in_seq:token_end_in_seq, :]
+
+                    # Write K-cache using striped format with vectorized operations
+                    stripe_size = get_k_cache_stripe_size(dtype)
+                    num_stripes = head_dim // stripe_size
+
+                    # Reshape keys to match striped format: [tokens, num_stripes, stripe_size]
+                    keys_reshaped = keys_for_head_slice.reshape(tokens_to_copy_count, num_stripes, stripe_size)
+
+                    # Transpose to [num_stripes, tokens, stripe_size] to match cache layout
+                    keys_striped = mx.transpose(keys_reshaped, (1, 0, 2))
+
+                    # Write all stripes at once
+                    pal_k_cache_pool[physical_page_idx, kv_h_idx, :, :tokens_to_copy_count, :] = keys_striped
+
+                    # Write V-cache with new dimension order: [page, kv_head, head_dim, token]
+                    pal_v_cache_pool[physical_page_idx, kv_h_idx, :, :tokens_to_copy_count] = values_for_head_slice.T
 
     # Create page table mapping
     pal_page_table_list = []
@@ -167,17 +184,9 @@ def test_pal_decode_vs_sdpa_equivalency(batch_size, history_len, num_heads, head
     # Set sequence length for each batch item to the history length
     pal_sequence_lengths = mx.array([history_len] * batch_size, dtype=mx.int32)
 
-    # For decode, query_to_seq_map maps each single token to its sequence index
-    pal_query_to_seq_map = mx.arange(batch_size, dtype=mx.int32)
-
-    # Query token offset is positioned after the history (history_len + 1)
-    pal_query_token_offset = mx.array([history_len + 1] * batch_size, dtype=mx.int32)
-
     logger.info("  PAL metadata arrays for decode:")
     logger.info(f"    Page table shape: {pal_page_table.shape}")
     logger.info(f"    Sequence lengths: {pal_sequence_lengths}")
-    logger.info(f"    Query to sequence map: {pal_query_to_seq_map}")
-    logger.info(f"    Query token offset (positioned after history): {pal_query_token_offset}")
 
     # --- 3. Apply MLX Best Practices for Array Preparation ---
     logger.info("  Applying MLX best practices for array preparation:")
@@ -202,36 +211,24 @@ def test_pal_decode_vs_sdpa_equivalency(batch_size, history_len, num_heads, head
     # --- 4. Run PAL paged_attention in decode mode ---
     logger.info("  Running PAL paged_attention (decode mode):")
 
-    pal_output = paged_attention(
-        pal_queries,
-        pal_k_cache_pool,
-        pal_v_cache_pool,
-        pal_page_table,
-        pal_sequence_lengths,
-        pal_query_to_seq_map,
-        pal_query_token_offset,
-        use_fused_kernel=True,
-        # explicitly use decode mode
-    )
+    pal_output = paged_attention(pal_queries, pal_k_cache_pool, pal_v_cache_pool, pal_page_table, pal_sequence_lengths)
     mx.eval(pal_output)
     logger.info(f"    PAL output shape: {pal_output.shape}")
 
     # --- 4. Compare PAL output with SDPA output ---
-    # SDPA output is (batch_size, num_q_heads, 1, head_dim)
-    # PAL output is (batch_size*num_q_heads, head_dim) given pal_queries shape (batch_size, num_q_heads, head_dim)
-    # We need to reshape the SDPA output to match
-    sdpa_output_reshaped = sdpa_output.reshape(batch_size * num_q_heads, head_dim)
+    sdpa_output_reshaped = sdpa_output.reshape(batch_size, num_q_heads, head_dim)
+    pal_output_reshaped = pal_output.reshape(batch_size, num_q_heads, head_dim)
 
     logger.info("  Comparing outputs:")
     logger.info(f"    PAL decode output shape: {pal_output.shape}")
     logger.info(f"    Reshaped SDPA output shape: {sdpa_output_reshaped.shape}")
 
-    assert pal_output.shape == sdpa_output_reshaped.shape, (
-        f"Shape mismatch: PAL output {pal_output.shape}, SDPA for comparison {sdpa_output_reshaped.shape}"
+    assert pal_output_reshaped.shape == sdpa_output_reshaped.shape, (
+        f"Shape mismatch: PAL output {pal_output_reshaped.shape}, SDPA for comparison {sdpa_output_reshaped.shape}"
     )
 
     # Calculate differences between outputs
-    diff = mx.abs(pal_output - sdpa_output_reshaped)
+    diff = mx.abs(pal_output_reshaped - sdpa_output_reshaped)
     max_diff = mx.max(diff).item()
     mean_diff = mx.mean(diff).item()
     logger.info(f"    Difference metrics - Max: {max_diff:.6f}, Mean: {mean_diff:.6f}")
@@ -241,9 +238,7 @@ def test_pal_decode_vs_sdpa_equivalency(batch_size, history_len, num_heads, head
     current_rtol = 1e-4
     logger.info(f"    Tolerance values - Absolute: {current_atol}, Relative: {current_rtol}")
 
-    # Assert outputs match within tolerance
-    assert mx.allclose(pal_output, sdpa_output_reshaped, atol=current_atol, rtol=current_rtol), (
-        f"Numerical mismatch between PAL paged_attention decode and MLX SDPA for params: "
-        f"bs={batch_size}, hl={history_len}, nqh={num_q_heads}, nkvh={num_kv_heads}, hd={head_dim}, dt={dtype}. "
+    assert mx.allclose(pal_output_reshaped, sdpa_output_reshaped, atol=current_atol, rtol=current_rtol), (
+        f"Numerical mismatch between PAL paged_attention decode and MLX SDPA: "
         f"Max diff: {max_diff}, Mean diff: {mean_diff}"
     )

@@ -19,7 +19,7 @@ import logging
 import mlx.core as mx
 import pytest
 
-from proxy_attention_lab import paged_attention
+from proxy_attention_lab.pal_core import get_k_cache_shape, get_v_cache_shape, paged_attention
 
 logger = logging.getLogger(__name__)
 
@@ -41,39 +41,41 @@ def test_paged_attention_smoke(dtype) -> None:
 
     # Query tensor parameters
     num_queries = 4
-    num_q_heads = 2
-    head_dim = 8
+    num_q_heads = 8
+    head_dim = 32
 
     # KV cache parameters
     num_total_pages = 2
-    tokens_per_page = 64
+    tokens_per_page = 16
     num_kv_heads = 2
 
     # Batch parameters
     num_sequences_in_batch = 1  # For this smoke test, keep it simple with one sequence
-    max_logical_blocks_per_seq_val = 1  # Sequence uses at most 1 logical block
+    max_logical_pages_per_seq_val = 1  # Sequence uses at most 1 logical block
 
     logger.info("  Test Configuration:")
     logger.info(f"    Queries: {num_queries} queries, {num_q_heads} heads, {head_dim} dimensions")
     logger.info(f"    KV cache: {num_total_pages} pages, {tokens_per_page} tokens per page, {num_kv_heads} KV heads")
-    logger.info(f"    Batch: {num_sequences_in_batch} sequences, {max_logical_blocks_per_seq_val} blocks per sequence")
+    logger.info(f"    Batch: {num_sequences_in_batch} sequences, {max_logical_pages_per_seq_val} blocks per sequence")
     logger.info(f"    Dtype: {dtype}")
 
     # Create test inputs with random values
     mock_queries = mx.random.normal((num_queries, num_q_heads, head_dim)).astype(dtype)
-    mock_k_cache_pool = mx.random.normal((num_total_pages, tokens_per_page, num_kv_heads, head_dim)).astype(dtype)
-    mock_v_cache_pool = mx.random.normal((num_total_pages, tokens_per_page, num_kv_heads, head_dim)).astype(dtype)
+    mock_v_cache_pool = mx.random.normal(
+        get_v_cache_shape(num_total_pages, num_kv_heads, head_dim, tokens_per_page, dtype)
+    ).astype(dtype)
+    mock_k_cache_pool = mx.random.normal(
+        get_k_cache_shape(num_total_pages, num_kv_heads, head_dim, tokens_per_page, dtype)
+    ).astype(dtype)
 
     # Create page table: maps logical blocks to physical pages
-    # Shape: [num_sequences_in_batch, max_logical_blocks_per_seq_val]
+    # Shape: [num_sequences_in_batch, max_logical_pages_per_seq_val]
     # For this smoke test, just point to physical page 0
-    page_table_content = [[0] * max_logical_blocks_per_seq_val for _ in range(num_sequences_in_batch)]
+    page_table_content = [[0] * max_logical_pages_per_seq_val for _ in range(num_sequences_in_batch)]
     mock_page_table = mx.array(page_table_content, dtype=mx.uint32)
 
     # Metadata arrays
     mock_sequence_lengths = mx.array([tokens_per_page // 2] * num_sequences_in_batch, dtype=mx.int32)
-    mock_query_to_seq_map = mx.zeros(num_queries, dtype=mx.int32)
-    mock_query_token_offset = mx.arange(num_queries, dtype=mx.int32)
 
     logger.info("  Input Shapes:")
     logger.info(f"    Queries: {mock_queries.shape}")
@@ -81,27 +83,17 @@ def test_paged_attention_smoke(dtype) -> None:
     logger.info(f"    V cache: {mock_v_cache_pool.shape}")
     logger.info(f"    Page table: {mock_page_table.shape}")
     logger.info(f"    Sequence lengths: {mock_sequence_lengths.shape}")
-    logger.info(f"    Query token offsets: {mock_query_token_offset}")
 
     mx.eval(mock_queries)
     mx.eval(mock_k_cache_pool)
     mx.eval(mock_v_cache_pool)
     mx.eval(mock_page_table)
     mx.eval(mock_sequence_lengths)
-    mx.eval(mock_query_to_seq_map)
-    mx.eval(mock_query_token_offset)
 
     try:
         # Run the paged attention operation
         out = paged_attention(
-            mock_queries,
-            mock_k_cache_pool,
-            mock_v_cache_pool,
-            mock_page_table,
-            mock_sequence_lengths,
-            mock_query_to_seq_map,
-            mock_query_token_offset,
-            use_fused_kernel=True,
+            mock_queries, mock_k_cache_pool, mock_v_cache_pool, mock_page_table, mock_sequence_lengths
         )
         mx.eval(out)
 
@@ -115,6 +107,9 @@ def test_paged_attention_smoke(dtype) -> None:
         logger.info(f"    Actual shape: {out.shape}")
         logger.info(f"    Dtype: {out.dtype}")
         logger.info(f"    Contains finite values: {mx.isfinite(out).all()}")
+
+        print(f"\nOutput: {out.tolist()[0][:3]}")
+        print(f"Mock queries: {mock_queries.tolist()[0][0][:3]}")
 
         # Verify output properties
         assert out.shape == expected_output_shape, (

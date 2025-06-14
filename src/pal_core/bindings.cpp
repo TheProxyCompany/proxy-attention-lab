@@ -41,40 +41,35 @@ using namespace nb::literals;
 NB_MODULE(pal_core, m) {
   m.doc() = "PAL C++ bindings: Paged Attention Operation";
 
+  m.def("get_k_cache_stripe_size", [](const mx::Dtype& dtype) {
+    return MEMORY_ALIGNMENT_BYTES / mx::size_of(dtype);
+  }, "dtype"_a, nb::sig("def get_k_cache_stripe_size(dtype: mlx.core.Dtype) -> int"), R"doc(
+        Calculates the stripe size for the K cache.
+    )doc");
+
   m.def(
-    "get_optimal_tile_size",
-    []
-    (uint32_t head_dimension,
-    uint32_t num_query_heads,
-    uint32_t num_kv_heads,
-    std::optional<mx::StreamOrDevice> stream_or_device) {
-      auto tile_info = pal::cpp::PagedAttentionPrimitive::get_optimal_tile_size_and_thread_info(
-        head_dimension,
-        num_query_heads,
-        num_kv_heads,
-        stream_or_device.value_or(mx::StreamOrDevice{}));
-      auto tile_size = std::get<0>(tile_info);
-      return tile_size;
-    },
-      "head_dimension"_a,
-      "num_query_heads"_a,
-      "num_kv_heads"_a,
-      nb::kw_only(),
-      "stream"_a = nb::none(),
-      nb::sig("def get_optimal_tile_size(head_dimension: int, num_query_heads: int, num_kv_heads: int, *, stream: mlx.core.Stream | mlx.core.Device | None = None) -> int"),
-      R"doc(
-        Calculates the optimal tile size for the paged attention kernel.
+    "get_v_cache_shape",
+    pal::cpp::PagedAttentionPrimitive::get_v_cache_shape,
+    nb::sig("def get_v_cache_shape(num_total_pages: int, num_kv_heads: int, head_dim: int, tokens_per_page: int, dtype: mlx.core.Dtype) -> mlx.core.Shape"),
+    R"doc(
+        Calculates the shape of the V cache.
+    )doc");
 
-        Args:
-            head_dimension (int): The dimension of the head
-            num_query_heads (int): The number of query heads
-            num_kv_heads (int): The number of key/value heads
-            stream (mlx.core.Stream | mlx.core.Device | None, optional): Stream or device
-                                                                        for the operation.
-        Returns:
-            int: The optimal tile size
-      )doc");
+  m.def(
+    "get_k_cache_shape",
+    pal::cpp::PagedAttentionPrimitive::get_k_cache_shape,
+    nb::sig("def get_k_cache_shape(num_total_pages: int, num_kv_heads: int, head_dim: int, tokens_per_page: int, dtype: mlx.core.Dtype) -> mlx.core.Shape"),
+    R"doc(
+        Calculates the shape of the K cache.
+    )doc");
 
+  m.def(
+    "get_optimal_page_size",
+    pal::cpp::PagedAttentionPrimitive::get_optimal_page_size,
+    nb::sig("def get_optimal_page_size() -> int"),
+    R"doc(
+        Calculates the optimal page size for the paged attention kernel.
+    )doc");
   m.def(
       "paged_attention",
       [](const mx::array& queries,
@@ -82,9 +77,6 @@ NB_MODULE(pal_core, m) {
          const mx::array& v_cache_pool,
          const mx::array& page_table,
          const mx::array& sequence_lengths,
-         const mx::array& query_to_seq_map,
-         const mx::array& query_token_offset,
-         bool use_fused_kernel,
          std::optional<mx::StreamOrDevice> stream_or_device) {
         return pal::cpp::paged_attention(
             queries,
@@ -92,9 +84,6 @@ NB_MODULE(pal_core, m) {
             v_cache_pool,
             page_table,
             sequence_lengths,
-            query_to_seq_map,
-            query_token_offset,
-            use_fused_kernel,
             stream_or_device.value_or(mx::StreamOrDevice{}));
       },
       // Arguments for Python
@@ -103,16 +92,11 @@ NB_MODULE(pal_core, m) {
       "v_cache_pool"_a,
       "page_table"_a,
       "sequence_lengths"_a,
-      "query_to_seq_map"_a,
-      "query_token_offset"_a,
-      "use_fused_kernel"_a,
       nb::kw_only(),  // stream is keyword-only argument
       "stream"_a = nb::none(),
       nb::sig("def paged_attention(queries: mlx.core.array, "
               "k_cache_pool: mlx.core.array, v_cache_pool: mlx.core.array, "
               "page_table: mlx.core.array, sequence_lengths: mlx.core.array, "
-              "query_to_seq_map: mlx.core.array, query_token_offset: mlx.core.array, "
-              "use_fused_kernel: bool, "
               "*, stream: mlx.core.Stream | mlx.core.Device | None = None) -> "
               "mlx.core.array"),
       R"doc(
@@ -124,18 +108,13 @@ NB_MODULE(pal_core, m) {
                 - 2D: [NumItems, HeadDim] (NumQHeads implicitly 1)
                 - 3D: [NumTokens, NumQHeads, HeadDim]
             k_cache_pool (mlx.core.array): Global K cache data pool with shape
-                                          [NumTotalPages, TokensPerPage, NumKVHeads, HeadDim].
+                                          [NumTotalPages, NumKVHeads, HeadDim / ElementsPerThread, TokensPerPage, ElementsPerThread].
             v_cache_pool (mlx.core.array): Global V cache data pool with shape
-                                          [NumTotalPages, TokensPerPage, NumKVHeads, HeadDim].
+                                          [NumTotalPages, NumKVHeads, HeadDim / ElementsPerThread, TokensPerPage, ElementsPerThread].
             page_table (mlx.core.array): Page table array mapping logical blocks to physical
                                         page IDs. Shape [NumSequencesInBatch, MaxLogicalBlocksPerSeq].
             sequence_lengths (mlx.core.array): Array of actual lengths for each sequence
                                               in the batch.
-            query_to_seq_map (mlx.core.array): Array mapping each query token to its
-                                              sequence index in the batch.
-            query_token_offset (mlx.core.array): Array of logical offsets for each query
-                                                token within its sequence.
-            use_fused_kernel (bool): Whether to use the fused kernel
             stream (mlx.core.Stream | mlx.core.Device | None, optional): Stream or device
                                                                         for the operation.
         Returns:

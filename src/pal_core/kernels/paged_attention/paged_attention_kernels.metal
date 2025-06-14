@@ -17,8 +17,9 @@
 // ============================================================================
 
 #include "fill_kv_pages.h.metal"
-#include "paged_attention_fused.h.metal"
-#include "paged_attention_2pass.h.metal"
+#include "paged_attention.h.metal"
+#include "paged_reduce.h.metal"
+
 
 [[kernel]] void get_device_info() {
     // used for fetching a metal compute pipeline state
@@ -26,99 +27,145 @@
     // and simd group size
 }
 
+
 // --- Instantiation Macro for fill_kv_pages ---
-// This macro creates a specialized version of the kernel with a unique host name
-// that the C++ code can look up at runtime.
 #define INSTANTIATE_FILL_KV_PAGES(TYPE, SUFFIX)                                                                                 \
     template [[host_name("fill_kv_pages_kernel_" #SUFFIX)]] [[kernel]] void                                                     \
     fill_kv_pages_kernel<TYPE>(                                                                                                 \
         device const    TYPE*   new_keys                    [[buffer(0)]],                                                      \
         device const    TYPE*   new_values                  [[buffer(1)]],                                                      \
-        device const    uint*   page_table_data             [[buffer(2)]],                                                      \
-        device const    int*    current_token_write_positions[[buffer(3)]],                                                     \
-        device const    uint*   query_to_seq_map_data       [[buffer(4)]],                                                      \
+        device const    uint*   page_table             [[buffer(2)]],                                                      \
+        device const    int*    token_write_positions[[buffer(3)]],                                                     \
+        device const    uint*   query_to_seq_map       [[buffer(4)]],                                                      \
         constant const  FillKVPagesParams& params           [[buffer(5)]],                                                      \
         device          TYPE*   global_k_pool_out           [[buffer(6)]],                                                      \
         device          TYPE*   global_v_pool_out           [[buffer(7)]],                                                      \
         uint3           tg_id                              [[threadgroup_position_in_grid]],                                    \
-        uint3           thread_idx_in_group_3d             [[thread_position_in_threadgroup]],                                  \
-        uint3           threads_per_tg_3d                  [[threads_per_threadgroup]]                                          \
+        uint           local_idx             [[thread_index_in_threadgroup]]                                  \
     );
 
 // --- Create the concrete specializations ---
 INSTANTIATE_FILL_KV_PAGES(half,        float16);
 INSTANTIATE_FILL_KV_PAGES(bfloat16_t,  bfloat16);
 
-// --- Instantiation Macro for paged_attn_fused_kernel ---
-#define INSTANTIATE_PAGED_ATTN_FUSED(TYPE, SUFFIX)                                                                              \
-    template [[host_name("paged_attn_fused_kernel_" #SUFFIX)]] [[kernel]] void                                                  \
-    paged_attn_fused_kernel<TYPE>(                                                                                              \
-        device const TYPE* queries_in                [[buffer(0)]],                                                             \
-        device const TYPE* k_cache_pool_in           [[buffer(1)]],                                                             \
-        device const TYPE* v_cache_pool_in           [[buffer(2)]],                                                             \
-        device const uint* page_table_in             [[buffer(3)]],                                                             \
-        device const int*  sequence_lengths_in       [[buffer(4)]],                                                             \
-        device const int*  query_to_seq_map_in       [[buffer(5)]],                                                             \
-        device const int*  query_token_offset_in     [[buffer(6)]],                                                             \
-        constant const PagedAttentionParams& params  [[buffer(7)]],                                                             \
-        device TYPE*       output_buffer             [[buffer(8)]],                                                             \
-        uint              actual_simd_width          [[threads_per_simdgroup]],                                                 \
-        threadgroup float* tg_mem                    [[threadgroup(0)]],                                                        \
-        uint3             tg_pos_in_grid             [[threadgroup_position_in_grid]],                                          \
-        uint3             tg_dim                     [[threads_per_threadgroup]],                                               \
-        uint              local_idx_in_tg            [[thread_index_in_threadgroup]],                                           \
-        uint              simd_lane_id               [[thread_index_in_simdgroup]],                                             \
-        uint              simd_group_id              [[simdgroup_index_in_threadgroup]]                                         \
+// --- Instantiation Macro for pal_paged_attention ---
+#define INSTANTIATE_PAL_PAGED_ATTENTION(TYPE, HEAD_DIM, TOKENS_PER_PAGE, SIMD_WIDTH, SUFFIX)                                                             \
+    template [[host_name("pal_paged_attention_" #SUFFIX "_" #HEAD_DIM "_" #TOKENS_PER_PAGE "_" #SIMD_WIDTH)]] [[kernel]] void                                        \
+    pal_paged_attention<TYPE, HEAD_DIM, TOKENS_PER_PAGE, SIMD_WIDTH>(                                                                                        \
+        device const TYPE*  queries_in               [[buffer(0)]],                                                             \
+        device const TYPE*  k_cache_pool_in          [[buffer(1)]],                                                             \
+        device const TYPE*  v_cache_pool_in          [[buffer(2)]],                                                             \
+        device const uint*  page_table_in            [[buffer(3)]],                                                             \
+        device const int*   context_lens_in          [[buffer(4)]],                                                             \
+        device TYPE*        output_buffer            [[buffer(5)]],                                                             \
+        device float*       max_logits_out           [[buffer(6), function_constant(USE_TWO_PASS)]],                            \
+        device float*       exp_sums_out             [[buffer(7), function_constant(USE_TWO_PASS)]],                            \
+        device TYPE*        tmp_out                  [[buffer(8), function_constant(USE_TWO_PASS)]],                            \
+        constant const PagedAttentionParams& params  [[buffer(9)]],                                                             \
+        threadgroup uchar*  tg_mem                   [[threadgroup(0)]],                                                        \
+        uint3               tg_dim                   [[threads_per_threadgroup]],                                                \
+        uint3               tg_pos_in_grid           [[threadgroup_position_in_grid]],                                          \
+        uint                local_idx_in_tg          [[thread_index_in_threadgroup]]                                            \
     );
 
-// --- Create the concrete specializations ---
-INSTANTIATE_PAGED_ATTN_FUSED(half,        float16);
-INSTANTIATE_PAGED_ATTN_FUSED(bfloat16_t,  bfloat16);
-
-// --- Instantiation Macro for paged_attn_pass1_kernel ---
-#define INSTANTIATE_PAGED_ATTN_PASS1(TYPE, SUFFIX)                                                                              \
-    template [[host_name("paged_attn_pass1_kernel_" #SUFFIX)]] [[kernel]] void                                                  \
-    paged_attn_pass1_kernel<TYPE>(                                                                                              \
-        device const TYPE* queries_in                [[buffer(0)]],                                                             \
-        device const TYPE* k_cache_pool_in           [[buffer(1)]],                                                             \
-        device const TYPE* v_cache_pool_in           [[buffer(2)]],                                                             \
-        device const uint* page_table_in             [[buffer(3)]],                                                             \
-        device const int*  sequence_lengths_in       [[buffer(4)]],                                                             \
-        device const int*  query_token_offset_in     [[buffer(5)]],                                                             \
-        constant const PagedAttentionParams& params  [[buffer(6)]],                                                             \
-        device const uint2* active_work_item_pairs   [[buffer(7)]],                                                             \
-        device const uint* query_starts_for_batch_item_arr [[buffer(8)]],                                                      \
-        device float*      m_locals_pass1_out        [[buffer(9)]],                                                            \
-        device float*      s_locals_pass1_out        [[buffer(10)]],                                                            \
-        device TYPE*       o_partials_pass1_out      [[buffer(11)]],                                                            \
-        uint              actual_simd_width          [[threads_per_simdgroup]],                                                 \
-        threadgroup float* tg_mem                    [[threadgroup(0)]],                                                        \
-        uint3             tg_pos_in_grid             [[threadgroup_position_in_grid]],                                          \
-        uint3             tg_dim                     [[threads_per_threadgroup]],                                               \
-        uint              local_idx_in_tg            [[thread_index_in_threadgroup]],                                           \
-        uint              simd_lane_id               [[thread_index_in_simdgroup]],                                             \
-        uint              simd_group_id              [[simdgroup_index_in_threadgroup]]                                         \
+// --- Instantiation Macro for pal_paged_reduce ---
+#define INSTANTIATE_PAL_PAGED_REDUCE(TYPE, HEAD_DIM, SIMD_WIDTH, SUFFIX)                                                                   \
+    template [[host_name("pal_paged_reduce_" #SUFFIX "_" #HEAD_DIM "_" #SIMD_WIDTH)]] [[kernel]] void                                           \
+    pal_paged_reduce<TYPE, HEAD_DIM, SIMD_WIDTH>(                                                                                            \
+        device TYPE*        output_buffer            [[buffer(0)]],                                                             \
+        device const float* max_logits_in            [[buffer(1)]],                                                             \
+        device const float* exp_sums_in              [[buffer(2)]],                                                             \
+        device const TYPE*  tmp_in                   [[buffer(3)]],                                                             \
+        device const int*   context_lens_in          [[buffer(4)]],                                                             \
+        constant const PagedAttentionParams& params  [[buffer(5)]],                                                             \
+        threadgroup uchar*  tg_mem                   [[threadgroup(0)]],                                                        \
+        uint3               threads_per_threadgroup  [[threads_per_threadgroup]],                                                \
+        uint3               tg_pos_in_grid           [[threadgroup_position_in_grid]],                                          \
+        uint                local_idx_in_tg          [[thread_index_in_threadgroup]],                                           \
+        uint                simdgroup_idx            [[simdgroup_index_in_threadgroup]],                                         \
+        uint                lane_idx                 [[thread_index_in_simdgroup]]                                              \
     );
 
-// --- Instantiation Macro for paged_attn_pass2_kernel ---
-#define INSTANTIATE_PAGED_ATTN_PASS2(TYPE, SUFFIX)                                                                              \
-    template [[host_name("paged_attn_pass2_kernel_" #SUFFIX)]] [[kernel]] void                                                  \
-    paged_attn_pass2_kernel<TYPE>(                                                                                              \
-        device const float* m_pass1_results          [[buffer(0)]],                                                             \
-        device const float* s_pass1_results          [[buffer(1)]],                                                             \
-        device const TYPE*  o_pass1_results          [[buffer(2)]],                                                             \
-        constant const PagedAttentionParams& params  [[buffer(3)]],                                                             \
-        device TYPE*       final_output_buffer       [[buffer(4)]],                                                             \
-        uint              actual_simd_width          [[threads_per_simdgroup]],                                                 \
-        threadgroup float* tg_mem                    [[threadgroup(0)]],                                                        \
-        uint3             tg_pos_in_grid             [[threadgroup_position_in_grid]],                                          \
-        uint3             tg_dim                     [[threads_per_threadgroup]],                                               \
-        uint              local_idx_in_tg            [[thread_index_in_threadgroup]]                                            \
-    );
+// --- PAL Paged Attention/Reduce Kernel Instantiations ---
+//
+// Instantiations are organized by:
+//   - Data type: half, bfloat16_t
+//   - Head dimension: 32, 64, 80, 96, 128, 256
+//   - Tokens per page: 16, 32
+//   - SIMD width: 16, 32
+//
+// For each (head_dim, tokens_per_page), instantiate both SIMD widths.
 
-// --- Create the concrete specializations for 2-pass kernels ---
-INSTANTIATE_PAGED_ATTN_PASS1(half,       float16);
-INSTANTIATE_PAGED_ATTN_PASS1(bfloat16_t, bfloat16);
+#define INSTANTIATE_PAL_PAGED_ATTENTION_ALL_SIMD(TYPE, HEAD_DIM, TOKENS_PER_PAGE, SUFFIX) \
+    INSTANTIATE_PAL_PAGED_ATTENTION(TYPE, HEAD_DIM, TOKENS_PER_PAGE, 16, SUFFIX)          \
+    INSTANTIATE_PAL_PAGED_ATTENTION(TYPE, HEAD_DIM, TOKENS_PER_PAGE, 32, SUFFIX)
 
-INSTANTIATE_PAGED_ATTN_PASS2(half,       float16);
-INSTANTIATE_PAGED_ATTN_PASS2(bfloat16_t, bfloat16);
+#define INSTANTIATE_PAL_PAGED_REDUCE_ALL_SIMD(TYPE, HEAD_DIM, SUFFIX) \
+    INSTANTIATE_PAL_PAGED_REDUCE(TYPE, HEAD_DIM, 16, SUFFIX)          \
+    INSTANTIATE_PAL_PAGED_REDUCE(TYPE, HEAD_DIM, 32, SUFFIX)
+
+// =======================
+// Head Dimension: 32
+// =======================
+
+INSTANTIATE_PAL_PAGED_ATTENTION_ALL_SIMD(half,        32, 16, float16)
+INSTANTIATE_PAL_PAGED_ATTENTION_ALL_SIMD(bfloat16_t,  32, 16, bfloat16)
+INSTANTIATE_PAL_PAGED_ATTENTION_ALL_SIMD(half,        32, 32, float16)
+INSTANTIATE_PAL_PAGED_ATTENTION_ALL_SIMD(bfloat16_t,  32, 32, bfloat16)
+INSTANTIATE_PAL_PAGED_REDUCE_ALL_SIMD(half,           32, float16)
+INSTANTIATE_PAL_PAGED_REDUCE_ALL_SIMD(bfloat16_t,     32, bfloat16)
+
+// =======================
+// Head Dimension: 64
+// =======================
+
+INSTANTIATE_PAL_PAGED_ATTENTION_ALL_SIMD(half,        64, 16, float16)
+INSTANTIATE_PAL_PAGED_ATTENTION_ALL_SIMD(bfloat16_t,  64, 16, bfloat16)
+INSTANTIATE_PAL_PAGED_ATTENTION_ALL_SIMD(half,        64, 32, float16)
+INSTANTIATE_PAL_PAGED_ATTENTION_ALL_SIMD(bfloat16_t,  64, 32, bfloat16)
+INSTANTIATE_PAL_PAGED_REDUCE_ALL_SIMD(half,           64, float16)
+INSTANTIATE_PAL_PAGED_REDUCE_ALL_SIMD(bfloat16_t,     64, bfloat16)
+
+// =======================
+// Head Dimension: 80
+// =======================
+
+INSTANTIATE_PAL_PAGED_ATTENTION_ALL_SIMD(half,        80, 16, float16)
+INSTANTIATE_PAL_PAGED_ATTENTION_ALL_SIMD(bfloat16_t,  80, 16, bfloat16)
+INSTANTIATE_PAL_PAGED_ATTENTION_ALL_SIMD(half,        80, 32, float16)
+INSTANTIATE_PAL_PAGED_ATTENTION_ALL_SIMD(bfloat16_t,  80, 32, bfloat16)
+INSTANTIATE_PAL_PAGED_REDUCE_ALL_SIMD(half,           80, float16)
+INSTANTIATE_PAL_PAGED_REDUCE_ALL_SIMD(bfloat16_t,     80, bfloat16)
+
+// =======================
+// Head Dimension: 96
+// =======================
+
+INSTANTIATE_PAL_PAGED_ATTENTION_ALL_SIMD(half,        96, 16, float16)
+INSTANTIATE_PAL_PAGED_ATTENTION_ALL_SIMD(bfloat16_t,  96, 16, bfloat16)
+INSTANTIATE_PAL_PAGED_ATTENTION_ALL_SIMD(half,        96, 32, float16)
+INSTANTIATE_PAL_PAGED_ATTENTION_ALL_SIMD(bfloat16_t,  96, 32, bfloat16)
+INSTANTIATE_PAL_PAGED_REDUCE_ALL_SIMD(half,           96, float16)
+INSTANTIATE_PAL_PAGED_REDUCE_ALL_SIMD(bfloat16_t,     96, bfloat16)
+
+// =======================
+// Head Dimension: 128
+// =======================
+
+INSTANTIATE_PAL_PAGED_ATTENTION_ALL_SIMD(half,        128, 16, float16)
+INSTANTIATE_PAL_PAGED_ATTENTION_ALL_SIMD(bfloat16_t,  128, 16, bfloat16)
+INSTANTIATE_PAL_PAGED_ATTENTION_ALL_SIMD(half,        128, 32, float16)
+INSTANTIATE_PAL_PAGED_ATTENTION_ALL_SIMD(bfloat16_t,  128, 32, bfloat16)
+INSTANTIATE_PAL_PAGED_REDUCE_ALL_SIMD(half,           128, float16)
+INSTANTIATE_PAL_PAGED_REDUCE_ALL_SIMD(bfloat16_t,     128, bfloat16)
+
+// =======================
+// Head Dimension: 256
+// =======================
+
+INSTANTIATE_PAL_PAGED_ATTENTION_ALL_SIMD(half,        256, 16, float16)
+INSTANTIATE_PAL_PAGED_ATTENTION_ALL_SIMD(bfloat16_t,  256, 16, bfloat16)
+INSTANTIATE_PAL_PAGED_ATTENTION_ALL_SIMD(half,        256, 32, float16)
+INSTANTIATE_PAL_PAGED_ATTENTION_ALL_SIMD(bfloat16_t,  256, 32, bfloat16)
+INSTANTIATE_PAL_PAGED_REDUCE_ALL_SIMD(half,           256, float16)
+INSTANTIATE_PAL_PAGED_REDUCE_ALL_SIMD(bfloat16_t,     256, bfloat16)

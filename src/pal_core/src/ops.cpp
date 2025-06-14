@@ -38,9 +38,6 @@ mx::array paged_attention(
     const mx::array& v_cache_pool,
     const mx::array& page_table,
     const mx::array& sequence_lengths,
-    const mx::array& query_to_seq_map,
-    const mx::array& query_token_offset,
-    bool use_fused_kernel,
     mx::StreamOrDevice stream_or_device
   ) {
   spdlog::debug("[PAL Ops] pal::cpp::paged_attention C++ operation called.");
@@ -55,10 +52,11 @@ mx::array paged_attention(
   int num_kv_heads = 0;
 
   // Extract head_dim and tokens_per_page from K cache pool
-  if (k_cache_pool.ndim() == 4) {
-    tokens_per_page = k_cache_pool.shape(1);
-    num_kv_heads = k_cache_pool.shape(2);
-    head_dim = k_cache_pool.shape(3);
+  // v cache pool is 4D: [num_physical_pages, num_kv_heads, head_dim, tokens_per_page]
+  if (v_cache_pool.ndim() == 4) {
+    num_kv_heads = v_cache_pool.shape(1);
+    head_dim = v_cache_pool.shape(2);
+    tokens_per_page = v_cache_pool.shape(3);
   }
 
   // For 3D queries, num_q_heads comes from the second dimension
@@ -77,16 +75,14 @@ mx::array paged_attention(
       num_q_heads,
       num_kv_heads,
       head_dim,
-      tokens_per_page,
-      use_fused_kernel
+      tokens_per_page
     );
 
   spdlog::debug("[PAL Ops] PagedAttentionPrimitive instance created.");
 
   // Use the primitive's output_shapes method to determine the correct output shape
   auto output_shapes = primitive->output_shapes(
-      {queries, k_cache_pool, v_cache_pool, page_table, sequence_lengths,
-       query_to_seq_map, query_token_offset});
+      {queries, k_cache_pool, v_cache_pool, page_table, sequence_lengths});
 
   if (output_shapes.empty()) {
     spdlog::error("[PAL Ops] PagedAttentionPrimitive returned empty output_shapes");
@@ -105,9 +101,7 @@ mx::array paged_attention(
         k_cache_pool,
         v_cache_pool,
         page_table,
-        sequence_lengths,
-        query_to_seq_map,
-        query_token_offset
+        sequence_lengths
       }
     );
 }
@@ -127,14 +121,20 @@ std::tuple<mx::array, mx::array> fill_kv_pages(
   // Ensure Metal library is loaded and registered
   pal::cpp::MetalLibRegistrar::ensure_pal_metallib_registered(stream_or_device);
 
-  if (global_key_pool.ndim() != 4 || global_value_pool.ndim() != 4) {
-      throw std::invalid_argument("[fill_kv_pages] global_key_pool and global_value_pool must be 4D.");
+  // shape: [num_physical_pages, num_kv_heads, head_dim // QK_VECTOR_WIDTH, tokens_per_page, QK_VECTOR_WIDTH]
+  if (global_key_pool.ndim() != 5) {
+    throw std::invalid_argument("[fill_kv_pages] global_key_pool must be 5D.");
+  }
+
+  // shape: [num_physical_pages, num_kv_heads, head_dim, tokens_per_page]
+  if (global_value_pool.ndim() != 4) {
+    throw std::invalid_argument("[fill_kv_pages] global_value_pool must be 4D.");
   }
 
   // Extract key parameters from input arrays to pass to the primitive
-  int tokens_per_page = global_key_pool.shape(1);
-  int num_kv_heads = global_key_pool.shape(2);
-  int head_dim = global_key_pool.shape(3);
+  int num_kv_heads = global_value_pool.shape(1);
+  int head_dim = global_value_pool.shape(2);
+  int tokens_per_page = global_value_pool.shape(3);
 
   // Create the primitive instance with the extracted parameters
   auto primitive = std::make_shared<FillKVPagesPrimitive>(

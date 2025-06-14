@@ -17,75 +17,105 @@
 // ============================================================================
 
 #pragma once
-
 #include <metal_stdlib>
 #include "paged_attention_types.h"
-#include "pal_types.h.metal"
+#include "utils.h.metal"
 
 using namespace metal;
 
+// K-cache layout: [pages, heads, head_dim/x, tokens_per_page, x]
+//         where x = MEMORY_ALIGNMENT_BYTES / sizeof(T)
+// V-cache layout: [pages, heads, head_dim, tokens_per_page]
+
 template <typename T>
 [[kernel]] void fill_kv_pages_kernel(
-    device const    T*          new_keys [[buffer(0)]],
-    device const    T*          new_values [[buffer(1)]],
-    device const    uint*       page_table_data [[buffer(2)]],
-    device const    int*        current_token_write_positions [[buffer(3)]],
-    device const    uint*       query_to_seq_map_data [[buffer(4)]],
-    constant const  FillKVPagesParams& params [[buffer(5)]],
-    device          T*          global_k_pool_out [[buffer(6)]],
-    device          T*          global_v_pool_out [[buffer(7)]],
-    uint3           tg_id [[threadgroup_position_in_grid]],
-    uint3           thread_idx_in_group_3d [[thread_position_in_threadgroup]],
-    uint3           threads_per_tg_3d [[threads_per_threadgroup]]
-) {
-    // Define Vec4 using our abstraction
-    using Vec4 = typename Vec<T, 4>::Type;
+    // --- Data Buffers ---
+    device const T*      new_keys                      [[buffer(0)]],
+    device const T*      new_values                    [[buffer(1)]],
+    device const uint*   page_table                    [[buffer(2)]],
+    device const int*    token_write_positions         [[buffer(3)]],
+    device const uint*   query_to_seq_map              [[buffer(4)]],
+    constant const FillKVPagesParams& params           [[buffer(5)]],
+    device T*            global_k_pool_out             [[buffer(6)]],
+    device T*            global_v_pool_out             [[buffer(7)]],
 
-    // --- The rest of the kernel logic is identical, just with types replaced ---
-    uint thread_idx_in_group = thread_idx_in_group_3d.x;
-    uint threads_per_tg_actual = threads_per_tg_3d.x;
-    uint kv_pairs_per_threadgroup = params.kv_pairs_per_threadgroup;
+    // --- Thread Identifiers ---
+    uint3                tg_id                         [[threadgroup_position_in_grid]],
+    uint                 local_idx                     [[thread_index_in_threadgroup]]
+)
+{
+    // 1. Identify which tokens this threadgroup is responsible for.
+    constexpr int vec_size = MEMORY_ALIGNMENT_BYTES / sizeof(T);
+    uint start_token_idx = tg_id.x * params.tokens_per_threadgroup;
+    using VecT = typename Vec<T, vec_size>::Type;
 
-    uint start_token_idx_for_chunk = tg_id.x * kv_pairs_per_threadgroup;
+    // Calculate total vectors to copy for one token.
+    const uint total_vectors_per_token = (params.num_kv_heads * params.head_dim) / vec_size;
 
-    ulong elements_per_kv_pair_in_page = (ulong)params.num_kv_heads * params.head_dim;
-    ulong elements_per_full_page = (ulong)params.tokens_per_page * elements_per_kv_pair_in_page;
+    // 2. Loop over the tokens assigned to this threadgroup.
+    for (uint i = 0; i < params.tokens_per_threadgroup; ++i) {
+        uint token_idx = start_token_idx + i;
 
-    uint num_vec4_to_copy = (uint)(elements_per_kv_pair_in_page / 4);
-
-    for (uint i = 0; i < kv_pairs_per_threadgroup; i++) {
-        uint current_token_global_idx = start_token_idx_for_chunk + i;
-
-        if (current_token_global_idx >= params.total_new_tokens_to_write) {
-            break;
+        // Boundary check: ensure this token actually exists.
+        if (token_idx >= params.total_new_tokens_to_write) {
+            return; // This thread has no more work to do.
         }
 
-        uint seq_idx_in_batch = query_to_seq_map_data[current_token_global_idx];
-        uint logical_token_pos_in_sequence = (uint)current_token_write_positions[current_token_global_idx];
+        // 3. Find the destination physical page and slot for this token.
+        uint seq_idx = query_to_seq_map[token_idx];
+        uint logical_pos = token_write_positions[token_idx];
 
-        uint logical_block_idx = logical_token_pos_in_sequence / params.tokens_per_page;
-        uint slot_in_page = logical_token_pos_in_sequence % params.tokens_per_page;
+        uint logical_block_idx = logical_pos / params.tokens_per_page;
+        uint slot_in_page = logical_pos % params.tokens_per_page;
 
-        uint page_table_flat_idx = seq_idx_in_batch * params.page_table_max_logical_blocks + logical_block_idx;
-        uint physical_page_id = page_table_data[page_table_flat_idx];
+        uint page_table_idx = seq_idx * params.page_table_max_logical_blocks + logical_block_idx;
+        uint physical_page_id = page_table[page_table_idx];
 
-        ulong page_base_offset_in_pool = (ulong)physical_page_id * elements_per_full_page;
-        ulong slot_base_offset_in_page = (ulong)slot_in_page * elements_per_kv_pair_in_page;
+        const uint num_threads = params.threads_per_threadgroup;
+        device const T* source_k_base = new_keys + (ulong)token_idx * params.num_kv_heads * params.head_dim;
+        device const T* source_v_base = new_values + (ulong)token_idx * params.num_kv_heads * params.head_dim;
 
-        ulong k_target_start_offset = page_base_offset_in_pool + slot_base_offset_in_page;
-        ulong v_target_start_offset = page_base_offset_in_pool + slot_base_offset_in_page;
+        ulong page_offset = (ulong)physical_page_id * params.num_kv_heads * params.tokens_per_page * params.head_dim;
+        device T* k_page_base = global_k_pool_out + page_offset;
+        device T* v_page_base = global_v_pool_out + page_offset;
 
-        ulong source_kv_pair_offset = (ulong)current_token_global_idx * elements_per_kv_pair_in_page;
+        for (uint vec_idx = local_idx; vec_idx < total_vectors_per_token; vec_idx += num_threads) {
+            // 5a. Read one vector from the source arrays.
+            VecT k_vec = ((device const VecT*)source_k_base)[vec_idx];
+            VecT v_vec = ((device const VecT*)source_v_base)[vec_idx];
 
-        device Vec4* k_write_ptr = (device Vec4*)(global_k_pool_out + k_target_start_offset);
-        device const Vec4* new_k_src_ptr = (device const Vec4*)(new_keys + source_kv_pair_offset);
+            // 5b. Deconstruct the linear vector index to find the head and element position.
+            uint linear_elem_idx = vec_idx * vec_size;
+            uint kv_head_idx = linear_elem_idx / params.head_dim;
+            uint elem_in_head_idx = linear_elem_idx % params.head_dim;
 
-        device Vec4* v_write_ptr = (device Vec4*)(global_v_pool_out + v_target_start_offset);
-        device const Vec4* new_v_src_ptr = (device const Vec4*)(new_values + source_kv_pair_offset);
+            // 5c. Write K-cache vector (coalesced)
+            {
+                uint vec_in_head_idx = elem_in_head_idx / vec_size;
 
-        for (uint v_idx = thread_idx_in_group; v_idx < num_vec4_to_copy; v_idx += threads_per_tg_actual) {
-            k_write_ptr[v_idx] = new_k_src_ptr[v_idx];
-            v_write_ptr[v_idx] = new_v_src_ptr[v_idx];
-        }
-    }
-}
+                ulong k_head_offset = (ulong)kv_head_idx * params.head_dim * params.tokens_per_page;
+                ulong k_vec_chunk_offset = (ulong)vec_in_head_idx * params.tokens_per_page * vec_size;
+                ulong k_slot_offset = (ulong)slot_in_page * vec_size;
+
+                device VecT* k_write_ptr = (device VecT*)(k_page_base + k_head_offset + k_vec_chunk_offset + k_slot_offset);
+                *k_write_ptr = k_vec;
+            }
+
+            // 5d. Write V-cache vector (strided)
+            {
+                ulong v_head_offset = (ulong)kv_head_idx * params.head_dim * params.tokens_per_page;
+                ulong v_elem_start_offset = (ulong)elem_in_head_idx * params.tokens_per_page;
+
+                device T* v_write_ptr = v_page_base + v_head_offset + v_elem_start_offset + slot_in_page;
+
+                // This is a strided write. Each element is tokens_per_page apart.
+                #pragma unroll
+                for (int j = 0; j < vec_size; ++j) {
+                    v_write_ptr[j * params.tokens_per_page] = v_vec[j];
+                }
+            }
+        } // end vectorized read/write loop
+
+    } // end token loop
+
+} // end kernel
