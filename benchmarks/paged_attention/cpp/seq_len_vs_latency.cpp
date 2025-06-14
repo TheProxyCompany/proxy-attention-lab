@@ -51,7 +51,7 @@ struct BaselineConfig {
     int num_kv_heads = 16;
     int head_dim = 128;
     int tokens_per_page = 56;
-    mx::Dtype dtype = mx::float16;
+    mx::Dtype dtype = mx::bfloat16;
 };
 
 // Decode-specific batch size
@@ -213,7 +213,9 @@ BENCHMARK(BM_PAL_DecodeLatencyVsHistoryLen)
    ->Arg(256)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
    ->Arg(1024)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
    ->Arg(2048)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-   ->Arg(4096)->Iterations(ITERATIONS)->Repetitions(REPETITIONS);
+   ->Arg(4096)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+   ->Arg(8192)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+   ->Arg(16384)->Iterations(ITERATIONS)->Repetitions(REPETITIONS);
 
 BENCHMARK(BM_MLX_SDPA_DecodeLatencyVsHistoryLen)
    ->Arg(64)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
@@ -221,6 +223,8 @@ BENCHMARK(BM_MLX_SDPA_DecodeLatencyVsHistoryLen)
    ->Arg(256)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
    ->Arg(1024)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
    ->Arg(2048)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-   ->Arg(4096)->Iterations(ITERATIONS)->Repetitions(REPETITIONS);
+   ->Arg(4096)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+   ->Arg(8192)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+   ->Arg(16384)->Iterations(ITERATIONS)->Repetitions(REPETITIONS);
 
 BENCHMARK_MAIN();

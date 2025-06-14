@@ -138,8 +138,8 @@ def setup_sdpa_decode_inputs(params):
 
 
 # benchmarked up to 1048576 tokens
-@pytest.mark.parametrize("history_len_val", [16384, 131072, 524288, 1048576])
-@pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16])
+@pytest.mark.parametrize("history_len_val", [4096, 8192, 16384, 131072, 524288, 1048576])
+@pytest.mark.parametrize("dtype", [mx.bfloat16])
 def test_pal_decode_latency_vs_history_len(benchmark, history_len_val, dtype):
     """
     Benchmark paged_attention decode operation performance across different history lengths.
@@ -182,8 +182,8 @@ def test_pal_decode_latency_vs_history_len(benchmark, history_len_val, dtype):
 
 
 # benchmarked up to 1048576 tokens
-@pytest.mark.parametrize("history_len_val", [16384, 131072, 524288, 1048576])
-@pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16])
+@pytest.mark.parametrize("history_len_val", [4096, 8192, 16384, 131072, 524288, 1048576])
+@pytest.mark.parametrize("dtype", [mx.bfloat16])
 def test_mlx_decode_latency_vs_history_len(benchmark, history_len_val, dtype):
     """
     Benchmark MLX scaled_dot_product_attention decode operation performance across different history lengths.

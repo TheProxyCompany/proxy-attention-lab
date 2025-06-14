@@ -49,7 +49,7 @@ struct BaselineConfig {
     int num_kv_heads = 16;
     int head_dim = 128;
     int tokens_per_page = 16;  // Will be overridden by optimal size
-    mx::Dtype dtype = mx::float16;
+    mx::Dtype dtype = mx::bfloat16;
 };
 
 // Helper function to create the page table for batch decode

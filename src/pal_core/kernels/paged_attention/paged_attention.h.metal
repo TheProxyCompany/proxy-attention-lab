@@ -377,16 +377,18 @@ template <typename T, int HEAD_DIM, int TOKENS_PER_PAGE>
         }
 
         if (simdgroup_idx == 0) {
-            // The output pointer is based on which sequence, head, and chunk we are.
-            const ulong out_offset = ((ulong)seq_idx * params.num_q_heads + q_head_idx) * HEAD_DIM * max_chunks;
-            device T* tmp_out_ptr = tmp_out + out_offset;
+            // Base offset to the start of this sequence and head's data.
+            const ulong base_offset = ((ulong)seq_idx * params.num_q_heads + q_head_idx) * max_chunks * HEAD_DIM;
+            // Chunk-specific offset to the start of the current chunk's head_dim vector.
+            const ulong chunk_offset = (ulong)chunk_idx * HEAD_DIM;
+            device T* tmp_out_ptr = tmp_out + base_offset + chunk_offset;
 
             #pragma unroll
             for (int i = 0; i < PASSES_PER_THREAD; ++i) {
                 const int element_idx = (lane_idx / (TOKENS_PER_PAGE / V_VECTOR_WIDTH)) + i * ELEMENTS_PER_SIMD;
                 // Only the leader thread for each element writes its computed value.
                 if (element_idx < HEAD_DIM && (lane_idx % (TOKENS_PER_PAGE / V_VECTOR_WIDTH) == 0)) {
-                    tmp_out_ptr[element_idx * max_chunks + chunk_idx] = T(acc[i]);
+                    tmp_out_ptr[element_idx] = T(acc[i]);
                 }
             }
         }

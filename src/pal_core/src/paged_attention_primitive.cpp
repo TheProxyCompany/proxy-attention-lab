@@ -98,7 +98,7 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx:
 
     const int max_tokens = params.max_logical_pages_per_seq * params.tokens_per_page;
     const int num_chunks = (max_tokens + CHUNK_SIZE - 1) / CHUNK_SIZE;
-    const bool use_two_pass = max_tokens > PREFER_SINGLE_PASS_TOKENS;
+    const bool use_two_pass = max_tokens > CHUNK_SIZE;
 
     // 4. Define dispatch grid
     metal::DispatchGrid dispatch_grid;
@@ -112,10 +112,11 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx:
         + dtype_suffix + "_" + std::to_string(head_dim_)
         + "_" + std::to_string(params.tokens_per_page);
 
+    const std::string kernel_hash = use_two_pass ? "two_pass" : "single_pass";
     auto kernel_state = d.get_kernel(
         kernel_name,
         "pal",
-        "", // hash
+        kernel_name + "_" + kernel_hash,
         { {&use_two_pass, MTL::DataType::DataTypeBool, 0} }
     );
     if (!kernel_state) {
@@ -148,7 +149,7 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx:
         // Allocate intermediate buffers for two-pass
         mx::array max_logits({num_seq, num_q_heads_, num_chunks}, mx::float32, nullptr, {});
         mx::array exp_sums({num_seq, num_q_heads_, num_chunks}, mx::float32, nullptr, {});
-        mx::array tmp_out({num_seq, num_q_heads_, head_dim_, num_chunks}, queries.dtype(), nullptr, {});
+        mx::array tmp_out({num_seq, num_q_heads_, num_chunks, head_dim_}, queries.dtype(), nullptr, {});
 
         max_logits.set_data(mx::allocator::malloc(max_logits.nbytes()));
         exp_sums.set_data(mx::allocator::malloc(exp_sums.nbytes()));

@@ -71,6 +71,7 @@ INSTANTIATE_FILL_KV_PAGES(bfloat16_t,  bfloat16);
         device const int*   context_lens_in          [[buffer(4)]],                                                             \
         constant const PagedAttentionParams& params  [[buffer(5)]],                                                             \
         threadgroup uchar*  tg_mem                   [[threadgroup(0)]],                                                        \
+        uint3               threads_per_threadgroup  [[threads_per_threadgroup]],                                                \
         uint3               tg_pos_in_grid           [[threadgroup_position_in_grid]],                                          \
         uint                local_idx_in_tg          [[thread_index_in_threadgroup]],                                           \
         uint                simdgroup_idx            [[simdgroup_index_in_threadgroup]],                                         \
