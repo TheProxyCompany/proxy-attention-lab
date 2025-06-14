@@ -26,7 +26,7 @@ using namespace metal;
 
 constant bool USE_TWO_PASS [[function_constant(0)]];
 
-template <typename T, int HEAD_DIM, int TOKENS_PER_PAGE>
+template <typename T, int HEAD_DIM, int TOKENS_PER_PAGE, int SIMD_WIDTH>
 [[kernel]] void pal_paged_attention(
     device const T*      queries_in             [[buffer(0)]],
     device const T*      k_cache_pool_in        [[buffer(1)]],

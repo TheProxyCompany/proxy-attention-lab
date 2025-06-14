@@ -226,7 +226,8 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
    */
   size_t calculate_reduce_memory_layout(
     const PagedAttentionParams& params,
-    size_t threads_per_group
+    size_t threads_per_group,
+    size_t simd_width
   );
 };
 

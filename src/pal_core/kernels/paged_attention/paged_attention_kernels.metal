@@ -20,6 +20,14 @@
 #include "paged_attention.h.metal"
 #include "paged_reduce.h.metal"
 
+
+[[kernel]] void get_device_info() {
+    // used for fetching a metal compute pipeline state
+    // for the current device to get the max threads per group
+    // and simd group size
+}
+
+
 // --- Instantiation Macro for fill_kv_pages ---
 #define INSTANTIATE_FILL_KV_PAGES(TYPE, SUFFIX)                                                                                 \
     template [[host_name("fill_kv_pages_kernel_" #SUFFIX)]] [[kernel]] void                                                     \
@@ -41,9 +49,9 @@ INSTANTIATE_FILL_KV_PAGES(half,        float16);
 INSTANTIATE_FILL_KV_PAGES(bfloat16_t,  bfloat16);
 
 // --- Instantiation Macro for pal_paged_attention ---
-#define INSTANTIATE_PAL_PAGED_ATTENTION(TYPE, HEAD_DIM, TOKENS_PER_PAGE, SUFFIX)                                                             \
-    template [[host_name("pal_paged_attention_" #SUFFIX "_" #HEAD_DIM "_" #TOKENS_PER_PAGE)]] [[kernel]] void                                        \
-    pal_paged_attention<TYPE, HEAD_DIM, TOKENS_PER_PAGE>(                                                                                        \
+#define INSTANTIATE_PAL_PAGED_ATTENTION(TYPE, HEAD_DIM, TOKENS_PER_PAGE, SIMD_WIDTH, SUFFIX)                                                             \
+    template [[host_name("pal_paged_attention_" #SUFFIX "_" #HEAD_DIM "_" #TOKENS_PER_PAGE "_" #SIMD_WIDTH)]] [[kernel]] void                                        \
+    pal_paged_attention<TYPE, HEAD_DIM, TOKENS_PER_PAGE, SIMD_WIDTH>(                                                                                        \
         device const TYPE*  queries_in               [[buffer(0)]],                                                             \
         device const TYPE*  k_cache_pool_in          [[buffer(1)]],                                                             \
         device const TYPE*  v_cache_pool_in          [[buffer(2)]],                                                             \
@@ -61,9 +69,9 @@ INSTANTIATE_FILL_KV_PAGES(bfloat16_t,  bfloat16);
     );
 
 // --- Instantiation Macro for pal_paged_reduce ---
-#define INSTANTIATE_PAL_PAGED_REDUCE(TYPE, HEAD_DIM, SUFFIX)                                                                   \
-    template [[host_name("pal_paged_reduce_" #SUFFIX "_" #HEAD_DIM)]] [[kernel]] void                                           \
-    pal_paged_reduce<TYPE, HEAD_DIM>(                                                                                            \
+#define INSTANTIATE_PAL_PAGED_REDUCE(TYPE, HEAD_DIM, SIMD_WIDTH, SUFFIX)                                                                   \
+    template [[host_name("pal_paged_reduce_" #SUFFIX "_" #HEAD_DIM "_" #SIMD_WIDTH)]] [[kernel]] void                                           \
+    pal_paged_reduce<TYPE, HEAD_DIM, SIMD_WIDTH>(                                                                                            \
         device TYPE*        output_buffer            [[buffer(0)]],                                                             \
         device const float* max_logits_in            [[buffer(1)]],                                                             \
         device const float* exp_sums_in              [[buffer(2)]],                                                             \
@@ -78,64 +86,86 @@ INSTANTIATE_FILL_KV_PAGES(bfloat16_t,  bfloat16);
         uint                lane_idx                 [[thread_index_in_simdgroup]]                                              \
     );
 
-// --- Create concrete specializations for common head dimensions ---
+// --- PAL Paged Attention/Reduce Kernel Instantiations ---
+//
+// Instantiations are organized by:
+//   - Data type: half, bfloat16_t
+//   - Head dimension: 32, 64, 80, 96, 128, 256
+//   - Tokens per page: 16, 32
+//   - SIMD width: 16, 32
+//
+// For each (head_dim, tokens_per_page), instantiate both SIMD widths.
 
-// Head dimension 32
-INSTANTIATE_PAL_PAGED_ATTENTION(half,        32, 16, float16)
-INSTANTIATE_PAL_PAGED_ATTENTION(bfloat16_t,  32, 16, bfloat16)
-// 32 tokens per page
-INSTANTIATE_PAL_PAGED_ATTENTION(half,        32, 32, float16)
-INSTANTIATE_PAL_PAGED_ATTENTION(bfloat16_t,  32, 32, bfloat16)
+#define INSTANTIATE_PAL_PAGED_ATTENTION_ALL_SIMD(TYPE, HEAD_DIM, TOKENS_PER_PAGE, SUFFIX) \
+    INSTANTIATE_PAL_PAGED_ATTENTION(TYPE, HEAD_DIM, TOKENS_PER_PAGE, 16, SUFFIX)          \
+    INSTANTIATE_PAL_PAGED_ATTENTION(TYPE, HEAD_DIM, TOKENS_PER_PAGE, 32, SUFFIX)
 
-INSTANTIATE_PAL_PAGED_REDUCE(half,           32, float16)
-INSTANTIATE_PAL_PAGED_REDUCE(bfloat16_t,     32, bfloat16)
+#define INSTANTIATE_PAL_PAGED_REDUCE_ALL_SIMD(TYPE, HEAD_DIM, SUFFIX) \
+    INSTANTIATE_PAL_PAGED_REDUCE(TYPE, HEAD_DIM, 16, SUFFIX)          \
+    INSTANTIATE_PAL_PAGED_REDUCE(TYPE, HEAD_DIM, 32, SUFFIX)
 
-// Head dimension 64
-INSTANTIATE_PAL_PAGED_ATTENTION(half,        64, 16, float16)
-INSTANTIATE_PAL_PAGED_ATTENTION(bfloat16_t,  64, 16, bfloat16)
-// 32 tokens per page
-INSTANTIATE_PAL_PAGED_ATTENTION(half,        64, 32, float16)
-INSTANTIATE_PAL_PAGED_ATTENTION(bfloat16_t,  64, 32, bfloat16)
+// =======================
+// Head Dimension: 32
+// =======================
 
-INSTANTIATE_PAL_PAGED_REDUCE(half,           64, float16)
-INSTANTIATE_PAL_PAGED_REDUCE(bfloat16_t,     64, bfloat16)
+INSTANTIATE_PAL_PAGED_ATTENTION_ALL_SIMD(half,        32, 16, float16)
+INSTANTIATE_PAL_PAGED_ATTENTION_ALL_SIMD(bfloat16_t,  32, 16, bfloat16)
+INSTANTIATE_PAL_PAGED_ATTENTION_ALL_SIMD(half,        32, 32, float16)
+INSTANTIATE_PAL_PAGED_ATTENTION_ALL_SIMD(bfloat16_t,  32, 32, bfloat16)
+INSTANTIATE_PAL_PAGED_REDUCE_ALL_SIMD(half,           32, float16)
+INSTANTIATE_PAL_PAGED_REDUCE_ALL_SIMD(bfloat16_t,     32, bfloat16)
 
-// Head dimension 80
-INSTANTIATE_PAL_PAGED_ATTENTION(half,        80, 16, float16)
-INSTANTIATE_PAL_PAGED_ATTENTION(bfloat16_t,  80, 16, bfloat16)
-// 32 tokens per page
-INSTANTIATE_PAL_PAGED_ATTENTION(half,        80, 32, float16)
-INSTANTIATE_PAL_PAGED_ATTENTION(bfloat16_t,  80, 32, bfloat16)
+// =======================
+// Head Dimension: 64
+// =======================
 
-INSTANTIATE_PAL_PAGED_REDUCE(half,           80, float16)
-INSTANTIATE_PAL_PAGED_REDUCE(bfloat16_t,     80, bfloat16)
+INSTANTIATE_PAL_PAGED_ATTENTION_ALL_SIMD(half,        64, 16, float16)
+INSTANTIATE_PAL_PAGED_ATTENTION_ALL_SIMD(bfloat16_t,  64, 16, bfloat16)
+INSTANTIATE_PAL_PAGED_ATTENTION_ALL_SIMD(half,        64, 32, float16)
+INSTANTIATE_PAL_PAGED_ATTENTION_ALL_SIMD(bfloat16_t,  64, 32, bfloat16)
+INSTANTIATE_PAL_PAGED_REDUCE_ALL_SIMD(half,           64, float16)
+INSTANTIATE_PAL_PAGED_REDUCE_ALL_SIMD(bfloat16_t,     64, bfloat16)
 
-// Head dimension 96
-INSTANTIATE_PAL_PAGED_ATTENTION(half,        96, 16, float16)
-INSTANTIATE_PAL_PAGED_ATTENTION(bfloat16_t,  96, 16, bfloat16)
-// 32 tokens per page
-INSTANTIATE_PAL_PAGED_ATTENTION(half,        96, 32, float16)
-INSTANTIATE_PAL_PAGED_ATTENTION(bfloat16_t,  96, 32, bfloat16)
+// =======================
+// Head Dimension: 80
+// =======================
 
-INSTANTIATE_PAL_PAGED_REDUCE(half,           96, float16)
-INSTANTIATE_PAL_PAGED_REDUCE(bfloat16_t,     96, bfloat16)
+INSTANTIATE_PAL_PAGED_ATTENTION_ALL_SIMD(half,        80, 16, float16)
+INSTANTIATE_PAL_PAGED_ATTENTION_ALL_SIMD(bfloat16_t,  80, 16, bfloat16)
+INSTANTIATE_PAL_PAGED_ATTENTION_ALL_SIMD(half,        80, 32, float16)
+INSTANTIATE_PAL_PAGED_ATTENTION_ALL_SIMD(bfloat16_t,  80, 32, bfloat16)
+INSTANTIATE_PAL_PAGED_REDUCE_ALL_SIMD(half,           80, float16)
+INSTANTIATE_PAL_PAGED_REDUCE_ALL_SIMD(bfloat16_t,     80, bfloat16)
 
-// Head dimension 128
-INSTANTIATE_PAL_PAGED_ATTENTION(half,        128, 16, float16)
-INSTANTIATE_PAL_PAGED_ATTENTION(bfloat16_t,  128, 16, bfloat16)
-// 32 tokens per page
-INSTANTIATE_PAL_PAGED_ATTENTION(half,        128, 32, float16)
-INSTANTIATE_PAL_PAGED_ATTENTION(bfloat16_t,  128, 32, bfloat16)
+// =======================
+// Head Dimension: 96
+// =======================
 
-INSTANTIATE_PAL_PAGED_REDUCE(half,           128, float16)
-INSTANTIATE_PAL_PAGED_REDUCE(bfloat16_t,     128, bfloat16)
+INSTANTIATE_PAL_PAGED_ATTENTION_ALL_SIMD(half,        96, 16, float16)
+INSTANTIATE_PAL_PAGED_ATTENTION_ALL_SIMD(bfloat16_t,  96, 16, bfloat16)
+INSTANTIATE_PAL_PAGED_ATTENTION_ALL_SIMD(half,        96, 32, float16)
+INSTANTIATE_PAL_PAGED_ATTENTION_ALL_SIMD(bfloat16_t,  96, 32, bfloat16)
+INSTANTIATE_PAL_PAGED_REDUCE_ALL_SIMD(half,           96, float16)
+INSTANTIATE_PAL_PAGED_REDUCE_ALL_SIMD(bfloat16_t,     96, bfloat16)
 
-// Head dimension 256
-INSTANTIATE_PAL_PAGED_ATTENTION(half,        256, 16, float16)
-INSTANTIATE_PAL_PAGED_ATTENTION(bfloat16_t,  256, 16, bfloat16)
-// 32 tokens per page
-INSTANTIATE_PAL_PAGED_ATTENTION(half,        256, 32, float16)
-INSTANTIATE_PAL_PAGED_ATTENTION(bfloat16_t,  256, 32, bfloat16)
+// =======================
+// Head Dimension: 128
+// =======================
 
-INSTANTIATE_PAL_PAGED_REDUCE(half,           256, float16)
-INSTANTIATE_PAL_PAGED_REDUCE(bfloat16_t,     256, bfloat16)
+INSTANTIATE_PAL_PAGED_ATTENTION_ALL_SIMD(half,        128, 16, float16)
+INSTANTIATE_PAL_PAGED_ATTENTION_ALL_SIMD(bfloat16_t,  128, 16, bfloat16)
+INSTANTIATE_PAL_PAGED_ATTENTION_ALL_SIMD(half,        128, 32, float16)
+INSTANTIATE_PAL_PAGED_ATTENTION_ALL_SIMD(bfloat16_t,  128, 32, bfloat16)
+INSTANTIATE_PAL_PAGED_REDUCE_ALL_SIMD(half,           128, float16)
+INSTANTIATE_PAL_PAGED_REDUCE_ALL_SIMD(bfloat16_t,     128, bfloat16)
+
+// =======================
+// Head Dimension: 256
+// =======================
+
+INSTANTIATE_PAL_PAGED_ATTENTION_ALL_SIMD(half,        256, 16, float16)
+INSTANTIATE_PAL_PAGED_ATTENTION_ALL_SIMD(bfloat16_t,  256, 16, bfloat16)
+INSTANTIATE_PAL_PAGED_ATTENTION_ALL_SIMD(half,        256, 32, float16)
+INSTANTIATE_PAL_PAGED_ATTENTION_ALL_SIMD(bfloat16_t,  256, 32, bfloat16)
+INSTANTIATE_PAL_PAGED_REDUCE_ALL_SIMD(half,           256, float16)
+INSTANTIATE_PAL_PAGED_REDUCE_ALL_SIMD(bfloat16_t,     256, bfloat16)

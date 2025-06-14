@@ -100,27 +100,37 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx:
     const int num_chunks = (max_tokens + CHUNK_SIZE - 1) / CHUNK_SIZE;
     const bool use_two_pass = max_tokens > CHUNK_SIZE;
 
+    // 3.5. Get device info before 'naming' templated kernels (needed for simd_width)
+    const std::string library_name = "pal";
+    const std::string kernel_name = "get_device_info";
+    auto kernel_state = d.get_kernel(kernel_name, library_name);
+    if (!kernel_state) {
+        throw std::runtime_error("[PAL Primitive] Failed to load kernel: " + kernel_name);
+    }
+    const size_t simd_width = kernel_state->threadExecutionWidth();
+
+
     // 4. Define dispatch grid
     metal::DispatchGrid dispatch_grid;
     dispatch_grid.width = params.num_sequences_in_batch;
     dispatch_grid.height = params.num_q_heads;
     dispatch_grid.depth = use_two_pass ? num_chunks : 1;
 
-    // 5. Get the unified kernel
+    // 5. Get the pass 1 kernel
     const std::string dtype_suffix = mx::type_to_name(inputs[0].dtype());
-    const std::string kernel_name = "pal_paged_attention_"
+    const std::string attention_kernel_name = "pal_paged_attention_"
         + dtype_suffix + "_" + std::to_string(head_dim_)
-        + "_" + std::to_string(params.tokens_per_page);
+        + "_" + std::to_string(params.tokens_per_page) + "_" + std::to_string(simd_width);
 
     const std::string kernel_hash = use_two_pass ? "two_pass" : "single_pass";
-    auto kernel_state = d.get_kernel(
-        kernel_name,
+    kernel_state = d.get_kernel(
+        attention_kernel_name,
         "pal",
-        kernel_name + "_" + kernel_hash,
+        attention_kernel_name + "_" + kernel_hash,
         { {&use_two_pass, MTL::DataType::DataTypeBool, 0} }
     );
     if (!kernel_state) {
-        throw std::runtime_error("[PAL] Failed to load kernel: " + kernel_name);
+        throw std::runtime_error("[PAL] Failed to load kernel: " + attention_kernel_name);
     }
 
     // 6. Determine threadgroup configuration
@@ -128,7 +138,7 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx:
     const size_t tg_memory_bytes = calculate_attention_memory_layout(
         params,
         threads_per_group,
-        kernel_state->threadExecutionWidth(),
+        simd_width,
         inputs[1].dtype(),
         head_dim_
     );
@@ -185,18 +195,21 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx:
         );
 
         // Pass 2: Reduce across chunks
-        const std::string reduce_kernel_name = "pal_paged_reduce_" + dtype_suffix + "_" + std::to_string(head_dim_);
-        auto reduce_kernel_state = d.get_kernel(reduce_kernel_name, "pal");
-        if (!reduce_kernel_state) {
+        const std::string reduce_kernel_name = "pal_paged_reduce_" + dtype_suffix + "_"
+                                                + std::to_string(head_dim_)
+                                                + "_" + std::to_string(simd_width);
+        kernel_state = d.get_kernel(reduce_kernel_name, "pal");
+        if (!kernel_state) {
             throw std::runtime_error("[PAL] Failed to load reduce kernel: " + reduce_kernel_name);
         }
 
         const size_t tg_memory_bytes_pass2 = calculate_reduce_memory_layout(
             params,
-            threads_per_group
+            threads_per_group,
+            simd_width
         );
 
-        compute_encoder.set_compute_pipeline_state(reduce_kernel_state);
+        compute_encoder.set_compute_pipeline_state(kernel_state);
         compute_encoder.set_output_array(out, 0);
         compute_encoder.set_input_array(max_logits, 1);
         compute_encoder.set_input_array(exp_sums, 2);
@@ -342,7 +355,8 @@ size_t PagedAttentionPrimitive::calculate_attention_memory_layout(
 
 size_t PagedAttentionPrimitive::calculate_reduce_memory_layout(
     const PagedAttentionParams& params,
-    size_t threads_per_group
+    size_t threads_per_group,
+    size_t simd_width
 ) {
     // Calculate maximum possible chunks
     const int max_tokens = params.max_logical_pages_per_seq * params.tokens_per_page;
@@ -353,7 +367,7 @@ size_t PagedAttentionPrimitive::calculate_reduce_memory_layout(
     // 2. shared_exp_sums: max_num_chunks * sizeof(float)
     // 3. reduction_scratch: 2 * num_simd_groups * sizeof(float)
 
-    size_t num_simd_groups = threads_per_group / SIMD_WIDTH;
+    size_t num_simd_groups = threads_per_group / simd_width;
 
     size_t total_bytes = 0;
     total_bytes += max_num_chunks * sizeof(float);      // shared_max_logits

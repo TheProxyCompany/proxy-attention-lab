@@ -30,11 +30,9 @@ using float32_t = float;
 
 #ifndef __METAL_VERSION__ // C++ side
 constexpr int CHUNK_SIZE = 512;
-constexpr int SIMD_WIDTH = 32; // 32 wide simdgroups default on apple silicon
 constexpr int MEMORY_ALIGNMENT_BYTES = 16;
 #else // __METAL_VERSION__ (Metal side)
 #define CHUNK_SIZE 512
-#define SIMD_WIDTH 32
 #define MEMORY_ALIGNMENT_BYTES 16
 #endif
 
@@ -52,7 +50,6 @@ struct alignas(16) PagedAttentionParams {
   uint32_t num_sequences_in_batch;        // Number of sequences in batch
   uint32_t num_physical_pages_in_pool;    // Number of physical pages in pool
   uint32_t max_logical_pages_per_seq;     // Maximum logical blocks per sequence
-  uint32_t simd_width;                    // SIMD width
   float    log_exp_min_clamp;             // Minimum value for exponent in exp function
   float    inv_sqrt_head_dim;             // 1/sqrt(head_dim) precomputed on host
 };
@@ -64,12 +61,12 @@ static_assert(std::is_standard_layout_v<PagedAttentionParams>,
               "PagedAttentionParams must be a standard-layout type.");
 static_assert(alignof(PagedAttentionParams) == 16,
               "PagedAttentionParams must have 16-byte alignment.");
-// 7 uint32_t (28 bytes) + 2 float (8 bytes) = 36 data bytes.
-// alignas(16) means total size is 48 bytes (rounded up to multiple of 16).
-static_assert(sizeof(PagedAttentionParams) == 48, "C++ sizeof(PagedAttentionParams) expected to be 48 bytes.");
+// 6 uint32_t (24 bytes) + 2 float (8 bytes) = 32 data bytes.
+// alignas(16) means total size is 32 bytes (rounded up to multiple of 16).
+static_assert(sizeof(PagedAttentionParams) == 32, "C++ sizeof(PagedAttentionParams) expected to be 32 bytes.");
 
 #else // __METAL_VERSION__ (Metal side)
-static_assert(sizeof(PagedAttentionParams) == 48, "Metal sizeof(PagedAttentionParams) expected to be 48 bytes.");
+static_assert(sizeof(PagedAttentionParams) == 32, "Metal sizeof(PagedAttentionParams) expected to be 32 bytes.");
 #endif
 
 /**
