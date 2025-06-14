@@ -1,4 +1,4 @@
-name: metal-lab
+name: run-unit-tests-pal-lab
 
 permissions:
   contents: read
@@ -8,11 +8,24 @@ on: [push, pull_request]
 jobs:
   build-test:
     runs-on: macos-15
+    env:
+      # Disable Metal API validation to avoid shader compilation issues
+      METAL_DEVICE_WRAPPER_TYPE: 0
+      METAL_DEBUG_ERROR_MODE: 0
+      # Ensure deterministic behavior
+      PYTHONHASHSEED: 0
     steps:
       - uses: actions/checkout@v4
       - name: Install MLX & Nanobind
         run: pip install --no-deps "git+https://github.com/TheProxyCompany/mlx.git" "nanobind==2.5.0"
       - name: Python deps
         run: pip install "."
+      - name: Verify MLX installation
+        run: |
+          python -c "import mlx; print(f'MLX version: {mlx.__version__}')"
+          python -c "import mlx.core as mx; print(f'Default device: {mx.default_device()}')"
       - name: Unit tests
-        run: pytest tests/ -q
+        env:
+          # Force MLX to initialize memory to zero
+          MLX_SAFE_MODE: 1
+        run: pytest tests/ -v --tb=short
