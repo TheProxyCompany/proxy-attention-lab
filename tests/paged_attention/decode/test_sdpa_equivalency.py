@@ -51,9 +51,9 @@ logger = logging.getLogger(__name__)
         (1, 64, (32, 16), 128),  # Gemma 3 27b
         (2, 32, (4, 4), 32),  # Batched Example
         (2, 64, (32, 16), 128),  # Gemma 3 27b
+        (3, 128, (32, 16), 128),  # Gemma 3 27b
         (16, 64, (4, 4), 32),  # Batched Example
         # (1, 1024, (32, 16), 128),  # Gemma 3 27b
-        # (2, 2048, (32, 16), 128),  # Batch of 2, Gemma 3 27b
         # (1, 4096, (32, 16), 128),  # Long history, Gemma 3 27b // should use pass 2
         # (1, 8192, (32, 16), 128),  # Long history, Gemma 3 27b // should use pass 2
     ],
@@ -240,9 +240,9 @@ def test_pal_decode_vs_sdpa_equivalency(batch_size, history_len, num_heads, head
     current_rtol = 1e-4
     logger.info(f"    Tolerance values - Absolute: {current_atol}, Relative: {current_rtol}")
 
-    # Assert outputs match within tolerance
-    assert mx.allclose(pal_output_reshaped, sdpa_output_reshaped, atol=current_atol, rtol=current_rtol), (
-        f"Numerical mismatch between PAL paged_attention decode and MLX SDPA for params: "
-        f"bs={batch_size}, hl={history_len}, nqh={num_q_heads}, nkvh={num_kv_heads}, hd={head_dim}, dt={dtype}. "
-        f"Max diff: {max_diff}, Mean diff: {mean_diff}"
-    )
+    if not mx.allclose(pal_output_reshaped, sdpa_output_reshaped, atol=current_atol, rtol=current_rtol):
+        mx.clear_cache()
+        pytest.fail(
+            f"Numerical mismatch between PAL paged_attention decode and MLX SDPA: "
+            f"Max diff: {max_diff}, Mean diff: {mean_diff}"
+        )

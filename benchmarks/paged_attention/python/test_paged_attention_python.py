@@ -138,7 +138,7 @@ def setup_sdpa_decode_inputs(params):
 
 
 # benchmarked up to 1048576 tokens
-@pytest.mark.parametrize("history_len_val", [4096, 8192, 16384, 131072, 524288, 1048576])
+@pytest.mark.parametrize("history_len_val", [64, 128, 256, 1024, 2048, 4096, 8192, 16384, 131072, 524288, 1048576])
 @pytest.mark.parametrize("dtype", [mx.bfloat16])
 def test_pal_decode_latency_vs_history_len(benchmark, history_len_val, dtype):
     """
@@ -182,7 +182,7 @@ def test_pal_decode_latency_vs_history_len(benchmark, history_len_val, dtype):
 
 
 # benchmarked up to 1048576 tokens
-@pytest.mark.parametrize("history_len_val", [4096, 8192, 16384, 131072, 524288, 1048576])
+@pytest.mark.parametrize("history_len_val", [64, 128, 256, 1024, 2048, 4096, 8192, 16384, 131072, 524288, 1048576])
 @pytest.mark.parametrize("dtype", [mx.bfloat16])
 def test_mlx_decode_latency_vs_history_len(benchmark, history_len_val, dtype):
     """

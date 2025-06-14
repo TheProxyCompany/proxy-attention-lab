@@ -19,7 +19,7 @@ import logging
 import mlx.core as mx
 import pytest
 
-from proxy_attention_lab import get_k_cache_shape, get_v_cache_shape, paged_attention
+from proxy_attention_lab.pal_core import get_k_cache_shape, get_v_cache_shape, paged_attention
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +37,7 @@ def test_paged_attention_smoke(dtype) -> None:
     3. The output has the expected dimensions based on input parameters
     4. The output contains valid numerical values (no NaN or Inf)
     """
+    mx.clear_cache()
     logger.info(f"Test: {test_paged_attention_smoke.__name__} (dtype={dtype})")
 
     # Query tensor parameters
