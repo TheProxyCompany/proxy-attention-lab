@@ -699,15 +699,15 @@ inline float dot(Bfloat8 a, Float8 b) {
 template <typename T>
 inline T simd_sum(T v, uint width, uint mask_size = 1) {
     #pragma unroll
-    for (int mask = width / 2; mask >= mask_size; mask /= 2)
-        v += simd_shuffle_xor(v, mask);
+    for (uint xor_stride = width / 2; xor_stride >= mask_size; xor_stride /= 2)
+        v += simd_shuffle_xor(v, xor_stride);
     return v;
 }
 
 template <typename T>
 inline T simd_max(T v, uint width, uint mask_size = 1) {
     #pragma unroll
-    for (int mask = width / 2; mask >= mask_size; mask /= 2)
-        v = max(v, simd_shuffle_xor(v, mask));
+    for (uint xor_stride = width / 2; xor_stride >= mask_size; xor_stride /= 2)
+        v = max(v, simd_shuffle_xor(v, xor_stride));
     return v;
 }

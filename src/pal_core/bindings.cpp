@@ -108,9 +108,9 @@ NB_MODULE(pal_core, m) {
                 - 2D: [NumItems, HeadDim] (NumQHeads implicitly 1)
                 - 3D: [NumTokens, NumQHeads, HeadDim]
             k_cache_pool (mlx.core.array): Global K cache data pool with shape
-                                          [NumTotalPages, NumKVHeads, TokensPerPage, HeadDim].
+                                          [NumTotalPages, NumKVHeads, HeadDim / ElementsPerThread, TokensPerPage, ElementsPerThread].
             v_cache_pool (mlx.core.array): Global V cache data pool with shape
-                                          [NumTotalPages, NumKVHeads, TokensPerPage, HeadDim].
+                                          [NumTotalPages, NumKVHeads, HeadDim / ElementsPerThread, TokensPerPage, ElementsPerThread].
             page_table (mlx.core.array): Page table array mapping logical blocks to physical
                                         page IDs. Shape [NumSequencesInBatch, MaxLogicalBlocksPerSeq].
             sequence_lengths (mlx.core.array): Array of actual lengths for each sequence
