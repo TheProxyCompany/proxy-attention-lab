@@ -348,7 +348,7 @@ template <typename T, int HEAD_DIM, int TOKENS_PER_PAGE>
             }
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
-        // THREADGROUP BARRIER REASON: Ensure all threads have finished writing their results to shared memory.
+        //
 
         // The lower half of the active SIMD groups read and update their accumulators.
         if (simdgroup_idx < mid) {
@@ -362,10 +362,8 @@ template <typename T, int HEAD_DIM, int TOKENS_PER_PAGE>
             }
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
-        // THREADGROUP BARRIER REASON: Ensure all threads have finished reading and updating their accumulators.
     }
     // --- 10. Finalization and Output ---
-    // 10a. Two-Pass Finalization
     if (USE_TWO_PASS) {
         const int max_chunks = (params.max_logical_pages_per_seq * TOKENS_PER_PAGE + CHUNK_SIZE - 1) / CHUNK_SIZE;
         // --- Two-Pass (Pass 1) Finalization ---
@@ -395,10 +393,7 @@ template <typename T, int HEAD_DIM, int TOKENS_PER_PAGE>
             }
         }
         return;
-    }
-
-    // 10b. Single-Pass Finalization
-    if (simdgroup_idx == 0) {
+    } else if (simdgroup_idx == 0) {
         // The output pointer is based on which sequence and head we are.
         device T* out_ptr = output_buffer +
                             (seq_idx * params.num_q_heads * HEAD_DIM) +
