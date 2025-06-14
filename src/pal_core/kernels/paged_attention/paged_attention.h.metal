@@ -348,6 +348,7 @@ template <typename T, int HEAD_DIM, int TOKENS_PER_PAGE>
             }
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
+        // THREADGROUP BARRIER REASON: Ensure all threads have finished writing their results to shared memory.
 
         // The lower half of the active SIMD groups read and update their accumulators.
         if (simdgroup_idx < mid) {
@@ -361,6 +362,7 @@ template <typename T, int HEAD_DIM, int TOKENS_PER_PAGE>
             }
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
+        // THREADGROUP BARRIER REASON: Ensure all threads have finished reading and updating their accumulators.
     }
     // --- 10. Finalization and Output ---
     // 10a. Two-Pass Finalization

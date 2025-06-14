@@ -59,7 +59,7 @@ template <typename T, int head_dim>
         const device T* tmp_in_ptr = tmp_in +
                                      ((ulong)seq_idx * params.num_q_heads * max_num_chunks * head_dim) +
                                      (head_idx * max_num_chunks * head_dim);
-
+        #pragma unroll
         for (int i = local_idx_in_tg; i < head_dim; i += num_threads) {
             out_ptr[i] = tmp_in_ptr[i];
         }
@@ -117,9 +117,10 @@ template <typename T, int head_dim>
     device T* out_ptr = output_buffer +
                    (seq_idx * params.num_q_heads * head_dim) +
                    (head_idx * head_dim);
-
+    #pragma unroll
     for (int i = local_idx_in_tg; i < head_dim; i += num_threads) {
         float acc = 0.0f;
+        #pragma unroll
         for (int j = 0; j < num_chunks; ++j) {
             acc += float(tmp_base_ptr[j * head_dim + i]) * shared_exp_sums[j];
         }
