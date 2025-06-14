@@ -46,9 +46,6 @@ def test_paged_attention_determinism(history_length, batch_size, head_dim, dtype
     num_total_pages = history_length // tokens_per_page
     max_logical_pages_per_seq = (tokens_per_page * 2) // tokens_per_page  # e.g., 2 blocks
 
-    # Seed for reproducibility of input data generation
-    mx.random.seed(11)
-
     # --- Setup Test Inputs (Identical for both calls) ---
     # 1. Queries: 3D [Sequences, NumQHeads, HeadDim]
     queries_shape = (batch_size, num_q_heads, head_dim)

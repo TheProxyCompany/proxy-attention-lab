@@ -74,8 +74,6 @@ def test_pal_decode_vs_sdpa_equivalency(batch_size, history_len, num_heads, head
     This ensures that our implementation matches the standard attention mechanism
     when the inputs are directly comparable.
     """
-    mx.clear_cache()
-    mx.random.seed(11)
     logger.info(f"Test: {test_pal_decode_vs_sdpa_equivalency.__name__}")
 
     num_q_heads, num_kv_heads = num_heads
