@@ -108,7 +108,6 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx:
         throw std::runtime_error("[PAL Primitive] Failed to load kernel: " + kernel_name);
     }
     const size_t simd_width = kernel_state->threadExecutionWidth();
-    const size_t max_threads_per_group = kernel_state->maxTotalThreadsPerThreadgroup();
 
     // 4. Define dispatch grid
     metal::DispatchGrid dispatch_grid;
@@ -134,7 +133,7 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx:
     }
 
     // 6. Determine threadgroup configuration
-    const size_t threads_per_group = std::min(size_t(512), max_threads_per_group); // 1024 is max on apple silicon
+    const size_t threads_per_group = 512; // 1024 is max on apple silicon
     const size_t tg_memory_bytes = calculate_attention_memory_layout(
         params,
         threads_per_group,
