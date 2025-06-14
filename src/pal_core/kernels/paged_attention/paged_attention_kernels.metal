@@ -42,9 +42,9 @@ INSTANTIATE_FILL_KV_PAGES(half,        float16);
 INSTANTIATE_FILL_KV_PAGES(bfloat16_t,  bfloat16);
 
 // --- Instantiation Macro for pal_paged_attention ---
-#define INSTANTIATE_PAL_PAGED_ATTENTION(TYPE, HEAD_DIM, SUFFIX)                                                             \
-    template [[host_name("pal_paged_attention_" #SUFFIX "_" #HEAD_DIM)]] [[kernel]] void                                        \
-    pal_paged_attention<TYPE, HEAD_DIM>(                                                                                        \
+#define INSTANTIATE_PAL_PAGED_ATTENTION(TYPE, HEAD_DIM, TOKENS_PER_PAGE, SUFFIX)                                                             \
+    template [[host_name("pal_paged_attention_" #SUFFIX "_" #HEAD_DIM "_" #TOKENS_PER_PAGE)]] [[kernel]] void                                        \
+    pal_paged_attention<TYPE, HEAD_DIM, TOKENS_PER_PAGE>(                                                                                        \
         device const TYPE*  queries_in               [[buffer(0)]],                                                             \
         device const TYPE*  k_cache_pool_in          [[buffer(1)]],                                                             \
         device const TYPE*  v_cache_pool_in          [[buffer(2)]],                                                             \
@@ -81,37 +81,61 @@ INSTANTIATE_FILL_KV_PAGES(bfloat16_t,  bfloat16);
 // --- Create concrete specializations for common head dimensions ---
 
 // Head dimension 32
-INSTANTIATE_PAL_PAGED_ATTENTION(half,        32, float16)
-INSTANTIATE_PAL_PAGED_ATTENTION(bfloat16_t,  32, bfloat16)
+INSTANTIATE_PAL_PAGED_ATTENTION(half,        32, 16, float16)
+INSTANTIATE_PAL_PAGED_ATTENTION(bfloat16_t,  32, 16, bfloat16)
+// 32 tokens per page
+INSTANTIATE_PAL_PAGED_ATTENTION(half,        32, 32, float16)
+INSTANTIATE_PAL_PAGED_ATTENTION(bfloat16_t,  32, 32, bfloat16)
+
 INSTANTIATE_PAL_PAGED_REDUCE(half,           32, float16)
 INSTANTIATE_PAL_PAGED_REDUCE(bfloat16_t,     32, bfloat16)
 
 // Head dimension 64
-INSTANTIATE_PAL_PAGED_ATTENTION(half,        64, float16)
-INSTANTIATE_PAL_PAGED_ATTENTION(bfloat16_t,  64, bfloat16)
+INSTANTIATE_PAL_PAGED_ATTENTION(half,        64, 16, float16)
+INSTANTIATE_PAL_PAGED_ATTENTION(bfloat16_t,  64, 16, bfloat16)
+// 32 tokens per page
+INSTANTIATE_PAL_PAGED_ATTENTION(half,        64, 32, float16)
+INSTANTIATE_PAL_PAGED_ATTENTION(bfloat16_t,  64, 32, bfloat16)
+
 INSTANTIATE_PAL_PAGED_REDUCE(half,           64, float16)
 INSTANTIATE_PAL_PAGED_REDUCE(bfloat16_t,     64, bfloat16)
 
 // Head dimension 80
-INSTANTIATE_PAL_PAGED_ATTENTION(half,        80, float16)
-INSTANTIATE_PAL_PAGED_ATTENTION(bfloat16_t,  80, bfloat16)
+INSTANTIATE_PAL_PAGED_ATTENTION(half,        80, 16, float16)
+INSTANTIATE_PAL_PAGED_ATTENTION(bfloat16_t,  80, 16, bfloat16)
+// 32 tokens per page
+INSTANTIATE_PAL_PAGED_ATTENTION(half,        80, 32, float16)
+INSTANTIATE_PAL_PAGED_ATTENTION(bfloat16_t,  80, 32, bfloat16)
+
 INSTANTIATE_PAL_PAGED_REDUCE(half,           80, float16)
 INSTANTIATE_PAL_PAGED_REDUCE(bfloat16_t,     80, bfloat16)
 
 // Head dimension 96
-INSTANTIATE_PAL_PAGED_ATTENTION(half,        96, float16)
-INSTANTIATE_PAL_PAGED_ATTENTION(bfloat16_t,  96, bfloat16)
+INSTANTIATE_PAL_PAGED_ATTENTION(half,        96, 16, float16)
+INSTANTIATE_PAL_PAGED_ATTENTION(bfloat16_t,  96, 16, bfloat16)
+// 32 tokens per page
+INSTANTIATE_PAL_PAGED_ATTENTION(half,        96, 32, float16)
+INSTANTIATE_PAL_PAGED_ATTENTION(bfloat16_t,  96, 32, bfloat16)
+
 INSTANTIATE_PAL_PAGED_REDUCE(half,           96, float16)
 INSTANTIATE_PAL_PAGED_REDUCE(bfloat16_t,     96, bfloat16)
 
 // Head dimension 128
-INSTANTIATE_PAL_PAGED_ATTENTION(half,        128, float16)
-INSTANTIATE_PAL_PAGED_ATTENTION(bfloat16_t,  128, bfloat16)
+INSTANTIATE_PAL_PAGED_ATTENTION(half,        128, 16, float16)
+INSTANTIATE_PAL_PAGED_ATTENTION(bfloat16_t,  128, 16, bfloat16)
+// 32 tokens per page
+INSTANTIATE_PAL_PAGED_ATTENTION(half,        128, 32, float16)
+INSTANTIATE_PAL_PAGED_ATTENTION(bfloat16_t,  128, 32, bfloat16)
+
 INSTANTIATE_PAL_PAGED_REDUCE(half,           128, float16)
 INSTANTIATE_PAL_PAGED_REDUCE(bfloat16_t,     128, bfloat16)
 
 // Head dimension 256
-INSTANTIATE_PAL_PAGED_ATTENTION(half,        256, float16)
-INSTANTIATE_PAL_PAGED_ATTENTION(bfloat16_t,  256, bfloat16)
+INSTANTIATE_PAL_PAGED_ATTENTION(half,        256, 16, float16)
+INSTANTIATE_PAL_PAGED_ATTENTION(bfloat16_t,  256, 16, bfloat16)
+// 32 tokens per page
+INSTANTIATE_PAL_PAGED_ATTENTION(half,        256, 32, float16)
+INSTANTIATE_PAL_PAGED_ATTENTION(bfloat16_t,  256, 32, bfloat16)
+
 INSTANTIATE_PAL_PAGED_REDUCE(half,           256, float16)
 INSTANTIATE_PAL_PAGED_REDUCE(bfloat16_t,     256, bfloat16)

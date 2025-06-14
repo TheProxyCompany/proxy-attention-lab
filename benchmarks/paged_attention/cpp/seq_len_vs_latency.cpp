@@ -57,9 +57,6 @@ struct BaselineConfig {
 // Decode-specific batch size
 const int DECODE_BATCH_SIZE = 1;
 
-const int SIMD_WIDTH = 32;
-const int MAX_THREADGROUP_MEMORY_LENGTH = 32768;
-
 // Helper function to create causal mask (for SDPA)
 mx::array create_causal_mask(int seq_len, mx::Dtype dtype) {
     auto ones = mx::full({seq_len, seq_len}, 1.0f, dtype);
@@ -118,21 +115,25 @@ static void BM_PAL_DecodeLatencyVsHistoryLen(benchmark::State& state) {
         dtype
     );
 
-    // K/V cache pools sized for the history: [num_total_physical_pages, num_kv_heads, tokens_per_page, head_dim]
-    mx::array k_cache_pool = mx::random::normal(
-        {num_total_physical_pages, num_kv_heads, tokens_per_page, head_dim},
-        dtype
+    // Use the new helper functions to get correct cache shapes
+    // K-cache shape: [num_total_physical_pages, num_kv_heads, head_dim / elements_per_thread, tokens_per_page, elements_per_thread]
+    mx::Shape k_cache_shape = pal::cpp::PagedAttentionPrimitive::get_k_cache_shape(
+        num_total_physical_pages, num_kv_heads, head_dim, tokens_per_page, dtype
     );
-    mx::array v_cache_pool = mx::random::normal(
-        {num_total_physical_pages, num_kv_heads, tokens_per_page, head_dim},
-        dtype
+    mx::array k_cache_pool = mx::random::normal(k_cache_shape, dtype);
+
+    // V-cache shape: [num_total_physical_pages, num_kv_heads, head_dim, tokens_per_page]
+    mx::Shape v_cache_shape = pal::cpp::PagedAttentionPrimitive::get_v_cache_shape(
+        num_total_physical_pages, num_kv_heads, head_dim, tokens_per_page, dtype
     );
+    mx::array v_cache_pool = mx::random::normal(v_cache_shape, dtype);
 
     // Create page table: [num_sequences_in_batch, num_logical_pages_per_seq]
     mx::array page_table = create_page_table(batch_size, num_logical_pages_per_seq);
 
     // Set sequence length for each batch item to the history length
     mx::array sequence_lengths = mx::full({batch_size}, history_len, mx::int32);
+
     // Main benchmark loop
     for (auto _ : state) {
         mx::array out = pal::cpp::paged_attention(

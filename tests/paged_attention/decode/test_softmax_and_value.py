@@ -23,7 +23,7 @@ import logging
 import mlx.core as mx
 import pytest
 
-from proxy_attention_lab import paged_attention
+from proxy_attention_lab import get_k_cache_shape, get_k_cache_stripe_size, get_v_cache_shape, paged_attention
 
 logger = logging.getLogger(__name__)
 
@@ -59,17 +59,26 @@ def test_v_aggregation_decode_single_sequence(head_dim, dtype) -> None:
     py_queries = mx.ones((num_seqs, num_q_heads, head_dim), dtype=dtype)
     logger.info(f"  Query shape: {py_queries.shape}")
 
-    # K-cache: [num_pages, num_kv_heads, tokens_per_page, head_dim]
-    # Initialize with zeros, then set specific values
+    # K-cache: [NumPhysPages, NumKVHeads, HeadDim // QK_VECTOR_WIDTH, TokensPerPage, QK_VECTOR_WIDTH]
+    # Initialize with zeros, then set specific values using striped format
     num_pages = 1
-    py_k_cache_pool = mx.zeros((num_pages, num_kv_heads, tokens_per_page, head_dim), dtype=dtype)
-    # Set K for token 0: first 4 dims = 1.0, rest = 0.0
-    py_k_cache_pool[0, 0, 0, :4] = 1.0
+    k_cache_shape = get_k_cache_shape(num_pages, num_kv_heads, head_dim, tokens_per_page, dtype)
+    py_k_cache_pool = mx.zeros(k_cache_shape, dtype=dtype)
 
-    # V-cache: [num_pages, num_kv_heads, tokens_per_page, head_dim]
-    py_v_cache_pool = mx.zeros((num_pages, num_kv_heads, tokens_per_page, head_dim), dtype=dtype)
+    # Set K for token 0: first 4 dims = 1.0, rest = 0.0
+    # Create a K vector and write it in striped fashion
+    k_vec = mx.zeros(head_dim, dtype=dtype)
+    k_vec[:4] = 1.0
+    for d in range(head_dim):
+        stripe_idx = d // get_k_cache_stripe_size(dtype)
+        offset_in_stripe = d % get_k_cache_stripe_size(dtype)
+        py_k_cache_pool[0, 0, stripe_idx, 0, offset_in_stripe] = k_vec[d]
+
+    # V-cache: [num_pages, num_kv_heads, head_dim, tokens_per_page]
+    v_cache_shape = get_v_cache_shape(num_pages, num_kv_heads, head_dim, tokens_per_page, dtype)
+    py_v_cache_pool = mx.zeros(v_cache_shape, dtype=dtype)
     # Set V for token 0: distinctive pattern for verification
-    py_v_cache_pool[0, 0, 0, :4] = mx.array([10.0, 20.0, 30.0, 40.0], dtype=dtype)
+    py_v_cache_pool[0, 0, :4, 0] = mx.array([10.0, 20.0, 30.0, 40.0], dtype=dtype)
 
     # Page table: [num_seqs, max_logical_pages_per_seq]
     # Sequence 0 uses physical page 0
@@ -96,13 +105,7 @@ def test_v_aggregation_decode_single_sequence(head_dim, dtype) -> None:
     mx.eval(py_context_lens)
 
     # --- Run paged attention decode ---
-    output_arr = paged_attention(
-        py_queries,
-        py_k_cache_pool,
-        py_v_cache_pool,
-        py_page_table,
-        py_context_lens
-    )
+    output_arr = paged_attention(py_queries, py_k_cache_pool, py_v_cache_pool, py_page_table, py_context_lens)
     mx.eval(output_arr)
 
     logger.info("  Attention Output:")
@@ -143,21 +146,41 @@ def test_decode_multi_token_context(dtype) -> None:
     # Setup inputs
     py_queries = mx.ones((num_seqs, num_q_heads, head_dim), dtype=dtype)
 
-    # K-cache with 3 different keys
+    # K-cache with 3 different keys using striped format
     num_pages = 1
-    py_k_cache_pool = mx.zeros((num_pages, num_kv_heads, tokens_per_page, head_dim), dtype=dtype)
-    # Token 0: [1,1,0,0,...]
-    py_k_cache_pool[0, 0, 0, :2] = 1.0
-    # Token 1: [0,1,1,0,...]
-    py_k_cache_pool[0, 0, 1, 1:3] = 1.0
-    # Token 2: [0,0,1,1,...]
-    py_k_cache_pool[0, 0, 2, 2:4] = 1.0
+    k_cache_shape = get_k_cache_shape(num_pages, num_kv_heads, head_dim, tokens_per_page, dtype)
+    py_k_cache_pool = mx.zeros(k_cache_shape, dtype=dtype)
 
-    # V-cache with distinct values
-    py_v_cache_pool = mx.zeros((num_pages, num_kv_heads, tokens_per_page, head_dim), dtype=dtype)
-    py_v_cache_pool[0, 0, 0, :4] = mx.array([1.0, 0.0, 0.0, 0.0], dtype=dtype)
-    py_v_cache_pool[0, 0, 1, :4] = mx.array([0.0, 1.0, 0.0, 0.0], dtype=dtype)
-    py_v_cache_pool[0, 0, 2, :4] = mx.array([0.0, 0.0, 1.0, 0.0], dtype=dtype)
+    # Token 0: [1,1,0,0,...]
+    k_vec_0 = mx.zeros(head_dim, dtype=dtype)
+    k_vec_0[:2] = 1.0
+    for d in range(head_dim):
+        stripe_idx = d // get_k_cache_stripe_size(dtype)
+        offset_in_stripe = d % get_k_cache_stripe_size(dtype)
+        py_k_cache_pool[0, 0, stripe_idx, 0, offset_in_stripe] = k_vec_0[d]
+
+    # Token 1: [0,1,1,0,...]
+    k_vec_1 = mx.zeros(head_dim, dtype=dtype)
+    k_vec_1[1:3] = 1.0
+    for d in range(head_dim):
+        stripe_idx = d // get_k_cache_stripe_size(dtype)
+        offset_in_stripe = d % get_k_cache_stripe_size(dtype)
+        py_k_cache_pool[0, 0, stripe_idx, 1, offset_in_stripe] = k_vec_1[d]
+
+    # Token 2: [0,0,1,1,...]
+    k_vec_2 = mx.zeros(head_dim, dtype=dtype)
+    k_vec_2[2:4] = 1.0
+    for d in range(head_dim):
+        stripe_idx = d // get_k_cache_stripe_size(dtype)
+        offset_in_stripe = d % get_k_cache_stripe_size(dtype)
+        py_k_cache_pool[0, 0, stripe_idx, 2, offset_in_stripe] = k_vec_2[d]
+
+    # V-cache with distinct values - shape is [num_pages, num_kv_heads, head_dim, tokens_per_page]
+    v_cache_shape = get_v_cache_shape(num_pages, num_kv_heads, head_dim, tokens_per_page, dtype)
+    py_v_cache_pool = mx.zeros(v_cache_shape, dtype=dtype)
+    py_v_cache_pool[0, 0, :4, 0] = mx.array([1.0, 0.0, 0.0, 0.0], dtype=dtype)
+    py_v_cache_pool[0, 0, :4, 1] = mx.array([0.0, 1.0, 0.0, 0.0], dtype=dtype)
+    py_v_cache_pool[0, 0, :4, 2] = mx.array([0.0, 0.0, 1.0, 0.0], dtype=dtype)
 
     py_page_table = mx.array([[0]], dtype=mx.uint32)
     py_context_lens = mx.array([context_len], dtype=mx.int32)
@@ -165,12 +188,23 @@ def test_decode_multi_token_context(dtype) -> None:
     # Calculate expected output
     scale = 1.0 / mx.sqrt(mx.array(float(head_dim))).item()
 
+    # Helper to reconstruct K-vector from striped cache
+    def get_k_vector_from_striped_cache(cache, token_idx):
+        vec = mx.zeros(head_dim, dtype=dtype)
+        for d in range(head_dim):
+            stripe_idx = d // get_k_cache_stripe_size(dtype)
+            offset_in_stripe = d % get_k_cache_stripe_size(dtype)
+            vec[d] = cache[0, 0, stripe_idx, token_idx, offset_in_stripe]
+        return vec
+
     # Compute scores: Q·K for each cached token
-    scores = mx.array([
-        2.0 * scale,  # Token 0: dot([1,1,1,1,...], [1,1,0,0,...]) = 2
-        2.0 * scale,  # Token 1: dot([1,1,1,1,...], [0,1,1,0,...]) = 2
-        2.0 * scale   # Token 2: dot([1,1,1,1,...], [0,0,1,1,...]) = 2
-    ], dtype=mx.float32)
+    scores = []
+    for i in range(context_len):
+        k_vec = get_k_vector_from_striped_cache(py_k_cache_pool, i)
+        score = mx.sum(py_queries[0, 0] * k_vec) * scale
+        scores.append(score)
+
+    scores = mx.array(scores, dtype=mx.float32)
 
     # Softmax: all scores are equal, so each gets 1/3 probability
     probs = mx.softmax(scores)
@@ -179,7 +213,7 @@ def test_decode_multi_token_context(dtype) -> None:
     expected_output = mx.zeros((num_seqs * num_q_heads, head_dim), dtype=dtype)
     for i in range(3):
         v_vec = mx.zeros(head_dim, dtype=dtype)
-        v_vec[:4] = py_v_cache_pool[0, 0, i, :4]
+        v_vec[:4] = py_v_cache_pool[0, 0, :4, i]
         expected_output[0] += v_vec * probs[i].item()
 
     mx.eval(py_queries, py_k_cache_pool, py_v_cache_pool, py_page_table, py_context_lens)

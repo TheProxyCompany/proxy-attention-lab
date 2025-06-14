@@ -26,7 +26,12 @@ import mlx.core as mx
 import pytest
 
 from proxy_attention_lab import paged_attention
-from proxy_attention_lab.pal_core import get_optimal_page_size
+from proxy_attention_lab.pal_core import (
+    get_k_cache_shape,
+    get_k_cache_stripe_size,
+    get_optimal_page_size,
+    get_v_cache_shape,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -61,12 +66,6 @@ def test_pal_decode_vs_sdpa_equivalency(batch_size, history_len, num_heads, head
     - History lengths (shorter and longer)
     - Head configurations (including MQA and GQA variants)
     - Head dimensions
-
-    The test:
-    1. Runs MLX SDPA with random inputs as the reference implementation
-    2. Converts those same inputs to the format expected by paged_attention in decode mode
-    3. Runs paged_attention with is_prefill=False and reshapes the output to match SDPA's output format
-    4. Compares the outputs to ensure they're numerically equivalent within tolerance
 
     This ensures that our implementation matches the standard attention mechanism
     when the inputs are directly comparable.
@@ -121,13 +120,18 @@ def test_pal_decode_vs_sdpa_equivalency(batch_size, history_len, num_heads, head
     # Each sequence has a single query token
     pal_queries = sdpa_queries.reshape(batch_size, num_q_heads, head_dim)
 
-    # Create empty KV cache pools with new layout: [pages, kv_heads, tokens, head_dim]
-    pal_k_cache_pool = mx.zeros((num_total_physical_pages, num_kv_heads, tokens_per_page, head_dim), dtype=dtype)
-    pal_v_cache_pool = mx.zeros((num_total_physical_pages, num_kv_heads, tokens_per_page, head_dim), dtype=dtype)
+    # Create empty KV cache pools with new layout:
+    # K-cache: [pages, kv_heads, head_dim // stripe_size, tokens, stripe_size] (striped format)
+    # V-cache: [pages, kv_heads, head_dim, tokens] (dimension order changed)
+    k_cache_shape = get_k_cache_shape(num_total_physical_pages, num_kv_heads, head_dim, tokens_per_page, dtype)
+    v_cache_shape = get_v_cache_shape(num_total_physical_pages, num_kv_heads, head_dim, tokens_per_page, dtype)
+    pal_k_cache_pool = mx.zeros(k_cache_shape, dtype=dtype)
+    pal_v_cache_pool = mx.zeros(v_cache_shape, dtype=dtype)
 
     logger.info("  Preparing PAL paged_attention inputs for decode mode:")
     logger.info(f"    PAL queries shape: {pal_queries.shape}")
-    logger.info(f"    KV cache shape: {pal_k_cache_pool.shape}")
+    logger.info(f"    K cache shape: {pal_k_cache_pool.shape}")
+    logger.info(f"    V cache shape: {pal_v_cache_pool.shape}")
     logger.info(f"    Logical pages per sequence: {num_logical_pages_per_seq}")
     logger.info(f"    Total physical pages: {num_total_physical_pages}")
 
@@ -150,9 +154,21 @@ def test_pal_decode_vs_sdpa_equivalency(batch_size, history_len, num_heads, head
                     keys_for_head_slice = keys_to_cache_b[kv_h_idx, token_start_in_seq:token_end_in_seq, :]
                     values_for_head_slice = values_to_cache_b[kv_h_idx, token_start_in_seq:token_end_in_seq, :]
 
-                    # Place the slice into the new layout
-                    pal_k_cache_pool[physical_page_idx, kv_h_idx, :tokens_to_copy_count, :] = keys_for_head_slice
-                    pal_v_cache_pool[physical_page_idx, kv_h_idx, :tokens_to_copy_count, :] = values_for_head_slice
+                    # Write K-cache using striped format with vectorized operations
+                    stripe_size = get_k_cache_stripe_size(dtype)
+                    num_stripes = head_dim // stripe_size
+
+                    # Reshape keys to match striped format: [tokens, num_stripes, stripe_size]
+                    keys_reshaped = keys_for_head_slice.reshape(tokens_to_copy_count, num_stripes, stripe_size)
+
+                    # Transpose to [num_stripes, tokens, stripe_size] to match cache layout
+                    keys_striped = mx.transpose(keys_reshaped, (1, 0, 2))
+
+                    # Write all stripes at once
+                    pal_k_cache_pool[physical_page_idx, kv_h_idx, :, :tokens_to_copy_count, :] = keys_striped
+
+                    # Write V-cache with new dimension order: [page, kv_head, head_dim, token]
+                    pal_v_cache_pool[physical_page_idx, kv_h_idx, :, :tokens_to_copy_count] = values_for_head_slice.T
 
     # Create page table mapping
     pal_page_table_list = []

@@ -101,15 +101,18 @@ static void BM_PAL_DecodeBatchLatencyVsHistoryLength(benchmark::State& state) {
         dtype
     );
 
-    // K/V cache pools sized for the history: [num_total_physical_pages, num_kv_heads, tokens_per_page, head_dim]
-    mx::array k_cache_pool = mx::random::normal(
-        {num_total_physical_pages, num_kv_heads, tokens_per_page, head_dim},
-        dtype
+    // Use the new helper functions to get correct cache shapes
+    // K-cache shape: [num_total_physical_pages, num_kv_heads, head_dim / elements_per_thread, tokens_per_page, elements_per_thread]
+    mx::Shape k_cache_shape = pal::cpp::PagedAttentionPrimitive::get_k_cache_shape(
+        num_total_physical_pages, num_kv_heads, head_dim, tokens_per_page, dtype
     );
-    mx::array v_cache_pool = mx::random::normal(
-        {num_total_physical_pages, num_kv_heads, tokens_per_page, head_dim},
-        dtype
+    mx::array k_cache_pool = mx::random::normal(k_cache_shape, dtype);
+
+    // V-cache shape: [num_total_physical_pages, num_kv_heads, head_dim, tokens_per_page]
+    mx::Shape v_cache_shape = pal::cpp::PagedAttentionPrimitive::get_v_cache_shape(
+        num_total_physical_pages, num_kv_heads, head_dim, tokens_per_page, dtype
     );
+    mx::array v_cache_pool = mx::random::normal(v_cache_shape, dtype);
 
     // Create page table: [num_sequences_in_batch, num_logical_pages_per_seq]
     mx::array page_table = create_page_table(num_sequences, num_logical_pages_per_seq);
@@ -264,8 +267,8 @@ static void BM_MLX_SDPA_DecodeBatchLatencyVsHistoryLength(benchmark::State& stat
     }
 }
 
-const int REPETITIONS = 3;
-const int ITERATIONS = 3;
+const int REPETITIONS = 10;
+const int ITERATIONS = 100;
 
 // PAL: Benchmark varying H (history length) for each batch size
 BENCHMARK(BM_PAL_DecodeBatchLatencyVsHistoryLength)

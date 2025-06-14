@@ -23,7 +23,7 @@ import logging
 import mlx.core as mx
 import pytest
 
-from proxy_attention_lab import paged_attention
+from proxy_attention_lab import get_k_cache_shape, get_k_cache_stripe_size, get_v_cache_shape, paged_attention
 
 logger = logging.getLogger(__name__)
 
@@ -67,41 +67,52 @@ def test_full_attention_in_one_block(head_dim, dtype) -> None:
     q_values = mx.arange(1, cfg_head_dim + 1, dtype=dtype) / 10.0
     py_queries = mx.array([q_values.tolist()], dtype=dtype)
 
-    # 2. K-Cache Pool: [NumPhysPages, NumKVHeads, TokensPerPage, HeadDim]
+    # 2. K-Cache Pool: [NumPhysPages, NumKVHeads, HeadDim // QK_VECTOR_WIDTH, TokensPerPage, QK_VECTOR_WIDTH]
     num_physical_pages = 1
-    k_cache_shape = (num_physical_pages, cfg_num_kv_heads, cfg_tokens_per_page, cfg_head_dim)
+    k_cache_shape = get_k_cache_shape(num_physical_pages, cfg_num_kv_heads, cfg_head_dim, cfg_tokens_per_page, dtype)
     py_k_cache_pool = mx.zeros(k_cache_shape, dtype=dtype)
 
-    # Historical K-vectors with different values to produce different scores
-    # Create distinct patterns for each position in the KV cache
+    # 2. New Population Logic
     k_multipliers = [1.0, 2.0, 0.5]
+    for token_pos, multiplier in enumerate(k_multipliers):
+        # Create the vector for this token
+        k_vec = mx.ones(cfg_head_dim, dtype=dtype) * multiplier
+        # Write it to the cache in a striped fashion
+        for d in range(cfg_head_dim):
+            stripe_idx = d // get_k_cache_stripe_size(dtype)
+            offset_in_stripe = d % get_k_cache_stripe_size(dtype)
+            py_k_cache_pool[0, 0, stripe_idx, token_pos, offset_in_stripe] = k_vec[d]
 
-    # Create a more efficient setup using broadcasting
-    for pos, multiplier in enumerate(k_multipliers):
-        py_k_cache_pool[0, 0, pos, :] = mx.ones(cfg_head_dim, dtype=dtype) * multiplier
-
-    logger.info("  KV Cache Setup:")
-    for pos in range(len(k_multipliers)):
-        logger.info(f"    K at position {pos}: {py_k_cache_pool[0, 0, pos, :5]}...")  # Show first 5 elements
+    logger.info("  K-Cache Striped Layout:")
+    logger.info(f"    Stripe 0, Token 0: {py_k_cache_pool[0, 0, 0, 0, :]}")
+    logger.info(f"    Stripe 0, Token 1: {py_k_cache_pool[0, 0, 0, 1, :]}")
+    logger.info(f"    Stripe 0, Token 2: {py_k_cache_pool[0, 0, 0, 2, :]}")
 
     # 3. V-Cache Pool with distinct values for each position
-    py_v_cache_pool = mx.zeros(k_cache_shape, dtype=dtype)
+    v_cache_shape = get_v_cache_shape(num_physical_pages, cfg_num_kv_heads, cfg_head_dim, cfg_tokens_per_page, dtype)
+    py_v_cache_pool = mx.zeros(v_cache_shape, dtype=dtype)
 
-    # More efficient V-cache setup using vectorized operations
-    # Create base values for each position (10.0, 20.0, 30.0)
     v_base_values = [10.0, 20.0, 30.0]
-
-    # For each position, set ascending values starting from the base
     for pos, base in enumerate(v_base_values):
-        py_v_cache_pool[0, 0, pos, :] = mx.arange(base, base + cfg_head_dim, dtype=dtype)
+        # V cache shape is now [num_pages, num_kv_heads, head_dim, tokens_per_page]
+        # So we need to set values at py_v_cache_pool[0, 0, :, pos]
+        py_v_cache_pool[0, 0, :, pos] = mx.arange(base, base + cfg_head_dim, dtype=dtype)
 
-    mx.eval(py_queries)
+    # --- Python Reference Calculation (NEW) ---
+    # Helper to reconstruct a K-vector from the striped cache
+    def get_k_vector_from_striped_cache(cache, token_idx):
+        vec = mx.zeros(cfg_head_dim, dtype=dtype)
+        for d in range(cfg_head_dim):
+            stripe_idx = d // get_k_cache_stripe_size(dtype)
+            offset_in_stripe = d % get_k_cache_stripe_size(dtype)
+            vec[d] = cache[0, 0, stripe_idx, token_idx, offset_in_stripe]
+        return vec
 
     # Debug: Check what values are actually stored
     logger.info("  V-Cache Values:")
     for pos in range(len(v_base_values)):
-        logger.info(f"    V[{pos}] first few: {py_v_cache_pool[0, 0, pos, :5]}")
-        logger.info(f"    V[{pos}] last few: {py_v_cache_pool[0, 0, pos, -5:]}")
+        logger.info(f"    V[{pos}] first few: {py_v_cache_pool[0, 0, :, pos][:5]}")
+        logger.info(f"    V[{pos}] last few: {py_v_cache_pool[0, 0, :, pos][-5:]}")
 
     # 4. Page Table: Maps logical block 0 to physical page 0
     py_page_table = mx.array([[0]], dtype=mx.uint32)  # Shape (1, 1)
@@ -114,9 +125,12 @@ def test_full_attention_in_one_block(head_dim, dtype) -> None:
     # Scale factor for dot product
     py_scale = 1.0 / mx.sqrt(mx.array(float(cfg_head_dim))).item()
 
-    # Calculate scores for each history position
-    # Use float32 for reference math to avoid dtype shenanigans
-    scores = [mx.sum(py_queries[0] * py_k_cache_pool[0, 0, i, :]) * py_scale for i in range(3)]
+    # Calculate scores using the helper
+    scores = []
+    for i in range(current_position):
+        k_vec_reconstructed = get_k_vector_from_striped_cache(py_k_cache_pool, i)
+        score = mx.sum(py_queries[0] * k_vec_reconstructed) * py_scale
+        scores.append(score)
 
     logger.info("  Attention Scores:")
     logger.info(f"    Position 0 score: {scores[0]:.4f}")
@@ -131,13 +145,13 @@ def test_full_attention_in_one_block(head_dim, dtype) -> None:
     # Expected weighted sum of V-vectors
     expected_v = mx.zeros(cfg_head_dim, dtype=mx.float32)
     for i, prob in enumerate(probs):
-        v_vec = py_v_cache_pool[0, 0, i, :].astype(mx.float32)
+        v_vec = py_v_cache_pool[0, 0, :, i].astype(mx.float32)
         expected_v += v_vec * prob
 
     expected_v_reshaped = expected_v.astype(dtype).reshape(1, cfg_head_dim)
     mx.eval(expected_v_reshaped)
 
-    old_v_cache_point = [i for i in py_v_cache_pool[0, 0, 1, :].tolist()]
+    old_v_cache_point = [i for i in py_v_cache_pool[0, 0, :, 1].tolist()]
     logger.info(f"  Old v cache point: {old_v_cache_point[:5]}, {old_v_cache_point[-5:]}")
 
     old_k_cache_point = [i for i in py_k_cache_pool[0, 0, 1, :].tolist()]
@@ -153,7 +167,7 @@ def test_full_attention_in_one_block(head_dim, dtype) -> None:
     logger.info(f"    Expected V-aggregation: {expected_v_reshaped}")
     logger.info(f"    Actual output: {output_arr}")
 
-    new_v_cache_point = [i for i in py_v_cache_pool[0, 0, 1, :].tolist()]
+    new_v_cache_point = [i for i in py_v_cache_pool[0, 0, :, 1].tolist()]
     logger.info(f"  New v cache point: {new_v_cache_point[:5]}, {new_v_cache_point[-5:]}")
 
     new_k_cache_point = [i for i in py_k_cache_pool[0, 0, 1, :].tolist()]

@@ -41,6 +41,28 @@ using namespace nb::literals;
 NB_MODULE(pal_core, m) {
   m.doc() = "PAL C++ bindings: Paged Attention Operation";
 
+  m.def("get_k_cache_stripe_size", [](const mx::Dtype& dtype) {
+    return MEMORY_ALIGNMENT_BYTES / mx::size_of(dtype);
+  }, "dtype"_a, nb::sig("def get_k_cache_stripe_size(dtype: mlx.core.Dtype) -> int"), R"doc(
+        Calculates the stripe size for the K cache.
+    )doc");
+
+  m.def(
+    "get_v_cache_shape",
+    pal::cpp::PagedAttentionPrimitive::get_v_cache_shape,
+    nb::sig("def get_v_cache_shape(num_total_pages: int, num_kv_heads: int, head_dim: int, tokens_per_page: int, dtype: mlx.core.Dtype) -> mlx.core.Shape"),
+    R"doc(
+        Calculates the shape of the V cache.
+    )doc");
+
+  m.def(
+    "get_k_cache_shape",
+    pal::cpp::PagedAttentionPrimitive::get_k_cache_shape,
+    nb::sig("def get_k_cache_shape(num_total_pages: int, num_kv_heads: int, head_dim: int, tokens_per_page: int, dtype: mlx.core.Dtype) -> mlx.core.Shape"),
+    R"doc(
+        Calculates the shape of the K cache.
+    )doc");
+
   m.def(
     "get_optimal_page_size",
     pal::cpp::PagedAttentionPrimitive::get_optimal_page_size,

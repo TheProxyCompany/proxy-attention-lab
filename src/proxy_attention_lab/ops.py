@@ -16,8 +16,24 @@
 
 import mlx.core as mx
 
-from proxy_attention_lab.pal_core import fill_kv_pages as cpp_fill_kv_pages_kernel
-from proxy_attention_lab.pal_core import paged_attention as cpp_paged_attention_kernel
+from proxy_attention_lab.pal_core import (
+    fill_kv_pages as cpp_fill_kv_pages_kernel,
+)
+from proxy_attention_lab.pal_core import (
+    get_k_cache_stripe_size as cpp_get_k_cache_stripe_size,
+)
+from proxy_attention_lab.pal_core import (
+    paged_attention as cpp_paged_attention_kernel,
+)
+
+
+def get_k_cache_stripe_size(dtype: mx.Dtype) -> int:
+    """Calculates the stripe size for the K cache.
+
+    Args:
+        dtype: The data type of the K cache.
+    """
+    return cpp_get_k_cache_stripe_size(dtype)
 
 
 def paged_attention(

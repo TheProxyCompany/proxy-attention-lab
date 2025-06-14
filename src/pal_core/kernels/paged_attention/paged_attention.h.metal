@@ -1,5 +1,5 @@
 // paged_attention.h.metal
-// Metal shader header for paged attention operations with tiled V accumulation.
+// Optimized Paged Attention kernel for Metal.
 //
 // Copyright 2025 The Proxy Company. All Rights Reserved.
 //
@@ -26,7 +26,7 @@ using namespace metal;
 
 constant bool USE_TWO_PASS [[function_constant(0)]];
 
-template <typename T, int head_dim>
+template <typename T, int HEAD_DIM, int TOKENS_PER_PAGE>
 [[kernel]] void pal_paged_attention(
     device const T*      queries_in             [[buffer(0)]],
     device const T*      k_cache_pool_in        [[buffer(1)]],
@@ -46,6 +46,14 @@ template <typename T, int head_dim>
     uint3                tg_pos_in_grid         [[threadgroup_position_in_grid]],
     uint                 local_idx_in_tg        [[thread_index_in_threadgroup]]
 ) {
+    // Align our K cache to a MEMORY_ALIGNMENT_BYTES byte boundary for coalesced device memory access
+    //
+    // credit: https://github.com/EricLBuehler/mistral.rs/blob/master/mistralrs-paged-attn/src/metal/kernels/pagedattention.metal
+    // for initial implementation and reference (they use x = 16 / sizeof(T))
+    // =================================================================================
+    // Physical memory access width (for coalesced device memory access)
+    constexpr int ELEMENTS_PER_THREAD = MEMORY_ALIGNMENT_BYTES / sizeof(T);
+
     // --- 1. Identification ---
     uint seq_idx = tg_pos_in_grid.x;
     uint q_head_idx = tg_pos_in_grid.y;
@@ -54,331 +62,352 @@ template <typename T, int head_dim>
     // Determine the KV head this Q head should attend to.
     const int num_q_per_kv = params.num_q_heads / params.num_kv_heads;
     const int kv_head_id = q_head_idx / num_q_per_kv;
-    const uint head_dim_vec4 = head_dim / 4;
 
     // simd group and lane indices
-    const int simd_width = params.simd_width;
-    const int num_simd_groups = num_threads / simd_width;
-    const int simdgroup_idx = local_idx_in_tg / simd_width;
-    const int lane_idx = local_idx_in_tg % simd_width;
+    const int num_simd_groups = num_threads / SIMD_WIDTH;
+    const int simdgroup_idx = local_idx_in_tg / SIMD_WIDTH;
+    const int lane_idx = local_idx_in_tg % SIMD_WIDTH;
 
-    // --- 2. Partition Threadgroup Memory ---
-    // The threadgroup memory is partitioned into 5 sections:
-    // 1. Q tile (head_dim * sizeof(float))
-    // 2. K tile (params.tokens_per_page * head_dim * sizeof(T))
-    // 3. V tile (params.tokens_per_page * head_dim * sizeof(T))
-    // 4. Page table slice (params.max_logical_pages_per_seq * sizeof(uint))
-    // 5. Reduction scratch (num_simd_groups * 2 * sizeof(float)) + acc_tile
-    // helper – works at compile time
+    // subgroup indices and lane offsets
+    const int SUBGROUP_SIZE = MAX(SIMD_WIDTH / TOKENS_PER_PAGE, 1);
+    const int NUM_SUBGROUPS = num_threads / SUBGROUP_SIZE;
+    // where this subgroup is, "global" index
+    const int subgroup_idx = local_idx_in_tg / SUBGROUP_SIZE;
+    // where this thread is in the subgroup, "local" index
+    const int subgroup_lane_offset = local_idx_in_tg % SUBGROUP_SIZE;
+
+    // Logical computation vector width (for vectorized computation)
+    constexpr int QK_VECTOR_WIDTH = MAX(MEMORY_ALIGNMENT_BYTES / (SUBGROUP_SIZE * sizeof(T)), 1);
+
+    // how many vectors per thread
+    const int num_vecs_per_thread = HEAD_DIM / (SUBGROUP_SIZE * QK_VECTOR_WIDTH);
+
+    // vector types
+    using VecQ = typename Vec<T, QK_VECTOR_WIDTH>::Type;
+    using ScaledQVec = typename Vec<float, QK_VECTOR_WIDTH>::Type;
+    using VecK = typename Vec<T, QK_VECTOR_WIDTH>::Type;
 
     // --- 2. Partition Threadgroup Memory ---
     threadgroup uchar* current_mem_ptr = tg_mem;
 
-    threadgroup float* q_tile = (threadgroup float*)current_mem_ptr;
-    current_mem_ptr = (threadgroup uchar*)ALIGN16(current_mem_ptr + (head_dim * sizeof(float)));
-
-    threadgroup T* k_tile = (threadgroup T*)current_mem_ptr;
-    current_mem_ptr = (threadgroup uchar*)ALIGN16(current_mem_ptr + (params.tokens_per_page * head_dim * sizeof(T)));
-
-    threadgroup T* v_tile = (threadgroup T*)current_mem_ptr;
-    current_mem_ptr = (threadgroup uchar*)ALIGN16(current_mem_ptr + (params.tokens_per_page * head_dim * sizeof(T)));
+    // load the query vectors into shared memory
+    threadgroup ScaledQVec* query_vectors = (threadgroup ScaledQVec*)current_mem_ptr;
+    current_mem_ptr += sizeof(ScaledQVec) * SUBGROUP_SIZE * num_vecs_per_thread;
+    #define QUERY_VEC(lane, vec) query_vectors[(lane) * num_vecs_per_thread + (vec)]
 
     threadgroup float* logits_tile = (threadgroup float*)current_mem_ptr;
-    current_mem_ptr = (threadgroup uchar*)ALIGN16(current_mem_ptr + (params.tokens_per_page * sizeof(float)));
-
-    threadgroup float* simd_max_scores = (threadgroup float*)current_mem_ptr;
-    current_mem_ptr = (threadgroup uchar*)ALIGN16(current_mem_ptr + (num_simd_groups * sizeof(float)));
-
-    threadgroup float* simd_sum_exps = (threadgroup float*)current_mem_ptr;
-    current_mem_ptr = (threadgroup uchar*)ALIGN16(current_mem_ptr + (num_simd_groups * sizeof(float)));
+    current_mem_ptr = (threadgroup uchar*)ALIGN16(current_mem_ptr + (CHUNK_SIZE * sizeof(float)));
 
     // General-purpose scratchpad for reductions
     threadgroup float* reduction_scratchpad = (threadgroup float*)current_mem_ptr;
     current_mem_ptr = (threadgroup uchar*)ALIGN16(current_mem_ptr + (num_simd_groups * sizeof(float)));
 
-    threadgroup float* acc_tile = (threadgroup float*)current_mem_ptr;
-    current_mem_ptr = (threadgroup uchar*)ALIGN16(current_mem_ptr + (num_simd_groups * head_dim * sizeof(float)));
-
     // --- 3. Load the Q Vector ---
     device const T* q_ptr = queries_in +
-                            (seq_idx * params.num_q_heads * head_dim) +
-                            (q_head_idx * head_dim);
+                            (seq_idx * params.num_q_heads * HEAD_DIM) +
+                            (q_head_idx * HEAD_DIM);
 
-    // Cooperatively load the Q vector into shared memory
-    // Convert to float for precision and apply the scaling factor
-    using Vec4 = typename Vec<T, 4>::Type;
-    for (uint i = local_idx_in_tg; i < head_dim_vec4; i += num_threads) {
-        Vec4 q_vec = ((device const Vec4*)q_ptr)[i];
-        float4 q_chunk = float4(q_vec);
-        ((threadgroup float4*)q_tile)[i] = q_chunk * params.inv_sqrt_head_dim;
+    #pragma unroll
+    for (int i = subgroup_idx; i < num_vecs_per_thread; i += NUM_SUBGROUPS) {
+        int vec_offset = subgroup_lane_offset + i * SUBGROUP_SIZE;
+        VecQ q_vec = ((device const VecQ*)q_ptr)[vec_offset];
+        // Scale during load and store as float for precision in matmul.
+        QUERY_VEC(subgroup_lane_offset, i) = ScaledQVec(q_vec) * params.inv_sqrt_head_dim;
     }
-
     threadgroup_barrier(mem_flags::mem_threadgroup);
     // THREADGROUP BARRIER REASON: Ensure the full Q-vector is in shared memory before use.
 
     // --- 4. Initialize Accumulators & Get Sequence Info ---
-    #pragma unroll
-    for(uint i = local_idx_in_tg; i < head_dim_vec4 * num_simd_groups; i += num_threads) {
-        ((threadgroup float4*)acc_tile)[i] = float4(0.0f);
-    }
-
-    // Online softmax statistics, held in registers.
-    float max_score = -INFINITY;
-    float local_max = -INFINITY;
-    float sum_exp = 0.0f;
-
-    // Initialize per-SIMD group statistics to ensure clean reductions
-    if (lane_idx == 0) {
-        simd_max_scores[simdgroup_idx] = -INFINITY;
-        simd_sum_exps[simdgroup_idx] = 0.0f;
-        reduction_scratchpad[simdgroup_idx] = 0.0f;
-    }
-
-    // Get the total number of tokens to process for this sequence.
     const int context_len = context_lens_in[seq_idx];
+    const int chunk_idx = tg_pos_in_grid.z; // we chunk by 512 tokens
 
-    // Determine the range of blocks this threadgroup is responsible for.
-    const int chunk_idx = tg_pos_in_grid.z;
-    const int start_block_idx = USE_TWO_PASS ? (chunk_idx * CHUNK_SIZE) / params.tokens_per_page : 0;
-    const int num_context_blocks = (context_len + params.tokens_per_page - 1) / params.tokens_per_page;
-    int end_block_idx;
-    if (USE_TWO_PASS) {
-        int chunk_size_per_page = start_block_idx + (CHUNK_SIZE / params.tokens_per_page);
-        end_block_idx = MIN(chunk_size_per_page, num_context_blocks);
-    } else {
-        end_block_idx = num_context_blocks;
+    // Paged Attention Specific Variables
+    const int total_pages = (context_len + TOKENS_PER_PAGE - 1) / TOKENS_PER_PAGE;
+    const int pages_per_chunk = CHUNK_SIZE / TOKENS_PER_PAGE;
+    const int start_page_idx = USE_TWO_PASS ? (chunk_idx * pages_per_chunk) : 0;
+    const int end_page_idx = USE_TWO_PASS ? MIN(start_page_idx + pages_per_chunk, total_pages) : total_pages;
+    // token level variables
+    const int start_token_idx = start_page_idx * TOKENS_PER_PAGE;
+    const int end_token_idx = MIN(end_page_idx * TOKENS_PER_PAGE, context_len);
+    const int num_tokens_in_chunk = end_token_idx - start_token_idx;
+    // how many tokens per subgroup
+    const int tokens_per_subgroup = (TOKENS_PER_PAGE + SIMD_WIDTH - 1) / SIMD_WIDTH;
+
+    if (num_tokens_in_chunk <= 0) {
+        // exit if the chunk is empty
+        return;
     }
 
     // --- 5. Attention Loop ---
-    // 5.a Define Parallelism Hierarchy ---
-    const int subgroup_size = MAX(simd_width / params.tokens_per_page, 1);
-    const int num_subgroups_per_simd = simd_width / subgroup_size;
-    const int subgroup_idx = lane_idx / subgroup_size;
-    const int subgroup_lane_offset = lane_idx % subgroup_size;
+    // K-cache layout: [pages, kv_heads, head_size/ELEMENTS_PER_THREAD, page_size, ELEMENTS_PER_THREAD]
+    const ulong k_head_stride = (ulong)HEAD_DIM * TOKENS_PER_PAGE;
+    const ulong k_page_stride = (ulong)params.num_kv_heads * k_head_stride;
 
-    // Strides in elements
-    const ulong page_stride = (ulong)params.num_kv_heads * params.tokens_per_page * head_dim;
-    const ulong head_stride = (ulong)params.tokens_per_page * head_dim;
-
+    // Online Softmax Statistics
+    float max_score = -INFINITY;
     // --- 5.b Main Attention Loop ---
     for (
-        int block_idx = start_block_idx + simdgroup_idx;
-        block_idx < end_block_idx;
-        block_idx += num_simd_groups
+        int page_idx = start_page_idx + simdgroup_idx;
+        page_idx < end_page_idx;
+        page_idx += num_simd_groups
     ) {
-        // --- Load K & V Tile for this Block ---
-        uint physical_page_id = page_table_in[seq_idx * params.max_logical_pages_per_seq + block_idx];
-        ulong base_element_offset = (ulong)physical_page_id * page_stride + (ulong)kv_head_id * head_stride;
-        // Get direct pointers to the start of the data for this (page, head)
-        device const T* k_page_ptr = k_cache_pool_in + base_element_offset;
-        device const T* v_page_ptr = v_cache_pool_in + base_element_offset;
+        uint physical_page_id = page_table_in[seq_idx * params.max_logical_pages_per_seq + page_idx];
 
-        for (uint i = local_idx_in_tg; i < params.tokens_per_page * head_dim_vec4; i += num_threads) {
-            // layout [pages, kv_heads, tokens, head_dim],
-            // all tokens for this KV head are contiguous
-            ((threadgroup Vec4*)k_tile)[i] = ((device const Vec4*)k_page_ptr)[i];
-            ((threadgroup Vec4*)v_tile)[i] = ((device const Vec4*)v_page_ptr)[i];
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-        // THREADGROUP BARRIER REASON: Ensure K/V tile for this block is fully loaded.
-
-        // reset local_max
-        local_max = -INFINITY;
-
-        // reset logits_tile
         #pragma unroll
-        for (uint i = local_idx_in_tg; i < params.tokens_per_page / 4; i += num_threads) {
-            ((threadgroup float4*)logits_tile)[i] = float4(0.0f);
-        }
+        for (int i = 0; i < tokens_per_subgroup; ++i) {
+            // 1. Calculate which token this subgroup works on.
+            const int token_in_page = (subgroup_idx + i * SIMD_WIDTH) % TOKENS_PER_PAGE;
+            const int global_token_idx = page_idx * TOKENS_PER_PAGE + token_in_page;
 
-        // Each subgroup computes the score for one token in the tile.
-        const int iterations = (params.tokens_per_page + num_subgroups_per_simd - 1) / num_subgroups_per_simd;
-        for (int i = 0; i < iterations; ++i) {
-            const int token_in_page = subgroup_idx + i * num_subgroups_per_simd;
-            if (token_in_page >= static_cast<int>(params.tokens_per_page)) continue;  // Tail guard
-
-            const int key_token_pos = block_idx * params.tokens_per_page + token_in_page;
-
-            float score = 0.0f;
-            if (key_token_pos < context_len) {
-                threadgroup const T* k_vec_in_tile = k_tile + token_in_page * head_dim;
-
-                threadgroup const float4* q_vecs = (threadgroup const float4*)q_tile;
-                threadgroup const Vec4* k_vecs = (threadgroup const Vec4*)k_vec_in_tile;
-                score = qk_dot<float4, Vec4>(q_vecs, k_vecs, head_dim_vec4, subgroup_size);
-
-                local_max = max(local_max, score);
-
-                // The leader of the subgroup writes the final score to the shared logits tile.
-                if (subgroup_lane_offset == 0) {
-                    logits_tile[token_in_page] = score;
-                }
+            // Boundary checks
+            if (token_in_page >= TOKENS_PER_PAGE || global_token_idx >= context_len) {
+                continue;
             }
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-        // THREADGROUP BARRIER REASON: Ensure all scores for the tile are in shared memory.
 
-        // --- Update Online Softmax Statistics ---
-        float tile_max = block_max(reduction_scratchpad, local_max, simdgroup_idx, lane_idx, num_simd_groups, simd_width);
+            // 2. Load the K-vector for this token using the coalescing-aware layout.
+            VecK k_vecs[num_vecs_per_thread];
+            // Base pointer to the K data for this page and head.
+            device const T* k_base_ptr = k_cache_pool_in +
+                                        (ulong)physical_page_id * k_page_stride +
+                                        (ulong)kv_head_id * k_head_stride;
+            // Pointer to the start of the interleaved data for this specific token.
+            device const T* k_token_ptr = k_base_ptr + token_in_page * ELEMENTS_PER_THREAD;
 
-        // --- Online Softmax Bookkeeping ---
-        // When max changes, we must rescale the running sum to maintain correctness
-        float prev_max = max_score;
-        float new_max = max(max_score, tile_max);
-
-        // Rescale factors
-        float prev_scale = exp(max(prev_max - new_max, params.log_exp_min_clamp));  // scale for accumulated sum
-        // Update running statistics
-        sum_exp *= prev_scale;  // rescale accumulated sum to new max
-        max_score = new_max;    // update global max
-
-        // Rescale the accumulator to the new max
-        if (prev_scale != 1.0f) {
-            threadgroup float* simd_acc_tile = acc_tile + simdgroup_idx * head_dim;
             #pragma unroll
-            for (uint v = lane_idx; v < head_dim_vec4; v += simd_width) {
-                ((threadgroup float4*)simd_acc_tile)[v] *= prev_scale;
+            for (int j = 0; j < num_vecs_per_thread; j++) {
+                // Calculate the logical vector index this thread is responsible for.
+                const int logical_vec_idx = subgroup_lane_offset + j * SUBGROUP_SIZE;
+                // Convert to an element offset from the start of the head dimension.
+                const int total_elem_offset = logical_vec_idx * QK_VECTOR_WIDTH;
+
+                // Decompose the element offset into two parts to navigate the physical memory layout.
+                const int offset1 = total_elem_offset / ELEMENTS_PER_THREAD; // Which row of chunks.
+                const int offset2 = total_elem_offset % ELEMENTS_PER_THREAD; // Offset within a chunk.
+
+                // Calculate the final address and load the vector.
+                k_vecs[j] = *reinterpret_cast<device const VecK*>(
+                    k_token_ptr + (ulong)offset1 * TOKENS_PER_PAGE * ELEMENTS_PER_THREAD + offset2
+                );
             }
-        }
 
-        // --- Compute Softmax Weights ---
-        // Parallel exp computation and sum reduction
-        float local_sum = 0.0f;
-        #pragma unroll
-        for (int token_in_page = lane_idx; token_in_page < params.tokens_per_page; token_in_page += simd_width) {
-            const int key_token_pos = block_idx * params.tokens_per_page + token_in_page;
-            if (key_token_pos < context_len) {
-                float score = logits_tile[token_in_page];
-                float exp_arg = max(score - new_max, params.log_exp_min_clamp);
-                float exp_score = exp(exp_arg);
-                logits_tile[token_in_page] = exp_score;
-                local_sum += exp_score;
-            } else {
-                logits_tile[token_in_page] = 0.0f;
+            // 3. Compute the QK dot product
+            float score = qk_dot_strided<ScaledQVec, VecK>(
+                query_vectors,
+                k_vecs,
+                num_vecs_per_thread,
+                subgroup_lane_offset,
+                SUBGROUP_SIZE
+            );
+
+            if (subgroup_lane_offset == 0) {
+                // only the leader thread of the subgroup writes the score
+                logits_tile[global_token_idx - start_token_idx] = score;
+                // update the global max score
+                max_score = max(max_score, score);
             }
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-        // THREADGROUP BARRIER REASON: Ensure all threads have computed their local sums.
-
-        float tile_sum = block_sum(reduction_scratchpad, local_sum, simdgroup_idx, lane_idx, num_simd_groups, simd_width);
-        sum_exp += tile_sum; // Add tile's contribution to running sum
-
-        // --- V Accumulation ---
-        // Each SIMD group accumulates its portion of the output vector
-        threadgroup float* simd_acc_tile = acc_tile + simdgroup_idx * head_dim;
-        for (int token_in_page = 0; token_in_page < params.tokens_per_page; ++token_in_page) {
-            const int key_token_pos = block_idx * params.tokens_per_page + token_in_page;
-            if (key_token_pos < context_len) {
-                float weight = logits_tile[token_in_page];
-                threadgroup const T* v_vec_in_tile = v_tile + token_in_page * head_dim;
-
-                // Each thread accumulates its portion of the V vector
-                for (uint v = lane_idx; v < head_dim_vec4; v += simd_width) {
-                    Vec4 v_chunk = ((threadgroup const Vec4*)v_vec_in_tile)[v];
-                    float4 v_float = float4(v_chunk);
-                    float4 weighted_v = v_float * weight;
-                    ((threadgroup float4*)simd_acc_tile)[v] += weighted_v;
-                }
-            } else {
-                // token is not in the context, we don't need to accumulate
-            }
-        }
+        } // end of tokens_per_subgroup loop
     } // end of main attention loop
 
-    // --- Cross-SIMD Group Reduction ---
-    // Step 1: Store per-SIMD group statistics to shared memory
-    if (lane_idx == 0) {
-        simd_max_scores[simdgroup_idx] = max_score;
-        simd_sum_exps[simdgroup_idx] = sum_exp;
+    float prev_max_score = max_score;
+    // --- 6. Global Max Score Reduction ---
+    max_score = page_max(reduction_scratchpad, max_score, simdgroup_idx, lane_idx, num_simd_groups, SIMD_WIDTH, SUBGROUP_SIZE);
+
+    // --- 7. Softmax Calculation ---
+    float sum_exp = 0.0f; // thread local sum of exp(max(logits_tile - max_score, log_exp_min_clamp))
+    // Each thread processes a unique subset of the tokens in the chunk in parallel.
+    for (int i = local_idx_in_tg; i < num_tokens_in_chunk; i += num_threads) {
+        // Read the raw score, subtract the global max, and compute exp.
+        float val = exp(max(logits_tile[i] - max_score, params.log_exp_min_clamp));
+        // Write the exponentiated value back to the logits tile in-place.
+        logits_tile[i] = val;
+        // Accumulate the value into the thread's local sum.
+        sum_exp += val;
     }
+
+    // 7b. Reduce the local sums to get the global sum for the chunk.
+    sum_exp = page_sum(
+        reduction_scratchpad,
+        sum_exp,
+        simdgroup_idx,
+        lane_idx,
+        num_simd_groups,
+        SIMD_WIDTH
+    );
+
+    // 7c. Normalize the probabilities.
+    const float inv_sum_exp = 1.0f / (sum_exp + 1e-6f);
+    // 7d. Normalize the values in logits_tile.
+    for (int i = local_idx_in_tg; i < num_tokens_in_chunk; i += num_threads) {
+        logits_tile[i] *= inv_sum_exp;
+    }
+
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    // THREADGROUP BARRIER REASON: Ensure all threads have computed their local max and sum.
+    // THREADGROUP BARRIER REASON: Ensure all threads have finished writing the final probabilities before proceeding.
 
-    // Step 3: Rescale exp sums and compute global sum
-    float rescaled_sum_exp = 0.0f;
-    if (lane_idx == 0) {
-        float local_max = simd_max_scores[simdgroup_idx];
-        float local_sum = simd_sum_exps[simdgroup_idx];
-        rescaled_sum_exp = local_sum * exp(max(local_max - max_score, params.log_exp_min_clamp));
-        simd_sum_exps[simdgroup_idx] = rescaled_sum_exp;
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    // THREADGROUP BARRIER REASON: Ensure all threads have rescaled their exp sums.
+    // --- 8. V-Vector Aggregation ---
+    // 8a. Define V-vector types and accumulator layout.
+    // V-cache layout: [num_physical_pages, num_kv_heads, head_dim, tokens_per_page]
+    const ulong v_head_stride = (ulong)HEAD_DIM * TOKENS_PER_PAGE;
+    const ulong v_page_stride = (ulong)params.num_kv_heads * v_head_stride;
 
-    // Step 5: Rescale and combine V accumulators from all SIMD groups
-    // Each SIMD group's accumulator needs to be rescaled by exp(local_max - final_max)
-    float rescale_factor = 0.0f;
-    if (lane_idx == 0) {
-        rescale_factor = exp(max(max_score - max_score, params.log_exp_min_clamp));
-        simd_max_scores[simdgroup_idx] = rescale_factor; // Reuse array for broadcast
-    }
+    constexpr int V_VECTOR_WIDTH = MIN(MEMORY_ALIGNMENT_BYTES / sizeof(T), TOKENS_PER_PAGE);
+    using V_vec = typename Vec<T, V_VECTOR_WIDTH>::Type;
+    using P_vec = typename Vec<float, V_VECTOR_WIDTH>::Type; // Probability vector
 
-    rescale_factor = simd_max_scores[simdgroup_idx];
+    // How many elements of the output vector does each SIMD group handle in one pass?
+    constexpr int ELEMENTS_PER_SIMD= SIMD_WIDTH / (TOKENS_PER_PAGE / V_VECTOR_WIDTH);
+    // How many passes does each thread need to cover its assigned elements?
+    constexpr int PASSES_PER_THREAD = (HEAD_DIM + ELEMENTS_PER_SIMD - 1) / ELEMENTS_PER_SIMD;
+    // Per-thread accumulator registers, initialized to zero.
+    float acc[PASSES_PER_THREAD] = {0.0f};
 
-    // First, rescale this SIMD group's accumulator
-    for (uint v = lane_idx; v < head_dim_vec4; v += simd_width) {
-        threadgroup float* simd_acc_tile = acc_tile + simdgroup_idx * head_dim;
-        ((threadgroup float4*)simd_acc_tile)[v] *= rescale_factor;
-    }
+    // 8b. The V-aggregation loop.
+    for (
+        int page_idx = start_page_idx + simdgroup_idx;
+        page_idx < end_page_idx;
+        page_idx += num_simd_groups
+    ) {
+        uint physical_page_id = page_table_in[seq_idx * params.max_logical_pages_per_seq + page_idx];
+        device const T* v_page_ptr = v_cache_pool_in +
+                                    (ulong)physical_page_id * v_page_stride +
+                                    (ulong)kv_head_id * v_head_stride;
 
-    // Combine all SIMD group accumulators into the first one (acc_tile[0])
-    if (simdgroup_idx == 0) {
-        for (int sg = 1; sg < num_simd_groups; ++sg) {
-            threadgroup float* other_acc = acc_tile + sg * head_dim;
-            for (uint v = lane_idx; v < head_dim_vec4; v += simd_width) {
-                ((threadgroup float4*)acc_tile)[v] += ((threadgroup float4*)other_acc)[v];
+        // This logic distributes token processing within a SIMD group for V-aggregation.
+        const int token_in_page = (lane_idx % (TOKENS_PER_PAGE / V_VECTOR_WIDTH)) * V_VECTOR_WIDTH;
+        const int global_token_idx = page_idx * TOKENS_PER_PAGE + token_in_page;
+
+        if (token_in_page >= TOKENS_PER_PAGE || global_token_idx >= context_len) {
+            continue;
+        }
+
+        // Load the vector of probabilities for the tokens this thread will process.
+        P_vec probs_vec = *reinterpret_cast<threadgroup P_vec*>(
+            logits_tile + (global_token_idx - start_token_idx)
+        );
+
+        #pragma unroll
+        for (int i = 0; i < PASSES_PER_THREAD; ++i) {
+            // Which element of the output vector is this thread working on?
+            const int element_idx = (lane_idx / (TOKENS_PER_PAGE / V_VECTOR_WIDTH)) + i * ELEMENTS_PER_SIMD;
+
+            if (element_idx < HEAD_DIM) {
+                // Load the V-vector for this element and these tokens.
+                const int offset = element_idx * TOKENS_PER_PAGE + token_in_page;
+                V_vec v_vec = *reinterpret_cast<device const V_vec*>(v_page_ptr + offset);
+
+                // Boundary check for the last page
+                if (page_idx == total_pages - 1) {
+                    thread T* v_vec_ptr = reinterpret_cast<thread T*>(&v_vec);
+                    #pragma unroll
+                    for (int j = 0; j < V_VECTOR_WIDTH; j++) {
+                        if (global_token_idx + j >= context_len) {
+                            v_vec_ptr[j] = T(0.0f);
+                        }
+                    }
+                }
+
+                // Accumulate the weighted sum.
+                acc[i] += dot(probs_vec, v_vec);
             }
         }
     }
 
-    // --- 6. Finalization and Output ---
-    if (USE_TWO_PASS) {
-        // --- Two-Pass (Pass 1) Finalization ---
-        // Calculate num_chunks from template parameter
-        const int max_tokens = params.max_logical_pages_per_seq * params.tokens_per_page;
-        const int num_chunks = (max_tokens + CHUNK_SIZE - 1) / CHUNK_SIZE;
+    // --- 9. Final Output Reduction ---
 
-        const int out_idx = (seq_idx * params.num_q_heads * num_chunks) +
-                            (q_head_idx * num_chunks) +
-                            chunk_idx;
-
-        // Only one thread needs to write the scalar stats.
-        if (local_idx_in_tg == 0) {
-            max_logits_out[out_idx] = max_score; // From cross-team reduction
-            exp_sums_out[out_idx] = sum_exp;     // From cross-team reduction
+    // 9a. Intra-SIMD Reduction
+    // Sum the values horizontally across the tokens processed by the SIMD group.
+    #pragma unroll
+    for (int i = 0; i < PASSES_PER_THREAD; ++i) {
+        float partial_sum = acc[i];
+        #pragma unroll
+        for (int mask = (TOKENS_PER_PAGE / V_VECTOR_WIDTH) / 2; mask >= 1; mask /= 2) {
+            partial_sum += simd_shuffle_xor(partial_sum, mask);
         }
+        acc[i] = partial_sum;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    // THREADGROUP BARRIER REASON: Ensure all threads have finished accumulating their V vectors.
 
-        // All threads cooperate to write the partial, unnormalized accumulator.
-        device T* tmp_out_ptr = tmp_out + out_idx * head_dim;
-        for (uint i = local_idx_in_tg; i < head_dim_vec4; i += num_threads) {
-            float4 partial_chunk = ((threadgroup float4*)acc_tile)[i];
-            Vec4 result;
-            from_float(result, partial_chunk);
-            ((device Vec4*)tmp_out_ptr)[i] = result;
-        }
-    } else {
-        // --- Single-Pass Finalization ---
-        // 1. Final Normalization
-        const float inv_sum_exp = 1.0f / (sum_exp + 1e-6f);
+    // 9b. Inter-SIMD (Cross-Warp) Reduction
+    // The logits_tile is now repurposed as `out_smem`.
+    threadgroup float* out_smem = logits_tile;
 
-        // All threads cooperate to normalize the final accumulator in place.
-        for (uint i = local_idx_in_tg; i < head_dim_vec4; i += num_threads) {
-            ((threadgroup float4*)acc_tile)[i] *= inv_sum_exp;
+    #pragma unroll
+    for (int i = num_simd_groups; i > 1; i /= 2) {
+        int mid = i / 2;
+
+        // The upper half of the active SIMD groups write their results to shared memory.
+        if (simdgroup_idx >= mid && simdgroup_idx < i) {
+            threadgroup float* dst = &out_smem[(simdgroup_idx - mid) * HEAD_DIM];
+            #pragma unroll
+            for (int j = 0; j < PASSES_PER_THREAD; ++j) {
+                const int element_idx = (lane_idx / (TOKENS_PER_PAGE / V_VECTOR_WIDTH)) + j * ELEMENTS_PER_SIMD;
+                // Only the leader for each element writes.
+                if (element_idx < HEAD_DIM && (lane_idx % (TOKENS_PER_PAGE / V_VECTOR_WIDTH) == 0)) {
+                    dst[element_idx] = acc[j];
+                }
+            }
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
-        // THREADGROUP BARRIER REASON: Ensure all threads finish normalization before writing.
 
-        // 2. Final Write
-        // All threads cooperate to write the final, normalized result.
+        // The lower half of the active SIMD groups read and update their accumulators.
+        if (simdgroup_idx < mid) {
+            const threadgroup float* src = &out_smem[simdgroup_idx * HEAD_DIM];
+            #pragma unroll
+            for (int j = 0; j < PASSES_PER_THREAD; ++j) {
+                const int element_idx = (lane_idx / (TOKENS_PER_PAGE / V_VECTOR_WIDTH)) + j * ELEMENTS_PER_SIMD;
+                if (element_idx < HEAD_DIM && (lane_idx % (TOKENS_PER_PAGE / V_VECTOR_WIDTH) == 0)) {
+                    acc[j] += src[element_idx];
+                }
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    // --- 10. Finalization and Output ---
+    // 10a. Two-Pass Finalization
+    if (USE_TWO_PASS) {
+        const int max_chunks = (params.max_logical_pages_per_seq * TOKENS_PER_PAGE + CHUNK_SIZE - 1) / CHUNK_SIZE;
+        // --- Two-Pass (Pass 1) Finalization ---
+        if (local_idx_in_tg == 0) {
+            // The output index is based on which sequence, head, and chunk we are.
+            const int out_idx = (seq_idx * params.num_q_heads * max_chunks) +
+                                (q_head_idx * max_chunks) +
+                                chunk_idx;
+            max_logits_out[out_idx] = max_score;
+            exp_sums_out[out_idx] = sum_exp;
+        }
+
+        if (simdgroup_idx == 0) {
+            // The output pointer is based on which sequence, head, and chunk we are.
+            const ulong out_offset = ((ulong)seq_idx * params.num_q_heads + q_head_idx) * max_chunks * HEAD_DIM + (ulong)chunk_idx * HEAD_DIM;
+            device T* tmp_out_ptr = tmp_out + out_offset;
+
+            #pragma unroll
+            for (int i = 0; i < PASSES_PER_THREAD; ++i) {
+                const int element_idx = (lane_idx / (TOKENS_PER_PAGE / V_VECTOR_WIDTH)) + i * ELEMENTS_PER_SIMD;
+                // Only the leader thread for each element writes its computed value.
+                if (element_idx < HEAD_DIM && (lane_idx % (TOKENS_PER_PAGE / V_VECTOR_WIDTH) == 0)) {
+                    tmp_out_ptr[element_idx] = T(acc[i]);
+                }
+            }
+        }
+        return;
+    }
+
+    // 10b. Single-Pass Finalization
+    if (simdgroup_idx == 0) {
+        // The output pointer is based on which sequence and head we are.
         device T* out_ptr = output_buffer +
-                        (seq_idx * params.num_q_heads * head_dim) +
-                        (q_head_idx * head_dim);
+                            (seq_idx * params.num_q_heads * HEAD_DIM) +
+                            (q_head_idx * HEAD_DIM);
 
-        for (uint i = local_idx_in_tg; i < head_dim_vec4; i += num_threads) {
-            float4 final_chunk = ((threadgroup float4*)acc_tile)[i];
-            Vec4 result;
-            from_float(result, final_chunk);
-            ((device Vec4*)out_ptr)[i] = result;
+        #pragma unroll
+        for (int i = 0; i < PASSES_PER_THREAD; ++i) {
+            const int element_idx = (lane_idx / (TOKENS_PER_PAGE / V_VECTOR_WIDTH)) + i * ELEMENTS_PER_SIMD;
+            // Only the leader thread for each element writes its computed value.
+            if (element_idx < HEAD_DIM && (lane_idx % (TOKENS_PER_PAGE / V_VECTOR_WIDTH) == 0)) {
+                out_ptr[element_idx] = T(acc[i]);
+            }
         }
     }
 

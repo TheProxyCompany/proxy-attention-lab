@@ -23,7 +23,7 @@ import logging
 import mlx.core as mx
 import pytest
 
-from proxy_attention_lab import paged_attention
+from proxy_attention_lab import get_k_cache_shape, get_k_cache_stripe_size, get_v_cache_shape, paged_attention
 
 logger = logging.getLogger(__name__)
 
@@ -53,27 +53,34 @@ def test_fetch_k_vector_element_for_first_token_of_sequence(head_dim, dtype) -> 
 
     # Create K-cache with specific values
     num_physical_pages = 2
-    # Layout: [num_physical_pages, cfg_num_kv_heads, cfg_tokens_per_page, cfg_head_dim]
-    k_cache_shape = (num_physical_pages, cfg_num_kv_heads, cfg_tokens_per_page, cfg_head_dim)
+    # Use get_k_cache_shape() for striped format
+    k_cache_shape = get_k_cache_shape(num_physical_pages, cfg_num_kv_heads, cfg_head_dim, cfg_tokens_per_page, dtype)
     py_k_cache_pool = mx.zeros(k_cache_shape, dtype=dtype)
 
     # Set K-vector for page 0, kv_head 0, token 0 to [11.0, 0.0, 0.0, ..., 0.0]
-    py_k_cache_pool[0, 0, 0, 0] = 11.0
-    for i in range(1, cfg_head_dim):
-        py_k_cache_pool[0, 0, 0, i] = 0.0
+    k_vec = mx.zeros(cfg_head_dim, dtype=dtype)
+    k_vec[0] = 11.0
+    for d in range(cfg_head_dim):
+        stripe_idx = d // get_k_cache_stripe_size(dtype)
+        offset_in_stripe = d % get_k_cache_stripe_size(dtype)
+        py_k_cache_pool[0, 0, stripe_idx, 0, offset_in_stripe] = k_vec[d]
 
     # Set K-vector for page 1, kv_head 0, token 0 to [22.0, 0.0, 0.0, ..., 0.0]
-    py_k_cache_pool[1, 0, 0, 0] = 22.0
-    for i in range(1, cfg_head_dim):
-        py_k_cache_pool[1, 0, 0, i] = 0.0
+    k_vec = mx.zeros(cfg_head_dim, dtype=dtype)
+    k_vec[0] = 22.0
+    for d in range(cfg_head_dim):
+        stripe_idx = d // get_k_cache_stripe_size(dtype)
+        offset_in_stripe = d % get_k_cache_stripe_size(dtype)
+        py_k_cache_pool[1, 0, stripe_idx, 0, offset_in_stripe] = k_vec[d]
 
     # Set up V-cache with distinct values
-    py_v_cache_pool = mx.zeros_like(py_k_cache_pool)
+    v_cache_shape = get_v_cache_shape(num_physical_pages, cfg_num_kv_heads, cfg_head_dim, cfg_tokens_per_page, dtype)
+    py_v_cache_pool = mx.zeros(v_cache_shape, dtype=dtype)
     # Create a pattern that works for any head_dim
     v_pattern_0 = mx.arange(cfg_head_dim, dtype=dtype) * 10.0 + 10.0  # [10, 20, 30, ...]
     v_pattern_1 = mx.arange(cfg_head_dim, dtype=dtype) * 100.0 + 100.0  # [100, 200, 300, ...]
-    py_v_cache_pool[0, 0, 0, :] = v_pattern_0
-    py_v_cache_pool[1, 0, 0, :] = v_pattern_1
+    py_v_cache_pool[0, 0, :, 0] = v_pattern_0
+    py_v_cache_pool[1, 0, :, 0] = v_pattern_1
 
     # Page table maps: seq 0, block 0 -> page 0; seq 1, block 0 -> page 1
     py_page_table = mx.array(
@@ -126,9 +133,9 @@ def test_fetch_k_vector_element_for_first_token_of_sequence(head_dim, dtype) -> 
 
     # Create expected V outputs
     # V-aggregation for item 0: V[0,0,0] * prob[0] = V[0,0,0] * 1.0
-    expected_V_item0 = py_v_cache_pool[0, 0, 0, :].astype(mx.float32)
+    expected_V_item0 = py_v_cache_pool[0, 0, :, 0].astype(mx.float32)
     # V-aggregation for item 1: V[1,0,0] * prob[0] = V[1,0,0] * 1.0
-    expected_V_item1 = py_v_cache_pool[1, 0, 0, :].astype(mx.float32)
+    expected_V_item1 = py_v_cache_pool[1, 0, :, 0].astype(mx.float32)
 
     # Combine and reshape to match kernel output
     expected_V_output = mx.array([expected_V_item0.astype(dtype), expected_V_item1.astype(dtype)])
@@ -197,25 +204,37 @@ def test_fetch_entire_k_vector_for_specific_token_slot(head_dim, dtype) -> None:
 
     # Create K-cache with specific values
     num_physical_pages = 2
-    # Layout: [num_physical_pages, cfg_num_kv_heads, cfg_tokens_per_page, cfg_head_dim]
-    k_cache_shape = (num_physical_pages, cfg_num_kv_heads, cfg_tokens_per_page, cfg_head_dim)
+    # Use get_k_cache_shape() for striped format
+    k_cache_shape = get_k_cache_shape(num_physical_pages, cfg_num_kv_heads, cfg_head_dim, cfg_tokens_per_page, dtype)
     py_k_cache_pool = mx.zeros(k_cache_shape, dtype=dtype)
 
     # Set K-vectors with sequential values (only first few elements for simplicity)
     # K-vector for page 0, kv_head 0, token 0
+    k_vec = mx.zeros(cfg_head_dim, dtype=dtype)
     for i in range(min(4, cfg_head_dim)):
-        py_k_cache_pool[0, 0, 0, i] = float(i + 1)  # [1, 2, 3, 4, 0, 0, ...]
+        k_vec[i] = float(i + 1)  # [1, 2, 3, 4, 0, 0, ...]
+    for d in range(cfg_head_dim):
+        stripe_idx = d // get_k_cache_stripe_size(dtype)
+        offset_in_stripe = d % get_k_cache_stripe_size(dtype)
+        py_k_cache_pool[0, 0, stripe_idx, 0, offset_in_stripe] = k_vec[d]
+
     # K-vector for page 1, kv_head 0, token 0
+    k_vec = mx.zeros(cfg_head_dim, dtype=dtype)
     for i in range(min(4, cfg_head_dim)):
-        py_k_cache_pool[1, 0, 0, i] = float(i + 5)  # [5, 6, 7, 8, 0, 0, ...]
+        k_vec[i] = float(i + 5)  # [5, 6, 7, 8, 0, 0, ...]
+    for d in range(cfg_head_dim):
+        stripe_idx = d // get_k_cache_stripe_size(dtype)
+        offset_in_stripe = d % get_k_cache_stripe_size(dtype)
+        py_k_cache_pool[1, 0, stripe_idx, 0, offset_in_stripe] = k_vec[d]
 
     # Set up V-cache with distinct values
-    py_v_cache_pool = mx.zeros_like(py_k_cache_pool)
+    v_cache_shape = get_v_cache_shape(num_physical_pages, cfg_num_kv_heads, cfg_head_dim, cfg_tokens_per_page, dtype)
+    py_v_cache_pool = mx.zeros(v_cache_shape, dtype=dtype)
     # Create patterns that work for any head_dim
     v_pattern_0 = mx.arange(cfg_head_dim, dtype=dtype) * 10.0 + 10.0  # [10, 20, 30, ...]
     v_pattern_1 = mx.arange(cfg_head_dim, dtype=dtype) * 10.0 + 50.0  # [50, 60, 70, ...]
-    py_v_cache_pool[0, 0, 0, :] = v_pattern_0
-    py_v_cache_pool[1, 0, 0, :] = v_pattern_1
+    py_v_cache_pool[0, 0, :, 0] = v_pattern_0
+    py_v_cache_pool[1, 0, :, 0] = v_pattern_1
 
     # Page table maps: seq 0, block 0 -> page 0; seq 1, block 0 -> page 1
     py_page_table = mx.array(
@@ -262,9 +281,9 @@ def test_fetch_entire_k_vector_for_specific_token_slot(head_dim, dtype) -> None:
 
     # Create expected V outputs
     # V-aggregation for item 0: V[0,0,0] * prob[0] = V[0,0,0] * 1.0
-    expected_V_item0 = py_v_cache_pool[0, 0, 0, :].astype(mx.float32)
+    expected_V_item0 = py_v_cache_pool[0, 0, :, 0].astype(mx.float32)
     # V-aggregation for item 1: V[1,0,0] * prob[0] = V[1,0,0] * 1.0
-    expected_V_item1 = py_v_cache_pool[1, 0, 0, :].astype(mx.float32)
+    expected_V_item1 = py_v_cache_pool[1, 0, :, 0].astype(mx.float32)
 
     # Combine and reshape to match kernel output
     expected_V_output = mx.array([expected_V_item0.astype(dtype), expected_V_item1.astype(dtype)])

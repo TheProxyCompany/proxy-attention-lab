@@ -31,8 +31,12 @@ using float32_t = float;
 #ifndef __METAL_VERSION__ // C++ side
 constexpr int PREFER_SINGLE_PASS_TOKENS = 4096;  // TODO: empirically tune
 constexpr int CHUNK_SIZE = 512;
+constexpr int SIMD_WIDTH = 32; // 32 wide simdgroups default on apple silicon
+constexpr int MEMORY_ALIGNMENT_BYTES = 16;
 #else // __METAL_VERSION__ (Metal side)
 #define CHUNK_SIZE 512
+#define SIMD_WIDTH 32
+#define MEMORY_ALIGNMENT_BYTES 16
 #endif
 
 /**

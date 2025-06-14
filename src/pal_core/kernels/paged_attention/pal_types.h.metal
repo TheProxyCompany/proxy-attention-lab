@@ -27,25 +27,21 @@
 
 using namespace metal;
 
+
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define ALIGN16(ptr) (((uintptr_t)(ptr) + 15) & ~15);
-#define MAX(a, b) ((a) > (b) ? (a) : (b));
-#define MIN(a, b) ((a) < (b) ? (a) : (b));
 
 // ============================================================================
 // Composite vector types for extended width support
 // ============================================================================
 
-// 8-wide float vector
-struct Float8 {
-    float4 lo;
-    float4 hi;
-};
-
-// 8-wide half vector
-struct Half8 {
-    half4 lo;
-    half4 hi;
-};
+// Forward declarations
+struct Float8;
+struct Bfloat2;
+struct Bfloat4;
+struct Bfloat8;
+struct Half8;
 
 // Bfloat16 vector types - using structs for compatibility
 struct Bfloat2 {
@@ -64,6 +60,16 @@ struct Bfloat4 {
     bfloat16_t z;
     bfloat16_t w;
 
+    Bfloat4() = default;
+
+    // Constructor from float4
+    explicit Bfloat4(float4 v) {
+        x = static_cast<bfloat16_t>(v.x);
+        y = static_cast<bfloat16_t>(v.y);
+        z = static_cast<bfloat16_t>(v.z);
+        w = static_cast<bfloat16_t>(v.w);
+    }
+
     // Conversion to float4
     operator float4() const {
         return float4(static_cast<float>(x), static_cast<float>(y),
@@ -71,10 +77,68 @@ struct Bfloat4 {
     }
 };
 
+// 8-wide bfloat16 vector
 struct Bfloat8 {
     Bfloat4 lo;
     Bfloat4 hi;
+
+    Bfloat8() {}
+
+    explicit Bfloat8(Half8 other);
+    explicit Bfloat8(Float8 other);
 };
+
+struct Half8 {
+    half4 lo;
+    half4 hi;
+
+    Half8() { lo = 0.0h; hi = 0.0h; }
+
+    explicit Half8(Float8 other);
+    explicit Half8(Bfloat8 other);
+};
+
+// 8-wide float vector
+struct Float8 {
+    float4 lo;
+    float4 hi;
+
+    Float8() { lo = 0.0f; hi = 0.0f; }
+
+    explicit Float8(Half8 other);
+    explicit Float8(Bfloat8 other);
+};
+
+// Define the constructors after all structs are declared
+inline Bfloat8::Bfloat8(Half8 other) {
+    lo = Bfloat4(float4(other.lo));
+    hi = Bfloat4(float4(other.hi));
+}
+
+inline Bfloat8::Bfloat8(Float8 other) {
+    lo = Bfloat4(other.lo);
+    hi = Bfloat4(other.hi);
+}
+
+inline Half8::Half8(Float8 other) {
+    lo = half4(other.lo);
+    hi = half4(other.hi);
+}
+
+inline Half8::Half8(Bfloat8 other) {
+    lo = half4(float4(other.lo));
+    hi = half4(float4(other.hi));
+}
+
+inline Float8::Float8(Half8 other) {
+    lo = float4(other.lo);
+    hi = float4(other.hi);
+}
+
+inline Float8::Float8(Bfloat8 other) {
+    lo = float4(other.lo);
+    hi = float4(other.hi);
+}
 
 // ============================================================================
 // Vector type mapping template
@@ -220,6 +284,28 @@ template <>
 struct FloatVec<float4> {
     using Type = float4;
 };
+
+// Float8 arithmetic operators
+inline Float8 operator*(Float8 a, float b) {
+    Float8 result;
+    result.lo = a.lo * b;
+    result.hi = a.hi * b;
+    return result;
+}
+
+inline Float8 operator*(float a, Float8 b) {
+    Float8 result;
+    result.lo = a * b.lo;
+    result.hi = a * b.hi;
+    return result;
+}
+
+inline Float8 operator+(Float8 a, Float8 b) {
+    Float8 result;
+    result.lo = a.lo + b.lo;
+    result.hi = a.hi + b.hi;
+    return result;
+}
 
 // Float8 conversions (custom struct)
 inline void from_float(thread Float8& dst, Float8 src) {
@@ -379,6 +465,24 @@ inline float4 mul<float4, Bfloat4, float4>(Bfloat4 a, float4 b) {
     return a_f * b;
 }
 
+// Mixed-type multiplication: Float8 * Half8 -> Float8
+template <>
+inline Float8 mul<Float8, Float8, Half8>(Float8 a, Half8 b) {
+    Float8 c;
+    c.lo = mul<float4, float4, half4>(a.lo, b.lo);
+    c.hi = mul<float4, float4, half4>(a.hi, b.hi);
+    return c;
+}
+
+// Mixed-type multiplication: Float8 * Bfloat8 -> Float8
+template <>
+inline Float8 mul<Float8, Float8, Bfloat8>(Float8 a, Bfloat8 b) {
+    Float8 c;
+    c.lo = mul<float4, float4, Bfloat4>(a.lo, b.lo);
+    c.hi = mul<float4, float4, Bfloat4>(a.hi, b.hi);
+    return c;
+}
+
 // ============================================================================
 // Fused multiply-add operations
 // ============================================================================
@@ -455,6 +559,22 @@ inline float4 fma(float4 a, bfloat16_t b, float4 c) {
 // Also add the reverse for symmetry
 inline float4 fma(bfloat16_t a, float4 b, float4 c) {
     return float4(a) * b + c;
+}
+
+// Mixed-type FMA: Float8 * Half8 + Float8
+inline Float8 fma(Float8 a, Half8 b, Float8 c) {
+    Float8 res;
+    res.lo = fma(a.lo, b.lo, c.lo);  // This will use the existing float4 * half4 + float4 overload
+    res.hi = fma(a.hi, b.hi, c.hi);
+    return res;
+}
+
+// Mixed-type FMA: Float8 * Bfloat8 + Float8
+inline Float8 fma(Float8 a, Bfloat8 b, Float8 c) {
+    Float8 res;
+    res.lo = fma(a.lo, b.lo, c.lo);  // This will use the existing float4 * Bfloat4 + float4 overload
+    res.hi = fma(a.hi, b.hi, c.hi);
+    return res;
 }
 
 // Mixed-type FMA: float4 * Bfloat4 + float4  ✓
@@ -546,23 +666,40 @@ inline float dot(T a, T b) {
     return sum(mul<A, T, T>(a, b));
 }
 
+// Mixed-type dot products for Float8 with Half8/Bfloat8
+inline float dot(Float8 a, Half8 b) {
+    return sum(mul<Float8, Float8, Half8>(a, b));
+}
+
+inline float dot(Half8 a, Float8 b) {
+    return dot(b, a);  // Commutative
+}
+
+inline float dot(Float8 a, Bfloat8 b) {
+    return sum(mul<Float8, Float8, Bfloat8>(a, b));
+}
+
+inline float dot(Bfloat8 a, Float8 b) {
+    return dot(b, a);  // Commutative
+}
+
 // ============================================================================
 // SIMD reduction helpers
 // ============================================================================
 
 template <typename T>
-inline T simd_sum(T v, uint simd_width) {
+inline T simd_sum(T v, uint width, uint mask_size = 1) {
     #pragma unroll
-    for (uint off = simd_width >> 1; off > 0; off >>= 1)
-        v += simd_shuffle_xor(v, off);
+    for (int mask = width / 2; mask >= mask_size; mask /= 2)
+        v += simd_shuffle_xor(v, mask);
     return v;
 }
 
 template <typename T>
-inline T simd_max(T v, uint simd_width) {
+inline T simd_max(T v, uint width, uint mask_size = 1) {
     #pragma unroll
-    for (uint off = simd_width >> 1; off > 0; off >>= 1)
-        v = max(v, simd_shuffle_xor(v, off));
+    for (int mask = width / 2; mask >= mask_size; mask /= 2)
+        v = max(v, simd_shuffle_xor(v, mask));
     return v;
 }
 
@@ -572,34 +709,39 @@ inline T simd_max(T v, uint simd_width) {
 // https://github.com/EricLBuehler/mistral.rs/blob/58df07e2abb758f7c1d4de8f26f24803d7dbee1f/mistralrs-paged-attn/src/metal/kernels/pagedattention.metal
 // ============================================================================
 
-// Optimized Q*K dot product with SIMD reduction
-// happens within a subgroup within a SIMD group
+// Dot product for threadgroup Q and thread-local K arrays
 template <typename QVec, typename KVec>
-float qk_dot(
-    const threadgroup QVec* q_vecs,
-    const threadgroup KVec* k_vecs,
-    uint vec_count,
-    uint dot_width
+inline float qk_dot_strided(
+    threadgroup const QVec* q_base,
+    thread const KVec* k_vecs,
+    int num_vecs,
+    int lane_offset,
+    int subgroup_size
 ) {
-    // Compute parallel products for Q*K^T
     using AccType = typename FloatVec<QVec>::Type;
-    AccType qk_vec = mul<AccType, QVec, KVec>(q_vecs[0], k_vecs[0]);
+
+    // First vector at q_base[lane_offset * num_vecs + 0]
+    AccType qk_vec = mul<AccType, QVec, KVec>(
+        q_base[lane_offset * num_vecs],
+        k_vecs[0]
+    );
 
     #pragma unroll
-    for (uint i = 1; i < vec_count; ++i) {
-        qk_vec = fma(q_vecs[i], k_vecs[i], qk_vec);
+    for (int i = 1; i < num_vecs; ++i) {
+        qk_vec = fma(
+            q_base[lane_offset * num_vecs + i],
+            k_vecs[i],
+            qk_vec
+        );
     }
 
-    // Reduce across vector lanes within a subgroup
     float qk = sum(qk_vec);
-
-    // Reduce across threads within the subgroup
-    return simd_sum(qk, dot_width);
+    return simd_sum(qk, subgroup_size);
 }
 
-// Block-wide sum for softmax computation
+// page-wide sum for softmax computation
 // happens within a SIMD group
-inline float block_sum(
+inline float page_sum(
     threadgroup float* tg_mem,
     float local_sum,
     uint simd_group_id,
@@ -617,43 +759,42 @@ inline float block_sum(
 
     // Synchronize to ensure all groups have written
     threadgroup_barrier(mem_flags::mem_threadgroup);
-
     // Get the local sum from the shared memory
     local_sum = (simd_lane_id < num_simd_groups) ? tg_mem[simd_lane_id] : 0.0f;
 
     // Reduce across the SIMD groups
-    local_sum = simd_sum(local_sum, simd_width);
+    local_sum = simd_sum(local_sum, num_simd_groups);
 
     // Broadcast result to all threads
     return simd_broadcast(local_sum, 0);
 }
 
-// Block-wide max for softmax computation
+// page-wide max for softmax computation
 // happens within a SIMD group
-inline float block_max(
+inline float page_max(
     threadgroup float* tg_mem,
     float local_max,
     uint simd_group_id,
     uint simd_lane_id,
     uint num_simd_groups,
-    uint simd_width
+    uint simd_width,
+    uint subgroup_size = 1
 ) {
-    // First reduce within each SIMD group
-    local_max = simd_max(local_max, simd_width);
+    // First reduce within each SIMD group (simd_width) + (subgroup_size)
+    local_max = simd_max(local_max, simd_width, subgroup_size);
 
     // SIMD group leaders write to shared memory
     if (simd_lane_id == 0) {
         tg_mem[simd_group_id] = local_max;
     }
-
-    // Synchronize to ensure all groups have written
     threadgroup_barrier(mem_flags::mem_threadgroup);
+    // THREADGROUP BARRIER REASON: Ensure all groups have written their local_max to shared memory before reduction.
 
     // Get the local max from the shared memory
     local_max = (simd_lane_id < num_simd_groups) ? tg_mem[simd_lane_id] : -INFINITY;
 
-    // Reduce across the SIMD groups
-    local_max = simd_max(local_max, simd_width);
+    // Reduce across the SIMD groups (num_simd_groups)
+    local_max = simd_max(local_max, num_simd_groups);
 
     // Broadcast result to all threads
     return simd_broadcast(local_max, 0);

@@ -18,7 +18,7 @@ import logging
 import mlx.core as mx
 import pytest
 
-from proxy_attention_lab import get_optimal_page_size, paged_attention
+from proxy_attention_lab import get_k_cache_shape, get_optimal_page_size, get_v_cache_shape, paged_attention
 
 logger = logging.getLogger(__name__)
 
@@ -65,9 +65,14 @@ def setup_pal_decode_inputs(params):
     # Create query tensor for the single new token per sequence
     queries = mx.random.normal((num_tokens, num_q_heads, head_dim), dtype=dtype)
 
-    # Create KV cache pools sized for the entire history
-    k_cache_pool = mx.random.normal((num_total_physical_pages, num_kv_heads, tokens_per_page, head_dim), dtype=dtype)
-    v_cache_pool = mx.random.normal((num_total_physical_pages, num_kv_heads, tokens_per_page, head_dim), dtype=dtype)
+    # Use the new helper functions to get correct cache shapes
+    # K-cache shape: [num_total_physical_pages, num_kv_heads, head_dim // stripe_size, tokens_per_page, stripe_size]
+    k_cache_shape = get_k_cache_shape(num_total_physical_pages, num_kv_heads, head_dim, tokens_per_page, dtype)
+    k_cache_pool = mx.random.normal(k_cache_shape, dtype=dtype)
+
+    # V-cache shape: [num_total_physical_pages, num_kv_heads, head_dim, tokens_per_page]
+    v_cache_shape = get_v_cache_shape(num_total_physical_pages, num_kv_heads, head_dim, tokens_per_page, dtype)
+    v_cache_pool = mx.random.normal(v_cache_shape, dtype=dtype)
 
     # Create page table mapping
     page_table_list = []
@@ -133,9 +138,7 @@ def setup_sdpa_decode_inputs(params):
 
 
 # benchmarked up to 1048576 tokens
-@pytest.mark.parametrize(
-    "history_len_val", [1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576]
-)
+@pytest.mark.parametrize("history_len_val", [16384, 131072, 524288, 1048576])
 @pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16])
 def test_pal_decode_latency_vs_history_len(benchmark, history_len_val, dtype):
     """
@@ -149,7 +152,6 @@ def test_pal_decode_latency_vs_history_len(benchmark, history_len_val, dtype):
         benchmark: pytest-benchmark fixture for performance measurement
         history_len_val: history length value to test (size of existing KV cache)
     """
-    mx.clear_cache()
     # Create test parameters for decode phase
     params = BASELINE_CONFIG.copy()
     params["history_len"] = history_len_val
@@ -161,6 +163,7 @@ def test_pal_decode_latency_vs_history_len(benchmark, history_len_val, dtype):
 
     # Define benchmark function that evaluates the result
     def operation_to_benchmark():
+        mx.clear_cache()
         out = paged_attention(queries, k_hist, v_hist, pt, slens_hist)
         mx.eval(out)
         return out
@@ -179,9 +182,7 @@ def test_pal_decode_latency_vs_history_len(benchmark, history_len_val, dtype):
 
 
 # benchmarked up to 1048576 tokens
-@pytest.mark.parametrize(
-    "history_len_val", [1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576]
-)
+@pytest.mark.parametrize("history_len_val", [16384, 131072, 524288, 1048576])
 @pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16])
 def test_mlx_decode_latency_vs_history_len(benchmark, history_len_val, dtype):
     """
@@ -195,7 +196,6 @@ def test_mlx_decode_latency_vs_history_len(benchmark, history_len_val, dtype):
         benchmark: pytest-benchmark fixture for performance measurement
         history_len_val: history length value to test (size of existing KV cache)
     """
-    mx.clear_cache()
     # Create test parameters for decode phase
     params = BASELINE_CONFIG.copy()
     params["history_len"] = history_len_val
@@ -209,6 +209,7 @@ def test_mlx_decode_latency_vs_history_len(benchmark, history_len_val, dtype):
 
     # Define benchmark function that evaluates the result
     def operation_to_benchmark():
+        mx.clear_cache()
         output = mx.fast.scaled_dot_product_attention(queries, keys, values, scale=scale, mask=causal_mask)
         mx.eval(output)
         return output

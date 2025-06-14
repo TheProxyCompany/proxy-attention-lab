@@ -42,8 +42,7 @@ template <typename T, int head_dim>
     const int seq_idx = tg_pos_in_grid.x;
     const int head_idx = tg_pos_in_grid.y;
     const int num_threads = 256;
-    const int simd_width = params.simd_width;
-    const int num_simd_groups = num_threads / simd_width;
+    const int num_simd_groups = num_threads / SIMD_WIDTH;
 
     const int context_len = context_lens_in[seq_idx];
     const int num_chunks = (context_len + CHUNK_SIZE - 1) / CHUNK_SIZE;
@@ -52,16 +51,32 @@ template <typename T, int head_dim>
     const int max_tokens = params.max_logical_pages_per_seq * params.tokens_per_page;
     const int max_num_chunks = (max_tokens + CHUNK_SIZE - 1) / CHUNK_SIZE;
 
+    // Early exit if only one chunk
+    if (num_chunks == 1) {
+        // Just copy tmp_out to out
+        device T* out_ptr = output_buffer +
+                            (seq_idx * params.num_q_heads * head_dim) +
+                            (head_idx * head_dim);
+        const device T* tmp_in_ptr = tmp_in +
+                                    ((seq_idx * params.num_q_heads * max_num_chunks) +
+                                    (head_idx * max_num_chunks)) * head_dim;
+
+        for (int i = local_idx_in_tg; i < head_dim; i += num_threads) {
+            out_ptr[i] = tmp_in_ptr[i];
+        }
+        return;
+    }
+
     // Workspace allocation - sequential layout to avoid collisions
     threadgroup uchar* mem = tg_mem;
 
     threadgroup float* shared_max_logits = (threadgroup float*)mem;
-    mem += max_num_chunks * sizeof(float);
+    mem += num_chunks * sizeof(float);
 
     threadgroup float* shared_exp_sums = (threadgroup float*)mem;
-    mem += max_num_chunks * sizeof(float);
+    mem += num_chunks * sizeof(float);
 
-    threadgroup float* red_smem = (threadgroup float*)mem;
+    threadgroup float* reduction_scratch = (threadgroup float*)mem;
     mem += 2 * num_simd_groups * sizeof(float);
 
     // Load max logits to shared memory
@@ -78,26 +93,14 @@ template <typename T, int head_dim>
     threadgroup_barrier(mem_flags::mem_threadgroup);
     // THREADGROUP BARRIER REASON: Ensure all threads have loaded their max_logits into shared memory before reduction.
 
-    // Reduce within SIMD group
-    max_logit = simd_max(max_logit, simd_width);
-    if (lane_idx == 0) {
-        red_smem[simdgroup_idx] = max_logit;
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    // THREADGROUP BARRIER REASON: Ensure all SIMD groups have written their partial max_logit to red_smem before cross-SIMD reduction.
-
-    // Reduce across SIMD groups
-    if (simdgroup_idx == 0) {
-        max_logit = lane_idx < num_simd_groups ? red_smem[lane_idx] : -INFINITY;
-        max_logit = simd_max(max_logit, simd_width);
-    }
-    // Broadcast to all threads
-    if (simdgroup_idx == 0 && lane_idx == 0) {
-        red_smem[0] = max_logit;
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    // THREADGROUP BARRIER REASON: Ensure the final max_logit is written before being broadcast to all threads.
-    max_logit = red_smem[0];
+    max_logit = page_max(
+        reduction_scratch,
+        max_logit,
+        simdgroup_idx,
+        lane_idx,
+        num_simd_groups,
+        SIMD_WIDTH
+    );
 
     // Load rescaled exp sums to shared memory
     const device float* exp_sums_ptr = exp_sums_in +
@@ -114,41 +117,33 @@ template <typename T, int head_dim>
     threadgroup_barrier(mem_flags::mem_threadgroup);
     // THREADGROUP BARRIER REASON: Ensure shared_exp_sums is fully populated and local global_exp_sum is calculated before reduction.
 
-    // Reduce global_exp_sum using templated SIMD helper
-    global_exp_sum = simd_sum(global_exp_sum, simd_width);
-    if (lane_idx == 0) {
-        red_smem[simdgroup_idx + num_simd_groups] = global_exp_sum;
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    // THREADGROUP BARRIER REASON: Ensure all SIMD groups have written their partial global_exp_sum to red_smem before cross-SIMD reduction.
-    if (simdgroup_idx == 0) {
-        global_exp_sum = lane_idx < num_simd_groups ? red_smem[lane_idx + num_simd_groups] : 0.0f;
-        global_exp_sum = simd_sum(global_exp_sum, simd_width);
-    }
-    if (simdgroup_idx == 0 && lane_idx == 0) {
-        red_smem[1] = global_exp_sum;
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    // THREADGROUP BARRIER REASON: Ensure the final global_exp_sum is written before being broadcast to all threads.
-    global_exp_sum = red_smem[1];
+    global_exp_sum = page_sum(
+        reduction_scratch,
+        global_exp_sum,
+        simdgroup_idx,
+        lane_idx,
+        num_simd_groups,
+        SIMD_WIDTH
+    );
 
     const float inv_global_exp_sum = 1.0f / (global_exp_sum + 1e-6f);
 
     // Aggregate tmp_out to out
-    const device T* tmp_out_ptr = tmp_in +
-        seq_idx * params.num_q_heads * max_num_chunks * head_dim +
-        head_idx * max_num_chunks * head_dim;
+    const int out_idx_base = (seq_idx * params.num_q_heads * max_num_chunks) +
+                             (head_idx * max_num_chunks);
+    const device T* tmp_base_ptr = tmp_in + out_idx_base * head_dim;
+
     device T* out_ptr = output_buffer +
-        seq_idx * params.num_q_heads * head_dim +
-        head_idx * head_dim;
+                   (seq_idx * params.num_q_heads * head_dim) +
+                   (head_idx * head_dim);
+
 
     using Vec4 = typename Vec<T, 4>::Type;
-    const uint head_dim_vec4 = head_dim / 4;
 
-    for (uint i = local_idx_in_tg; i < head_dim_vec4; i += num_threads) {
+    for (uint i = local_idx_in_tg; i < head_dim / 4; i += num_threads) {
         float4 acc = {0.0f, 0.0f, 0.0f, 0.0f};
         for (int j = 0; j < num_chunks; ++j) {
-            Vec4 tmp_chunk = ((device const Vec4*)(tmp_out_ptr + j * head_dim))[i];
+            Vec4 tmp_chunk = ((device const Vec4*)(tmp_base_ptr + j * head_dim))[i];
             acc += float4(tmp_chunk) * shared_exp_sums[j];
         }
         Vec4 result;

@@ -121,6 +121,40 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
    */
   static size_t get_optimal_page_size();
 
+  /**
+   * @brief Calculates the shape of the V cache.
+   *
+   * @param num_kv_heads Number of key/value heads
+   * @param head_dim Hidden dimension size per attention head
+   * @param tokens_per_page Number of tokens stored in each memory page
+   * @param dtype Data type of the cache
+   * @return The shape of the V cache
+   */
+  static mx::Shape get_v_cache_shape(
+    int num_total_pages,
+    int num_kv_heads,
+    int head_dim,
+    int tokens_per_page,
+    mx::Dtype dtype
+  );
+
+  /**
+   * @brief Calculates the shape of the K cache.
+   *
+   * @param num_kv_heads Number of key/value heads
+   * @param head_dim Hidden dimension size per attention head
+   * @param tokens_per_page Number of tokens stored in each memory page
+   * @param dtype Data type of the cache
+   * @return The shape of the K cache
+   */
+  static mx::Shape get_k_cache_shape(
+    int num_total_pages,
+    int num_kv_heads,
+    int head_dim,
+    int tokens_per_page,
+    mx::Dtype dtype
+  );
+
  private:
   // Parameters that define kernel behavior
   int num_q_heads_;
@@ -165,6 +199,16 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
       const std::vector<mx::array>& inputs,
       const std::vector<int>& axes) override;
 
+  /**
+   * @brief Calculates the memory layout for the attention kernel.
+   *
+   * @param params Parameters for the paged attention operation
+   * @param threads_per_group Number of threads per group
+   * @param simd_width SIMD width
+   * @param kv_cache_dtype Data type of the key/value cache
+   * @param head_dim Hidden dimension size per attention head
+   * @return The memory layout for the attention kernel
+   */
   size_t calculate_attention_memory_layout(
     const PagedAttentionParams& params,
     size_t threads_per_group,
@@ -173,6 +217,17 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
     int head_dim
   );
 
+  /**
+   * @brief Calculates the memory layout for the reduce kernel.
+   *
+   * @param params Parameters for the paged attention operation
+   * @param threads_per_group Number of threads per group
+   * @return The memory layout for the reduce kernel
+   */
+  size_t calculate_reduce_memory_layout(
+    const PagedAttentionParams& params,
+    size_t threads_per_group
+  );
 };
 
 }  // namespace pal::cpp

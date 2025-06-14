@@ -19,7 +19,7 @@ import logging
 import mlx.core as mx
 import pytest
 
-from proxy_attention_lab import paged_attention
+from proxy_attention_lab.pal_core import get_k_cache_shape, get_v_cache_shape, paged_attention
 
 logger = logging.getLogger(__name__)
 
@@ -61,8 +61,12 @@ def test_paged_attention_smoke(dtype) -> None:
 
     # Create test inputs with random values
     mock_queries = mx.random.normal((num_queries, num_q_heads, head_dim)).astype(dtype)
-    mock_k_cache_pool = mx.random.normal((num_total_pages, num_kv_heads, tokens_per_page, head_dim)).astype(dtype)
-    mock_v_cache_pool = mx.random.normal((num_total_pages, num_kv_heads, tokens_per_page, head_dim)).astype(dtype)
+    mock_v_cache_pool = mx.random.normal(
+        get_v_cache_shape(num_total_pages, num_kv_heads, head_dim, tokens_per_page, dtype)
+    ).astype(dtype)
+    mock_k_cache_pool = mx.random.normal(
+        get_k_cache_shape(num_total_pages, num_kv_heads, head_dim, tokens_per_page, dtype)
+    ).astype(dtype)
 
     # Create page table: maps logical blocks to physical pages
     # Shape: [num_sequences_in_batch, max_logical_pages_per_seq_val]
@@ -89,11 +93,7 @@ def test_paged_attention_smoke(dtype) -> None:
     try:
         # Run the paged attention operation
         out = paged_attention(
-            mock_queries,
-            mock_k_cache_pool,
-            mock_v_cache_pool,
-            mock_page_table,
-            mock_sequence_lengths
+            mock_queries, mock_k_cache_pool, mock_v_cache_pool, mock_page_table, mock_sequence_lengths
         )
         mx.eval(out)
 
@@ -107,6 +107,9 @@ def test_paged_attention_smoke(dtype) -> None:
         logger.info(f"    Actual shape: {out.shape}")
         logger.info(f"    Dtype: {out.dtype}")
         logger.info(f"    Contains finite values: {mx.isfinite(out).all()}")
+
+        print(f"\nOutput: {out.tolist()[0][:3]}")
+        print(f"Mock queries: {mock_queries.tolist()[0][0][:3]}")
 
         # Verify output properties
         assert out.shape == expected_output_shape, (

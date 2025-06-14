@@ -87,15 +87,14 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx:
     // 3. Populate parameters directly from input shapes
     PagedAttentionParams params;
     params.num_q_heads = num_q_heads_;
-    params.num_physical_pages_in_pool = k_cache_pool.shape(0);
-    params.num_kv_heads = k_cache_pool.shape(1);
-    params.tokens_per_page = k_cache_pool.shape(2);
+    params.num_physical_pages_in_pool = v_cache_pool.shape(0);
+    params.num_kv_heads = v_cache_pool.shape(1);
+    params.tokens_per_page = v_cache_pool.shape(3);
     params.max_logical_pages_per_seq = page_table.shape(1);
     params.num_sequences_in_batch = page_table.shape(0);
     // parameters that are not directly from input shapes
     params.log_exp_min_clamp = -88.0f; // tune
     params.inv_sqrt_head_dim = 1.0f / std::sqrt(static_cast<float>(head_dim_));
-    params.simd_width = 32; // placeholder, will be set by the kernel state
 
     const int max_tokens = params.max_logical_pages_per_seq * params.tokens_per_page;
     const int num_chunks = (max_tokens + CHUNK_SIZE - 1) / CHUNK_SIZE;
@@ -109,7 +108,9 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx:
 
     // 5. Get the unified kernel
     const std::string dtype_suffix = mx::type_to_name(inputs[0].dtype());
-    const std::string kernel_name = "pal_paged_attention_" + dtype_suffix + "_" + std::to_string(head_dim_);
+    const std::string kernel_name = "pal_paged_attention_"
+        + dtype_suffix + "_" + std::to_string(head_dim_)
+        + "_" + std::to_string(params.tokens_per_page);
 
     auto kernel_state = d.get_kernel(
         kernel_name,
@@ -122,12 +123,11 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx:
     }
 
     // 6. Determine threadgroup configuration
-    params.simd_width = kernel_state->threadExecutionWidth();
     const size_t threads_per_group = 256; // 1024 is max on apple silicon
     const size_t tg_memory_bytes = calculate_attention_memory_layout(
         params,
         threads_per_group,
-        params.simd_width,
+        kernel_state->threadExecutionWidth(),
         inputs[1].dtype(),
         head_dim_
     );
@@ -190,6 +190,11 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx:
             throw std::runtime_error("[PAL] Failed to load reduce kernel: " + reduce_kernel_name);
         }
 
+        const size_t tg_memory_bytes_pass2 = calculate_reduce_memory_layout(
+            params,
+            threads_per_group
+        );
+
         compute_encoder.set_compute_pipeline_state(reduce_kernel_state);
         compute_encoder.set_output_array(out, 0);
         compute_encoder.set_input_array(max_logits, 1);
@@ -197,8 +202,7 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx:
         compute_encoder.set_input_array(tmp_out, 3);
         compute_encoder.set_input_array(context_lens, 4);
         compute_encoder.set_bytes(&params, sizeof(PagedAttentionParams), 5);
-
-        compute_encoder.set_threadgroup_memory_length(tg_memory_bytes, 0);
+        compute_encoder.set_threadgroup_memory_length(tg_memory_bytes_pass2, 0);
 
         metal::DispatchGrid dispatch_grid_pass2;
         dispatch_grid_pass2.width = params.num_sequences_in_batch;
@@ -209,7 +213,7 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx:
             compute_encoder,
             dispatch_grid_pass2,
             threads_per_group,
-            tg_memory_bytes
+            tg_memory_bytes_pass2
         );
     } else {
         // Single-pass execution
@@ -265,24 +269,23 @@ std::vector<mx::Shape> PagedAttentionPrimitive::output_shapes(
         throw std::invalid_argument(
             "[PagedAttentionPrimitive::output_shapes] Requires at least one input (query).");
     }
-    if (inputs.size() < 2 || inputs[1].ndim() != 4) {
+    if (inputs.size() < 2 || inputs[1].ndim() != 5) {
         throw std::invalid_argument(
             "[PagedAttentionPrimitive::output_shapes] K-pool (inputs[1]) is needed "
-            "and must be 4D to determine head_dim for output shape.");
+            "and must be 5D to determine head_dim for output shape. "
+            "The last dimension must be " + std::to_string(MEMORY_ALIGNMENT_BYTES / mx::size_of(inputs[1].dtype())) + ".");
     }
 
-    const auto& q = inputs[0];
-    uint32_t current_head_dim = inputs[1].shape(3);
-
-    if (q.ndim() == 3) {
-        return {{q.shape(0) * q.shape(1), static_cast<int>(current_head_dim)}};
-    } else if (q.ndim() == 2) {
-        return {{q.shape(0), static_cast<int>(current_head_dim)}};
-    } else if (q.ndim() == 1) {
-        return {{q.shape(0), static_cast<int>(current_head_dim)}};
+    const auto& queries = inputs[0];
+    if (queries.ndim() == 3) {
+        return {{queries.shape(0) * queries.shape(1), static_cast<int>(head_dim_)}};
+    } else if (queries.ndim() == 2) {
+        return {{queries.shape(0), static_cast<int>(head_dim_)}};
+    } else if (queries.ndim() == 1) {
+        return {{queries.shape(0), static_cast<int>(head_dim_)}};
     } else {
         throw std::invalid_argument(
-            "[PagedAttentionPrimitive::output_shapes] Query input 'q' must be 1D, 2D, or 3D.");
+            "[PagedAttentionPrimitive::output_shapes] Query input 'queries' must be 1D, 2D, or 3D.");
     }
 }
 
@@ -297,7 +300,6 @@ void PagedAttentionPrimitive::print(std::ostream& os) {
 // todo make this dynamic
 size_t PagedAttentionPrimitive::get_optimal_page_size() {
     size_t page_size = 16;
-
     return page_size;
   }
 
@@ -311,21 +313,83 @@ size_t PagedAttentionPrimitive::calculate_attention_memory_layout(
 ) {
     // This handles float16, bfloat16, float32, etc.
     size_t kv_item_size = mx::size_of(kv_cache_dtype);
+    size_t num_simd_groups = threads_per_group / simd_width;
 
-    const size_t num_simd_groups = threads_per_group / simd_width;
-    size_t q_tile_bytes = head_dim * sizeof(float);
-    size_t k_tile_bytes = params.tokens_per_page * head_dim * kv_item_size;
-    size_t v_tile_bytes = params.tokens_per_page * head_dim * kv_item_size;
-    size_t logits_tile_bytes = params.tokens_per_page * sizeof(float); // logits tile
-    size_t simd_stats_bytes = num_simd_groups * sizeof(float) * 2; // max_scores + sum_exps
+    // calculate q tile size
+    // 1. Calculate SUBGROUP_SIZE
+    const size_t subgroup_size = std::max((size_t)1, simd_width / params.tokens_per_page);
+    // 2. Calculate QK_VECTOR_WIDTH
+    const size_t qk_vector_width = std::max((size_t)1, MEMORY_ALIGNMENT_BYTES / (subgroup_size * kv_item_size));
+    // 3. Calculate num_vecs_per_thread
+    const size_t num_vecs_per_thread = head_dim / (subgroup_size * qk_vector_width);
+    size_t q_tile_bytes = (qk_vector_width * sizeof(float)) * subgroup_size * num_vecs_per_thread;
+    size_t logits_tile_bytes = CHUNK_SIZE * sizeof(float); // logits tile
     size_t reduction_scratchpad_bytes = num_simd_groups * sizeof(float);
-    size_t acc_tile_bytes = num_simd_groups * head_dim * sizeof(float);
 
-    size_t total_bytes = q_tile_bytes + k_tile_bytes + v_tile_bytes + logits_tile_bytes + simd_stats_bytes + reduction_scratchpad_bytes + acc_tile_bytes;
+    // use same 16-byte alignment as in paged_attention.h.metal
+    size_t total_bytes = 0;
+    total_bytes += q_tile_bytes;
+    total_bytes = (total_bytes + 15) & ~15;
+    total_bytes += logits_tile_bytes;
+    total_bytes = (total_bytes + 15) & ~15;
+    total_bytes += reduction_scratchpad_bytes;
+    total_bytes = (total_bytes + 15) & ~15;
+    // Aligned to a 16-byte boundary
 
-    // Align to a 16-byte boundary
-    return (total_bytes + 15) & ~15;
+    return total_bytes;
 }
 
+size_t PagedAttentionPrimitive::calculate_reduce_memory_layout(
+    const PagedAttentionParams& params,
+    size_t threads_per_group
+) {
+    // Calculate maximum possible chunks
+    const int max_tokens = params.max_logical_pages_per_seq * params.tokens_per_page;
+    const int max_num_chunks = (max_tokens + CHUNK_SIZE - 1) / CHUNK_SIZE;
+
+    // Reduce kernel needs:
+    // 1. shared_max_logits: max_num_chunks * sizeof(float)
+    // 2. shared_exp_sums: max_num_chunks * sizeof(float)
+    // 3. reduction_scratch: 2 * num_simd_groups * sizeof(float)
+
+    size_t num_simd_groups = threads_per_group / SIMD_WIDTH;
+
+    size_t total_bytes = 0;
+    total_bytes += max_num_chunks * sizeof(float);      // shared_max_logits
+    total_bytes += max_num_chunks * sizeof(float);      // shared_exp_sums
+    total_bytes += 2 * num_simd_groups * sizeof(float); // reduction_scratch
+
+    // Align to 16-byte boundary
+    total_bytes = (total_bytes + 15) & ~15;
+
+    return total_bytes;
+}
+
+// v shape is 4D: [num_total_pages, num_kv_heads, head_dim, tokens_per_page]
+mx::Shape PagedAttentionPrimitive::get_v_cache_shape(
+    int num_total_pages,
+    int num_kv_heads,
+    int head_dim,
+    int tokens_per_page,
+    mx::Dtype dtype
+) {
+    return mx::Shape{num_total_pages, num_kv_heads, head_dim, tokens_per_page};
+}
+
+// k shape is 5D: [num_total_pages, num_kv_heads, head_dim / elements_per_thread, tokens_per_page, elements_per_thread]
+mx::Shape PagedAttentionPrimitive::get_k_cache_shape(
+    int num_total_pages,
+    int num_kv_heads,
+    int head_dim,
+    int tokens_per_page,
+    mx::Dtype dtype
+) {
+    // Align our K cache to a MEMORY_ALIGNMENT_BYTES byte boundary for coalesced device memory access
+    //
+    // credit: https://github.com/EricLBuehler/mistral.rs/blob/master/mistralrs-paged-attn/src/metal/kernels/pagedattention.metal
+    // for inspiration and reference (theirs uses a constant x = 16 / sizeof(T))
+    const int elements_per_thread = MEMORY_ALIGNMENT_BYTES / mx::size_of(dtype);
+    return mx::Shape{num_total_pages, num_kv_heads, head_dim / elements_per_thread, tokens_per_page, elements_per_thread};
+}
 
 }  // namespace pal::cpp

@@ -23,7 +23,7 @@ import logging
 import mlx.core as mx
 import pytest
 
-from proxy_attention_lab import paged_attention
+from proxy_attention_lab import get_k_cache_shape, get_v_cache_shape, paged_attention
 
 logger = logging.getLogger(__name__)
 
@@ -55,9 +55,10 @@ def test_paged_attention_determinism(history_length, batch_size, head_dim, dtype
     py_queries = mx.random.normal(queries_shape, dtype=dtype)
 
     # 2. K/V Cache Pools
-    kv_cache_shape = (num_total_pages, num_kv_heads, tokens_per_page, head_dim)
-    py_k_cache_pool = mx.random.normal(kv_cache_shape, dtype=dtype)
-    py_v_cache_pool = mx.random.normal(kv_cache_shape, dtype=dtype)
+    k_cache_shape = get_k_cache_shape(num_total_pages, num_kv_heads, head_dim, tokens_per_page, dtype)
+    v_cache_shape = get_v_cache_shape(num_total_pages, num_kv_heads, head_dim, tokens_per_page, dtype)
+    py_k_cache_pool = mx.random.normal(k_cache_shape, dtype=dtype)
+    py_v_cache_pool = mx.random.normal(v_cache_shape, dtype=dtype)
 
     # 3. Page Table: [NumSequencesInBatch, MaxLogicalBlocksPerSeq]
     py_page_table = mx.random.randint(0, num_total_pages, [batch_size, max_logical_pages_per_seq], dtype=mx.uint32)
