@@ -37,7 +37,6 @@ def test_paged_attention_smoke(dtype) -> None:
     3. The output has the expected dimensions based on input parameters
     4. The output contains valid numerical values (no NaN or Inf)
     """
-    mx.clear_cache()
     logger.info(f"Test: {test_paged_attention_smoke.__name__} (dtype={dtype})")
 
     # Query tensor parameters

@@ -46,7 +46,6 @@ def test_full_attention_in_one_block(head_dim, dtype) -> None:
 
     All token positions in this test are within the same logical block 0.
     """
-    mx.clear_cache()
     logger.info(f"Test: {test_full_attention_in_one_block.__name__} (dtype={dtype})")
 
     # --- Configuration ---

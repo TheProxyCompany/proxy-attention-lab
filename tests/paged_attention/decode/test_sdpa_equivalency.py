@@ -240,9 +240,7 @@ def test_pal_decode_vs_sdpa_equivalency(batch_size, history_len, num_heads, head
     current_rtol = 1e-4
     logger.info(f"    Tolerance values - Absolute: {current_atol}, Relative: {current_rtol}")
 
-    if not mx.allclose(pal_output_reshaped, sdpa_output_reshaped, atol=current_atol, rtol=current_rtol):
-        mx.clear_cache()
-        pytest.fail(
-            f"Numerical mismatch between PAL paged_attention decode and MLX SDPA: "
-            f"Max diff: {max_diff}, Mean diff: {mean_diff}"
-        )
+    assert mx.allclose(pal_output_reshaped, sdpa_output_reshaped, atol=current_atol, rtol=current_rtol), (
+        f"Numerical mismatch between PAL paged_attention decode and MLX SDPA: "
+        f"Max diff: {max_diff}, Mean diff: {mean_diff}"
+    )

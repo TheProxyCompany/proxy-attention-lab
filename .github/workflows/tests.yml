@@ -28,4 +28,6 @@ jobs:
         env:
           # Force MLX to initialize memory to zero
           MLX_SAFE_MODE: 1
+          # Limit memory usage to prevent OOM issues
+          MLX_METAL_MEMORY_LIMIT_MB: 4096
         run: pytest tests/ -v --tb=short
