@@ -30,11 +30,11 @@ using float32_t = float;
 
 #ifndef __METAL_VERSION__ // C++ side
 constexpr int PREFER_SINGLE_PASS_TOKENS = 4096;  // TODO: empirically tune
-constexpr int CHUNK_SIZE = 512;
+constexpr int CHUNK_SIZE = 1024;
 constexpr int SIMD_WIDTH = 32; // 32 wide simdgroups default on apple silicon
 constexpr int MEMORY_ALIGNMENT_BYTES = 16;
 #else // __METAL_VERSION__ (Metal side)
-#define CHUNK_SIZE 512
+#define CHUNK_SIZE 1024
 #define SIMD_WIDTH 32
 #define MEMORY_ALIGNMENT_BYTES 16
 #endif
@@ -86,7 +86,8 @@ struct alignas(16) FillKVPagesParams {
     uint32_t tokens_per_page;
     uint32_t page_table_max_logical_blocks;
     uint32_t total_new_tokens_to_write;
-    uint32_t kv_pairs_per_threadgroup;
+    uint32_t tokens_per_threadgroup;
+    uint32_t threads_per_threadgroup;
 };
 #ifndef __METAL_VERSION__ // C++ side
 
@@ -94,7 +95,7 @@ static_assert(std::is_standard_layout_v<FillKVPagesParams>,
               "FillKVPagesParams must be a standard-layout type.");
 static_assert(alignof(FillKVPagesParams) == 16,
               "FillKVPagesParams must have 16-byte alignment.");
-// 6 uint32_t (24 bytes) = 24 data bytes.
+// 7 uint32_t (28 bytes) = 28 data bytes.
 // alignas(16) means total size is 32 bytes (rounded up to multiple of 16).
 static_assert(sizeof(FillKVPagesParams) == 32, "C++ sizeof(FillKVPagesParams) expected to be 32 bytes.");
 

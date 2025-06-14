@@ -20,7 +20,7 @@
 
 #include <metal_stdlib>
 #include "paged_attention_types.h"
-#include "pal_types.h.metal"
+#include "utils.h.metal"
 
 using namespace metal;
 
@@ -208,7 +208,6 @@ template <typename T, int HEAD_DIM, int TOKENS_PER_PAGE>
         } // end of tokens_per_subgroup loop
     } // end of main attention loop
 
-    float prev_max_score = max_score;
     // --- 6. Global Max Score Reduction ---
     max_score = page_max(reduction_scratchpad, max_score, simdgroup_idx, lane_idx, num_simd_groups, SIMD_WIDTH, SUBGROUP_SIZE);
 
@@ -379,7 +378,7 @@ template <typename T, int HEAD_DIM, int TOKENS_PER_PAGE>
 
         if (simdgroup_idx == 0) {
             // The output pointer is based on which sequence, head, and chunk we are.
-            const ulong out_offset = ((ulong)seq_idx * params.num_q_heads + q_head_idx) * max_chunks * HEAD_DIM + (ulong)chunk_idx * HEAD_DIM;
+            const ulong out_offset = ((ulong)seq_idx * params.num_q_heads + q_head_idx) * HEAD_DIM * max_chunks;
             device T* tmp_out_ptr = tmp_out + out_offset;
 
             #pragma unroll
@@ -387,7 +386,7 @@ template <typename T, int HEAD_DIM, int TOKENS_PER_PAGE>
                 const int element_idx = (lane_idx / (TOKENS_PER_PAGE / V_VECTOR_WIDTH)) + i * ELEMENTS_PER_SIMD;
                 // Only the leader thread for each element writes its computed value.
                 if (element_idx < HEAD_DIM && (lane_idx % (TOKENS_PER_PAGE / V_VECTOR_WIDTH) == 0)) {
-                    tmp_out_ptr[element_idx] = T(acc[i]);
+                    tmp_out_ptr[element_idx * max_chunks + chunk_idx] = T(acc[i]);
                 }
             }
         }

@@ -123,7 +123,7 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx:
     }
 
     // 6. Determine threadgroup configuration
-    const size_t threads_per_group = 256; // 1024 is max on apple silicon
+    const size_t threads_per_group = 512; // 1024 is max on apple silicon
     const size_t tg_memory_bytes = calculate_attention_memory_layout(
         params,
         threads_per_group,
@@ -148,7 +148,7 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx:
         // Allocate intermediate buffers for two-pass
         mx::array max_logits({num_seq, num_q_heads_, num_chunks}, mx::float32, nullptr, {});
         mx::array exp_sums({num_seq, num_q_heads_, num_chunks}, mx::float32, nullptr, {});
-        mx::array tmp_out({num_seq, num_q_heads_, num_chunks, head_dim_}, queries.dtype(), nullptr, {});
+        mx::array tmp_out({num_seq, num_q_heads_, head_dim_, num_chunks}, queries.dtype(), nullptr, {});
 
         max_logits.set_data(mx::allocator::malloc(max_logits.nbytes()));
         exp_sums.set_data(mx::allocator::malloc(exp_sums.nbytes()));

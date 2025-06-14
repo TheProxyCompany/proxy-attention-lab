@@ -39,8 +39,18 @@ def test_fill_kv_pages_smoke(dtype: mx.Dtype) -> None:
 
     new_keys = mx.random.normal([num_new_tokens, num_kv_heads, head_dim], dtype=dtype)
     new_values = mx.random.normal([num_new_tokens, num_kv_heads, head_dim], dtype=dtype)
-    global_key_pool = mx.zeros([num_physical_pages, num_kv_heads, tokens_per_page, head_dim], dtype=dtype)
-    global_value_pool = mx.zeros([num_physical_pages, num_kv_heads, tokens_per_page, head_dim], dtype=dtype)
+
+    # New K-cache layout: [pages, heads, head_dim/x, tokens_per_page, x]
+    # New V-cache layout: [pages, heads, head_dim, tokens_per_page]
+    elements_per_thread = 16 // dtype.size  # MEMORY_ALIGNMENT_BYTES / sizeof(dtype)
+
+    # K-cache with interleaved layout
+    global_key_pool = mx.zeros(
+        [num_physical_pages, num_kv_heads, head_dim // elements_per_thread, tokens_per_page, elements_per_thread],
+        dtype=dtype,
+    )
+    # V-cache with contiguous layout
+    global_value_pool = mx.zeros([num_physical_pages, num_kv_heads, head_dim, tokens_per_page], dtype=dtype)
     pt_data = mx.arange(num_sequences_in_batch * max_logical_pages_per_seq, dtype=mx.uint32) % num_physical_pages
     page_table = mx.array(pt_data.reshape(num_sequences_in_batch, max_logical_pages_per_seq))
     current_token_write_positions = mx.array(mx.zeros(num_new_tokens, dtype=mx.int32))

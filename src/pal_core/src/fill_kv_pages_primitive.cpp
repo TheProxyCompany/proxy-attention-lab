@@ -92,23 +92,6 @@ void FillKVPagesPrimitive::eval_gpu(const std::vector<mx::array>& inputs, std::v
     // Ensure PAL Metal library is registered
     MetalLibRegistrar::ensure_pal_metallib_registered(s);
 
-    // Populate FillKVPagesParams struct
-    FillKVPagesParams params;
-    params.num_kv_heads = num_kv_heads_; // From primitive member
-    params.head_dim = head_dim_;         // From primitive member
-    params.tokens_per_page = tokens_per_page_; // From primitive member
-    params.total_new_tokens_to_write = new_keys.shape(0);
-    params.kv_pairs_per_threadgroup = KVPairsPerThreadgroup;
-
-    if (page_table.ndim() < 2) {
-        throw std::invalid_argument("[FillKVPagesPrimitive] page_table must be at least 2D.");
-    }
-    params.page_table_max_logical_blocks = page_table.shape(1);
-
-    spdlog::debug("[FillKVPagesPrimitive] Kernel Params: kv_heads={}, head_dim={}, tokens_per_page={}, total_new_tokens={}, pt_max_logical_blocks={}",
-                  params.num_kv_heads, params.head_dim, params.tokens_per_page,
-                  params.total_new_tokens_to_write, params.page_table_max_logical_blocks);
-
     const std::string dtype_identifier = mx::type_to_name(global_k_pool.dtype());
     // Get Metal kernel
     const std::string library_name = "pal";
@@ -117,6 +100,39 @@ void FillKVPagesPrimitive::eval_gpu(const std::vector<mx::array>& inputs, std::v
     if (!kernel_state) {
         throw std::runtime_error("[FillKVPagesPrimitive] Failed to load kernel: " + kernel_name);
     }
+
+    const size_t num_new_tokens = new_keys.shape(0);
+    size_t num_threads = 256;
+    num_threads = std::min(num_threads, kernel_state->maxTotalThreadsPerThreadgroup());
+
+    int tokens_per_threadgroup = 1;
+    const size_t DECODE_THRESHOLD = 32;
+    const size_t PREFILL_THRESHOLD = 256;
+
+    if (num_new_tokens > 0 && num_new_tokens <= DECODE_THRESHOLD) {
+        tokens_per_threadgroup = num_new_tokens;
+    } else if (num_new_tokens < PREFILL_THRESHOLD) {
+        tokens_per_threadgroup = 4;
+    }
+
+    metal::DispatchGrid grid;
+    grid.width = (num_new_tokens + tokens_per_threadgroup - 1) / tokens_per_threadgroup;
+    grid.height = 1;
+    grid.depth = 1;
+
+        // Populate FillKVPagesParams struct
+    FillKVPagesParams params;
+    params.num_kv_heads = num_kv_heads_; // From primitive member
+    params.head_dim = head_dim_;         // From primitive member
+    params.tokens_per_page = tokens_per_page_; // From primitive member
+    params.page_table_max_logical_blocks = page_table.shape(1);
+    params.total_new_tokens_to_write = num_new_tokens;
+    params.tokens_per_threadgroup = tokens_per_threadgroup;
+    params.threads_per_threadgroup = num_threads;
+
+    spdlog::debug("[FillKVPagesPrimitive] Kernel Params: kv_heads={}, head_dim={}, tokens_per_page={}, total_new_tokens={}, pt_max_logical_blocks={}",
+                  params.num_kv_heads, params.head_dim, params.tokens_per_page,
+                  params.total_new_tokens_to_write, params.page_table_max_logical_blocks);
 
     // Setup compute encoder
     auto& compute_encoder = d.get_command_encoder(s.index);
@@ -136,23 +152,15 @@ void FillKVPagesPrimitive::eval_gpu(const std::vector<mx::array>& inputs, std::v
     compute_encoder.set_output_array(outputs[0], 6);
     compute_encoder.set_output_array(outputs[1], 7);
 
-    // Calculate dispatch grid
-    metal::DispatchGrid grid;
-    size_t num_threadgroups = (params.total_new_tokens_to_write + KVPairsPerThreadgroup - 1) / KVPairsPerThreadgroup;
-    grid.width = num_threadgroups;
-    grid.height = 1;
-    grid.depth = 1;
-
-    size_t threads_per_group = kernel_state->threadExecutionWidth() * SIMD_GROUPS_PER_THREADGROUP;
-    threads_per_group = std::min(threads_per_group, kernel_state->maxTotalThreadsPerThreadgroup());
-
     // Dispatch kernel
-    metal::MetalDispatcher::dispatch_kernel(
-        compute_encoder,
-        grid,
-        threads_per_group,   // threads_per_group
-        0                   // threadgroup_memory_bytes
-    );
+    if (num_new_tokens > 0) {
+        metal::MetalDispatcher::dispatch_kernel(
+            compute_encoder,
+            grid,
+            num_threads,
+            0  // threadgroup_memory_bytes
+        );
+    }
 }
 
 void FillKVPagesPrimitive::print(std::ostream& os) {
@@ -173,7 +181,7 @@ std::vector<mx::Shape> FillKVPagesPrimitive::output_shapes(const std::vector<mx:
     }
 
     // Validate global pool dimensions
-    if (inputs[2].ndim() != 4 || inputs[3].ndim() != 4) {
+    if (inputs[2].ndim() != 5 || inputs[3].ndim() != 4) {
         throw std::invalid_argument(
             "[FillKVPagesPrimitive] output_shapes: global_k_pool and global_v_pool must be 4D arrays");
     }

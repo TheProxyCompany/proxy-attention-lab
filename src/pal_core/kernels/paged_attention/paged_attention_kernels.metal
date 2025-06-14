@@ -26,15 +26,14 @@
     fill_kv_pages_kernel<TYPE>(                                                                                                 \
         device const    TYPE*   new_keys                    [[buffer(0)]],                                                      \
         device const    TYPE*   new_values                  [[buffer(1)]],                                                      \
-        device const    uint*   page_table_data             [[buffer(2)]],                                                      \
-        device const    int*    current_token_write_positions[[buffer(3)]],                                                     \
-        device const    uint*   query_to_seq_map_data       [[buffer(4)]],                                                      \
+        device const    uint*   page_table             [[buffer(2)]],                                                      \
+        device const    int*    token_write_positions[[buffer(3)]],                                                     \
+        device const    uint*   query_to_seq_map       [[buffer(4)]],                                                      \
         constant const  FillKVPagesParams& params           [[buffer(5)]],                                                      \
         device          TYPE*   global_k_pool_out           [[buffer(6)]],                                                      \
         device          TYPE*   global_v_pool_out           [[buffer(7)]],                                                      \
         uint3           tg_id                              [[threadgroup_position_in_grid]],                                    \
-        uint3           thread_idx_in_group_3d             [[thread_position_in_threadgroup]],                                  \
-        uint3           threads_per_tg_3d                  [[threads_per_threadgroup]]                                          \
+        uint           local_idx             [[thread_index_in_threadgroup]]                                  \
     );
 
 // --- Create the concrete specializations ---

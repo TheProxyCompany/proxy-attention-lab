@@ -86,6 +86,11 @@ struct Bfloat8 {
 
     explicit Bfloat8(Half8 other);
     explicit Bfloat8(Float8 other);
+
+
+    inline const thread bfloat16_t& operator[](uint i) const {
+        return ((const thread bfloat16_t*)this)[i];
+    }
 };
 
 struct Half8 {
@@ -96,6 +101,10 @@ struct Half8 {
 
     explicit Half8(Float8 other);
     explicit Half8(Bfloat8 other);
+
+    inline const thread half& operator[](uint i) const {
+        return ((const thread half*)this)[i];
+    }
 };
 
 // 8-wide float vector
@@ -701,101 +710,4 @@ inline T simd_max(T v, uint width, uint mask_size = 1) {
     for (int mask = width / 2; mask >= mask_size; mask /= 2)
         v = max(v, simd_shuffle_xor(v, mask));
     return v;
-}
-
-// ============================================================================
-// Attention-specific utilities
-// inspired/borrowed from:
-// https://github.com/EricLBuehler/mistral.rs/blob/58df07e2abb758f7c1d4de8f26f24803d7dbee1f/mistralrs-paged-attn/src/metal/kernels/pagedattention.metal
-// ============================================================================
-
-// Dot product for threadgroup Q and thread-local K arrays
-template <typename QVec, typename KVec>
-inline float qk_dot_strided(
-    threadgroup const QVec* q_base,
-    thread const KVec* k_vecs,
-    int num_vecs,
-    int lane_offset,
-    int subgroup_size
-) {
-    using AccType = typename FloatVec<QVec>::Type;
-
-    // First vector at q_base[lane_offset * num_vecs + 0]
-    AccType qk_vec = mul<AccType, QVec, KVec>(
-        q_base[lane_offset * num_vecs],
-        k_vecs[0]
-    );
-
-    #pragma unroll
-    for (int i = 1; i < num_vecs; ++i) {
-        qk_vec = fma(
-            q_base[lane_offset * num_vecs + i],
-            k_vecs[i],
-            qk_vec
-        );
-    }
-
-    float qk = sum(qk_vec);
-    return simd_sum(qk, subgroup_size);
-}
-
-// page-wide sum for softmax computation
-// happens within a SIMD group
-inline float page_sum(
-    threadgroup float* tg_mem,
-    float local_sum,
-    uint simd_group_id,
-    uint simd_lane_id,
-    uint num_simd_groups,
-    uint simd_width
-) {
-    // First reduce within each SIMD group
-    local_sum = simd_sum(local_sum, simd_width);
-
-    // SIMD group leaders write to shared memory
-    if (simd_lane_id == 0) {
-        tg_mem[simd_group_id] = local_sum;
-    }
-
-    // Synchronize to ensure all groups have written
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    // Get the local sum from the shared memory
-    local_sum = (simd_lane_id < num_simd_groups) ? tg_mem[simd_lane_id] : 0.0f;
-
-    // Reduce across the SIMD groups
-    local_sum = simd_sum(local_sum, num_simd_groups);
-
-    // Broadcast result to all threads
-    return simd_broadcast(local_sum, 0);
-}
-
-// page-wide max for softmax computation
-// happens within a SIMD group
-inline float page_max(
-    threadgroup float* tg_mem,
-    float local_max,
-    uint simd_group_id,
-    uint simd_lane_id,
-    uint num_simd_groups,
-    uint simd_width,
-    uint subgroup_size = 1
-) {
-    // First reduce within each SIMD group (simd_width) + (subgroup_size)
-    local_max = simd_max(local_max, simd_width, subgroup_size);
-
-    // SIMD group leaders write to shared memory
-    if (simd_lane_id == 0) {
-        tg_mem[simd_group_id] = local_max;
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    // THREADGROUP BARRIER REASON: Ensure all groups have written their local_max to shared memory before reduction.
-
-    // Get the local max from the shared memory
-    local_max = (simd_lane_id < num_simd_groups) ? tg_mem[simd_lane_id] : -INFINITY;
-
-    // Reduce across the SIMD groups (num_simd_groups)
-    local_max = simd_max(local_max, num_simd_groups);
-
-    // Broadcast result to all threads
-    return simd_broadcast(local_max, 0);
 }

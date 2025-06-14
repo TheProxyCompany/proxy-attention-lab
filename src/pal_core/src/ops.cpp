@@ -133,8 +133,8 @@ std::tuple<mx::array, mx::array> fill_kv_pages(
 
   // Extract key parameters from input arrays to pass to the primitive
   int num_kv_heads = global_value_pool.shape(1);
-  int tokens_per_page = global_value_pool.shape(2);
-  int head_dim = global_value_pool.shape(3);
+  int head_dim = global_value_pool.shape(2);
+  int tokens_per_page = global_value_pool.shape(3);
 
   // Create the primitive instance with the extracted parameters
   auto primitive = std::make_shared<FillKVPagesPrimitive>(

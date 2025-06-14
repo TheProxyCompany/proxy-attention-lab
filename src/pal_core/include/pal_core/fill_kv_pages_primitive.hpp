@@ -31,10 +31,6 @@ namespace mx = mlx::core;
 
 namespace pal::cpp {
 
-static constexpr size_t SIMD_GROUPS_PER_THREADGROUP = 2; // wip
-
-static constexpr int KVPairsPerThreadgroup = 8;
-
 /**
  * @brief Custom primitive implementation for filling KV cache pages.
  *

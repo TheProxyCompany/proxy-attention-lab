@@ -20,7 +20,7 @@
 
 #include <metal_stdlib>
 #include "paged_attention_types.h"
-#include "pal_types.h.metal"
+#include "utils.h.metal"
 
 using namespace metal;
 
@@ -131,7 +131,7 @@ template <typename T, int head_dim>
     // Aggregate tmp_out to out
     const int out_idx_base = (seq_idx * params.num_q_heads * max_num_chunks) +
                              (head_idx * max_num_chunks);
-    const device T* tmp_base_ptr = tmp_in + out_idx_base * head_dim;
+    const device T* tmp_base_ptr = tmp_in + ((ulong)seq_idx * params.num_q_heads + head_idx) * head_dim * max_num_chunks;
 
     device T* out_ptr = output_buffer +
                    (seq_idx * params.num_q_heads * head_dim) +
@@ -142,8 +142,10 @@ template <typename T, int head_dim>
 
     for (uint i = local_idx_in_tg; i < head_dim / 4; i += num_threads) {
         float4 acc = {0.0f, 0.0f, 0.0f, 0.0f};
+        device const Vec4* row_ptr = (device const Vec4*)(tmp_base_ptr + i * 4 * max_num_chunks);
+
         for (int j = 0; j < num_chunks; ++j) {
-            Vec4 tmp_chunk = ((device const Vec4*)(tmp_base_ptr + j * head_dim))[i];
+            Vec4 tmp_chunk = row_ptr[j];
             acc += float4(tmp_chunk) * shared_exp_sums[j];
         }
         Vec4 result;

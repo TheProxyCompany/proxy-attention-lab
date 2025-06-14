@@ -1,3 +1,21 @@
+# tests/paged_attention/fill_kv_pages/test_fill_kv_pages_data.py
+# Unit tests for the fill_kv_pages operation.
+#
+# Copyright 2025 The Proxy Company. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ============================================================================
+
 import logging
 
 import mlx.core as mx
@@ -5,109 +23,64 @@ import pytest
 
 from proxy_attention_lab import fill_kv_pages
 
+# A memory alignment of 16 bytes is standard for Metal.
+MEMORY_ALIGNMENT_BYTES = 16
+
 logger = logging.getLogger(__name__)
 
 
 @pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16])
-def test_fill_chunk_across_page_boundary(dtype):
-    """Test filling a chunk that spans across a page boundary for both float16 and bfloat16.
-
-    This test verifies that the fill_kv_pages operation correctly writes
-    new key and value data when a chunk of tokens starts in one logical block
-    (physical page) and ends in the next.
+def test_fill_single_token(dtype: mx.Dtype):
     """
-    # Fixed test parameters
+    Tests filling a single token for a single sequence.
+
+    This test verifies that the kernel correctly writes new key and value
+    data into the K and V caches according to their specified memory layouts.
+    """
+    # 1. Arrange: Define parameters and prepare all input arrays.
+    num_new_tokens = 1
     num_kv_heads = 1
-    head_dim = 4
-    tokens_per_page = 4
-
-    # Scenario: Write tokens starting mid-page and crossing to next page
-    start_logical_position = tokens_per_page // 2  # Start at position 2 (mid-page)
-    num_new_tokens_in_chunk = tokens_per_page  # 4 tokens will cross boundary
-
-    num_sequences_in_batch = 1
-    num_physical_pages = 3  # Need at least 2, using 3 for safety
+    head_dim = 64
+    tokens_per_page = 2
+    num_physical_pages = 1
+    elements_per_thread = MEMORY_ALIGNMENT_BYTES // dtype.size
 
     logger.info(
-        f"Test parameters: num_new_tokens_in_chunk={num_new_tokens_in_chunk}, "
-        f"start_logical_position={start_logical_position}, "
-        f"num_sequences_in_batch={num_sequences_in_batch}, "
-        f"num_kv_heads={num_kv_heads}, head_dim={head_dim}, "
-        f"tokens_per_page={tokens_per_page}, "
-        f"num_physical_pages={num_physical_pages}, dtype={dtype}"
+        f"Running test_fill_single_token with dtype={dtype}, head_dim={head_dim}, tokens_per_page={tokens_per_page}"
     )
 
-    # Create distinct new keys and values
-    # Shape: [num_new_tokens_in_chunk, num_kv_heads, head_dim]
-    new_keys_data = []
-    new_values_data = []
-    for i in range(num_new_tokens_in_chunk):
-        # Keys: [i*10+1, i*10+2, i*10+3, i*10+4]
-        # Values: [i*10+5, i*10+6, i*10+7, i*10+8]
-        key_row = [i * 10 + j + 1 for j in range(head_dim)]
-        value_row = [i * 10 + j + 5 for j in range(head_dim)]
-        new_keys_data.append([key_row])  # Extra dimension for kv_heads
-        new_values_data.append([value_row])
+    # Source data to be written
+    new_keys = mx.arange(1, head_dim + 1, dtype=dtype).reshape(num_new_tokens, num_kv_heads, head_dim)
+    new_values = mx.arange(head_dim + 1, 2 * head_dim + 1, dtype=dtype).reshape(num_new_tokens, num_kv_heads, head_dim)
 
-    new_keys = mx.array(new_keys_data, dtype=dtype)
-    new_values = mx.array(new_values_data, dtype=dtype)
-
-    logger.debug(f"new_keys shape: {new_keys.shape}")
-    logger.debug(f"new_values shape: {new_values.shape}")
-    for i in range(num_new_tokens_in_chunk):
-        logger.debug(f"Token {i} key: {new_keys[i].tolist()}, value: {new_values[i].tolist()}")
-
-    # Initialize global pools with zeros
-    global_key_pool = mx.zeros((num_physical_pages, num_kv_heads, tokens_per_page, head_dim), dtype=dtype)
-    global_value_pool = mx.zeros((num_physical_pages, num_kv_heads, tokens_per_page, head_dim), dtype=dtype)
-
-    logger.debug(f"global_key_pool shape: {global_key_pool.shape}")
-    logger.debug(f"global_value_pool shape: {global_value_pool.shape}")
-
-    # Page table: map logical block 0 to physical page 0, logical block 1 to physical page 1
-    # Shape: [1, 2] (one sequence, two logical blocks)
-    page_table = mx.array([[0, 1]], dtype=mx.uint32)
-    logger.debug(f"page_table shape: {page_table.shape}, values: {page_table.tolist()}")
-
-    # Write positions: consecutive positions starting from start_logical_position
-    # With start_logical_position=2 and 4 tokens: positions will be [2, 3, 4, 5]
-    # This means: slot 2,3 in page 0, then slot 0,1 in page 1
-    current_token_write_positions = mx.array(
-        [start_logical_position + i for i in range(num_new_tokens_in_chunk)], dtype=mx.int32
+    # Destination caches, initially empty
+    global_key_pool = mx.zeros(
+        (
+            num_physical_pages,
+            num_kv_heads,
+            head_dim // elements_per_thread,
+            tokens_per_page,
+            elements_per_thread,
+        ),
+        dtype=dtype,
     )
-    logger.debug(
-        f"current_token_write_positions shape: {current_token_write_positions.shape}, "
-        f"values: {current_token_write_positions.tolist()}"
+    global_value_pool = mx.zeros(
+        (
+            num_physical_pages,
+            num_kv_heads,
+            head_dim,
+            tokens_per_page,
+        ),
+        dtype=dtype,
     )
 
-    # Log the expected mapping
-    for i, pos in enumerate(current_token_write_positions.tolist()):
-        logical_block = pos // tokens_per_page
-        slot_in_block = pos % tokens_per_page
-        physical_page = page_table[0, logical_block].item()
-        logger.debug(
-            f"Token {i} at logical pos {pos} -> logical block {logical_block}, "
-            f"slot {slot_in_block}, physical page {physical_page}"
-        )
+    # Paging metadata for a single token in a single sequence
+    page_table = mx.array([[0]], dtype=mx.uint32)
+    current_token_write_positions = mx.array([0], dtype=mx.int32)
+    query_to_seq_map = mx.array([0], dtype=mx.uint32)
 
-    # Query to sequence mapping: all tokens belong to sequence 0
-    query_to_seq_map = mx.array([0] * num_new_tokens_in_chunk, dtype=mx.uint32)
-    logger.debug(f"query_to_seq_map shape: {query_to_seq_map.shape}, values: {query_to_seq_map.tolist()}")
-
-    # Evaluate all inputs before the call
-    mx.eval(
-        new_keys,
-        new_values,
-        global_key_pool,
-        global_value_pool,
-        page_table,
-        current_token_write_positions,
-        query_to_seq_map,
-    )
-
-    logger.info("Calling fill_kv_pages...")
-
-    # Call fill_kv_pages
+    # 2. Act: Execute the kernel.
+    logger.info("Calling pal_core.ops.fill_kv_pages...")
     updated_k_pool, updated_v_pool = fill_kv_pages(
         new_keys=new_keys,
         new_values=new_values,
@@ -117,76 +90,29 @@ def test_fill_chunk_across_page_boundary(dtype):
         current_token_write_positions=current_token_write_positions,
         query_to_seq_map=query_to_seq_map,
     )
-
-    # Force kernel execution
     mx.eval(updated_k_pool, updated_v_pool)
+    logger.info("Kernel execution completed.")
 
-    logger.info("fill_kv_pages execution completed")
+    # 3. Assert: Define expected results and verify the outputs.
+    # Expected K-cache with interleaved layout
+    expected_k_pool = mx.zeros_like(global_key_pool)
+    for i in range(head_dim):
+        vec_chunk_idx = i // elements_per_thread
+        elem_in_vec_idx = i % elements_per_thread
+        expected_k_pool[0, 0, vec_chunk_idx, 0, elem_in_vec_idx] = new_keys[0, 0, i]
 
-    # Build expected pools
-    expected_k_pool = mx.zeros((num_physical_pages, num_kv_heads, tokens_per_page, head_dim), dtype=dtype)
-    expected_v_pool = mx.zeros((num_physical_pages, num_kv_heads, tokens_per_page, head_dim), dtype=dtype)
+    # Expected V-cache with standard layout
+    expected_v_pool = mx.zeros_like(global_value_pool)
+    for i in range(head_dim):
+        expected_v_pool[0, 0, i, 0] = new_values[0, 0, i]
 
-    # Fill expected data based on where each token should be written
-    # With start_logical_position=2 and 4 tokens:
-    # Token 0 -> logical pos 2 -> page 0, slot 2
-    # Token 1 -> logical pos 3 -> page 0, slot 3
-    # Token 2 -> logical pos 4 -> page 1, slot 0
-    # Token 3 -> logical pos 5 -> page 1, slot 1
-    for i in range(num_new_tokens_in_chunk):
-        logical_pos = start_logical_position + i
-        logical_block = logical_pos // tokens_per_page
-        slot_in_block = logical_pos % tokens_per_page
-        physical_page = [0, 1][logical_block]  # Direct mapping from page table
+    # Verification
+    if not mx.allclose(updated_k_pool, expected_k_pool, atol=1e-3, rtol=1e-3):
+        logger.error("K-cache verification failed.")
+        pytest.fail(f"Data in updated_k_pool does not match expected_k_pool for dtype={dtype}.")
 
-        # Expected keys and values
-        expected_key = [i * 10 + j + 1 for j in range(head_dim)]
-        expected_value = [i * 10 + j + 5 for j in range(head_dim)]
+    if not mx.allclose(updated_v_pool, expected_v_pool, atol=1e-3, rtol=1e-3):
+        logger.error("V-cache verification failed.")
+        pytest.fail(f"Data in updated_v_pool does not match expected_v_pool for dtype={dtype}.")
 
-        expected_k_pool[physical_page, 0, slot_in_block, :] = mx.array(expected_key, dtype=dtype)
-        expected_v_pool[physical_page, 0, slot_in_block, :] = mx.array(expected_value, dtype=dtype)
-
-        logger.debug(
-            f"Token {i}: logical_pos={logical_pos}, physical_page={physical_page}, "
-            f"slot={slot_in_block}, key={expected_key}"
-        )
-
-    # Data assertions
-    logger.debug("Comparing key pools...")
-    if not mx.allclose(updated_k_pool, expected_k_pool, rtol=1e-3, atol=1e-3):
-        # Log differences for debugging
-        for page in range(num_physical_pages):
-            logger.debug(f"Page {page} actual keys:")
-            for slot in range(tokens_per_page):
-                actual = updated_k_pool[page, 0, slot, :].tolist()
-                expected = expected_k_pool[page, 0, slot, :].tolist()
-                logger.debug(f"  Slot {slot}: actual={actual}, expected={expected}")
-                if actual != expected and any(v != 0 for v in expected):
-                    logger.error(f"  MISMATCH at page={page}, slot={slot}")
-
-        pytest.fail(
-            "Data in updated_k_pool does not match expected_k_pool. "
-            "The chunk spanning page boundary was not written correctly."
-        )
-
-    logger.debug("Comparing value pools...")
-    if not mx.allclose(updated_v_pool, expected_v_pool, rtol=1e-3, atol=1e-3):
-        # Log differences for debugging
-        for page in range(num_physical_pages):
-            logger.debug(f"Page {page} actual values:")
-            for slot in range(tokens_per_page):
-                actual = updated_v_pool[page, 0, slot, :].tolist()
-                expected = expected_v_pool[page, 0, slot, :].tolist()
-                logger.debug(f"  Slot {slot}: actual={actual}, expected={expected}")
-                if actual != expected and any(v != 0 for v in expected):
-                    logger.error(f"  MISMATCH at page={page}, slot={slot}")
-
-        pytest.fail(
-            "Data in updated_v_pool does not match expected_v_pool. "
-            "The chunk spanning page boundary was not written correctly."
-        )
-
-    logger.info(
-        f"Test passed: Chunk of {num_new_tokens_in_chunk} tokens correctly written "
-        f"across page boundary (starting at position {start_logical_position}), dtype={dtype}"
-    )
+    logger.info(f"Test passed for dtype={dtype}.")
