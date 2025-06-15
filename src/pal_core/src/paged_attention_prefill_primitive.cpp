@@ -94,7 +94,8 @@ void PagedAttentionPrefillPrimitive::eval_gpu(const std::vector<mx::array>& inpu
     const std::string dtype_suffix = mx::type_to_name(q_prompt.dtype());
     const std::string kernel_name = attention_kernel_name + dtype_suffix
                                     + "_" + std::to_string(head_dim_)
-                                    + "_" + std::to_string(q_tile_size);
+                                    + "_" + std::to_string(q_tile_size)
+                                    + "_" + std::to_string(simd_width);
 
     auto kernel_state = d.get_kernel(kernel_name, "pal");
     if (!kernel_state) {
@@ -216,10 +217,8 @@ size_t calculate_prefill_threadgroup_memory(
     size_t stats_mem = q_tile_size * (2 * sizeof(float));
     // Memory for the reduction scratchpads (one pad per SIMD group, one float per thread)
     size_t reduction_mem =  q_tile_size * simd_width * sizeof(float);
-    // Memory for Scale Factor Broadcast (1 float)
-    size_t scale_mem = sizeof(float);
 
-    return q_tile_mem + out_acc_mem + stats_mem + scale_mem + reduction_mem;
+    return q_tile_mem + out_acc_mem + stats_mem + reduction_mem;
 }
 
 } // namespace

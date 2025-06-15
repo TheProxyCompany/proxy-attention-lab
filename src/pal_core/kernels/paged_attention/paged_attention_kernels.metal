@@ -58,6 +58,7 @@ INSTANTIATE_FILL_KV_PAGES(bfloat16_t,  bfloat16);
         threadgroup uchar*  tg_mem                   [[threadgroup(0)]],                                                        \
         uint3               tg_dim                   [[threads_per_threadgroup]],                                                \
         uint3               tg_pos_in_grid           [[threadgroup_position_in_grid]],                                          \
+        uint                simdgroup_idx            [[simdgroup_index_in_threadgroup]],                                        \
         uint                local_idx_in_tg          [[thread_index_in_threadgroup]]                                            \
     );
 
@@ -79,9 +80,9 @@ INSTANTIATE_FILL_KV_PAGES(bfloat16_t,  bfloat16);
         uint                lane_idx                 [[thread_index_in_simdgroup]]                                              \
     );
 
-#define INSTANTIATE_PAL_PAGED_PREFILL(TYPE, HEAD_DIM, Q_TILE_SIZE, SUFFIX)                                                                   \
-    template [[host_name("pal_paged_attention_prefill_" #SUFFIX "_" #HEAD_DIM "_" #Q_TILE_SIZE)]] [[kernel]] void                                           \
-    pal_paged_attention_prefill<TYPE, HEAD_DIM, Q_TILE_SIZE>(                                                                                            \
+#define INSTANTIATE_PAL_PAGED_PREFILL(TYPE, HEAD_DIM, Q_TILE_SIZE, SIMD_WIDTH, SUFFIX)                                                                   \
+    template [[host_name("pal_paged_attention_prefill_" #SUFFIX "_" #HEAD_DIM "_" #Q_TILE_SIZE "_" #SIMD_WIDTH)]] [[kernel]] void                                           \
+    pal_paged_attention_prefill<TYPE, HEAD_DIM, Q_TILE_SIZE, SIMD_WIDTH>(                                                                                            \
         device const TYPE*  q_prompt_in               [[buffer(0)]],                                                             \
         device const TYPE*  k_prompt_in               [[buffer(1)]],                                                             \
         device const TYPE*  v_prompt_in               [[buffer(2)]],                                                             \
@@ -94,6 +95,7 @@ INSTANTIATE_FILL_KV_PAGES(bfloat16_t,  bfloat16);
         threadgroup uchar*  tg_mem                    [[threadgroup(0)]],                                                        \
         uint3               tg_dim                    [[threads_per_threadgroup]],                                                \
         uint3               tg_pos_in_grid            [[threadgroup_position_in_grid]],                                          \
+        uint                simdgroup_idx             [[simdgroup_index_in_threadgroup]],                                        \
         uint                local_idx_in_tg           [[thread_index_in_threadgroup]]                                            \
     );
 
@@ -103,20 +105,26 @@ INSTANTIATE_FILL_KV_PAGES(bfloat16_t,  bfloat16);
 //   - Data type: half, bfloat16_t
 //   - Head dimension: 32, 64, 80, 96, 128, 256
 //   - Q tile size: 16, 32
+//   - SIMD width: 16, 32
+//
+// For each (head_dim, q_tile_size), instantiate both SIMD widths.
+#define INSTANTIATE_PAL_PAGED_PREFILL_ALL_HEAD_DIM(TYPE, Q_TILE_SIZE, SIMD_WIDTH, SUFFIX) \
+    INSTANTIATE_PAL_PAGED_PREFILL(TYPE, 32, Q_TILE_SIZE, SIMD_WIDTH, SUFFIX) \
+    INSTANTIATE_PAL_PAGED_PREFILL(TYPE, 64, Q_TILE_SIZE, SIMD_WIDTH, SUFFIX) \
+    INSTANTIATE_PAL_PAGED_PREFILL(TYPE, 80, Q_TILE_SIZE, SIMD_WIDTH, SUFFIX) \
+    INSTANTIATE_PAL_PAGED_PREFILL(TYPE, 96, Q_TILE_SIZE, SIMD_WIDTH, SUFFIX) \
+    INSTANTIATE_PAL_PAGED_PREFILL(TYPE, 128, Q_TILE_SIZE, SIMD_WIDTH, SUFFIX) \
+    INSTANTIATE_PAL_PAGED_PREFILL(TYPE, 256, Q_TILE_SIZE, SIMD_WIDTH, SUFFIX)
 
-#define INSTANTIATE_PAL_PAGED_PREFILL_ALL_HEAD_DIM(TYPE, Q_TILE_SIZE, SUFFIX) \
-    INSTANTIATE_PAL_PAGED_PREFILL(TYPE, 32, Q_TILE_SIZE, SUFFIX) \
-    INSTANTIATE_PAL_PAGED_PREFILL(TYPE, 64, Q_TILE_SIZE, SUFFIX) \
-    INSTANTIATE_PAL_PAGED_PREFILL(TYPE, 80, Q_TILE_SIZE, SUFFIX) \
-    INSTANTIATE_PAL_PAGED_PREFILL(TYPE, 96, Q_TILE_SIZE, SUFFIX) \
-    INSTANTIATE_PAL_PAGED_PREFILL(TYPE, 128, Q_TILE_SIZE, SUFFIX) \
-    INSTANTIATE_PAL_PAGED_PREFILL(TYPE, 256, Q_TILE_SIZE, SUFFIX)
 
-
-INSTANTIATE_PAL_PAGED_PREFILL_ALL_HEAD_DIM(half,        16, float16)
-INSTANTIATE_PAL_PAGED_PREFILL_ALL_HEAD_DIM(bfloat16_t,  16, bfloat16)
-INSTANTIATE_PAL_PAGED_PREFILL_ALL_HEAD_DIM(half,        32, float16)
-INSTANTIATE_PAL_PAGED_PREFILL_ALL_HEAD_DIM(bfloat16_t,  32, bfloat16)
+INSTANTIATE_PAL_PAGED_PREFILL_ALL_HEAD_DIM(half,        16, 16, float16)
+INSTANTIATE_PAL_PAGED_PREFILL_ALL_HEAD_DIM(bfloat16_t,  16, 16, bfloat16)
+INSTANTIATE_PAL_PAGED_PREFILL_ALL_HEAD_DIM(half,        32, 16, float16)
+INSTANTIATE_PAL_PAGED_PREFILL_ALL_HEAD_DIM(bfloat16_t,  32, 16, bfloat16)
+INSTANTIATE_PAL_PAGED_PREFILL_ALL_HEAD_DIM(half,        16, 32, float16)
+INSTANTIATE_PAL_PAGED_PREFILL_ALL_HEAD_DIM(bfloat16_t,  16, 32, bfloat16)
+INSTANTIATE_PAL_PAGED_PREFILL_ALL_HEAD_DIM(half,        32, 32, float16)
+INSTANTIATE_PAL_PAGED_PREFILL_ALL_HEAD_DIM(bfloat16_t,  32, 32, bfloat16)
 
 // --- PAL Paged Decode Kernel Instantiations ---
 //
