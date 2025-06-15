@@ -23,7 +23,7 @@ import logging
 import mlx.core as mx
 import pytest
 
-from proxy_attention_lab import get_k_cache_shape, get_v_cache_shape, paged_attention
+from proxy_attention_lab import get_k_cache_shape, get_v_cache_shape, paged_attention_decode
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +73,7 @@ def test_paged_attention_determinism(history_length, batch_size, head_dim, dtype
     mx.eval(py_page_table)
     mx.eval(py_sequence_lengths)
 
-    output1 = paged_attention(
+    output1 = paged_attention_decode(
         py_queries,
         py_k_cache_pool,
         py_v_cache_pool,
@@ -84,7 +84,7 @@ def test_paged_attention_determinism(history_length, batch_size, head_dim, dtype
 
     # --- Call paged_attention the second time with identical inputs ---
     logger.info("  Second call to paged_attention with identical inputs...")
-    output2 = paged_attention(
+    output2 = paged_attention_decode(
         py_queries,
         py_k_cache_pool,
         py_v_cache_pool,

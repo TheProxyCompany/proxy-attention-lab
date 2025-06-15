@@ -15,7 +15,7 @@
 //
 // Google Benchmark for PAL Batch Operations (Both Fused and Two-Pass)
 
-#include "pal_core/paged_attention_primitive.hpp"
+#include "pal_core/paged_attention_decode_primitive.hpp"
 #include <benchmark/benchmark.h>
 #include <cmath>
 #include <vector>
@@ -86,7 +86,7 @@ static void BM_PAL_DecodeBatchLatencyVsHistoryLength(benchmark::State& state) {
     mx::Dtype dtype = params.dtype;
 
     // Get optimal page size
-    params.tokens_per_page = pal::cpp::PagedAttentionPrimitive::get_optimal_page_size();
+    params.tokens_per_page = pal::cpp::PagedAttentionDecodePrimitive::get_optimal_page_size();
     int tokens_per_page = params.tokens_per_page;
 
     // Setup input tensors for decode scenario
@@ -103,13 +103,13 @@ static void BM_PAL_DecodeBatchLatencyVsHistoryLength(benchmark::State& state) {
 
     // Use the new helper functions to get correct cache shapes
     // K-cache shape: [num_total_physical_pages, num_kv_heads, head_dim / elements_per_thread, tokens_per_page, elements_per_thread]
-    mx::Shape k_cache_shape = pal::cpp::PagedAttentionPrimitive::get_k_cache_shape(
+    mx::Shape k_cache_shape = pal::cpp::PagedAttentionDecodePrimitive::get_k_cache_shape(
         num_total_physical_pages, num_kv_heads, head_dim, tokens_per_page, dtype
     );
     mx::array k_cache_pool = mx::random::normal(k_cache_shape, dtype);
 
     // V-cache shape: [num_total_physical_pages, num_kv_heads, head_dim, tokens_per_page]
-    mx::Shape v_cache_shape = pal::cpp::PagedAttentionPrimitive::get_v_cache_shape(
+    mx::Shape v_cache_shape = pal::cpp::PagedAttentionDecodePrimitive::get_v_cache_shape(
         num_total_physical_pages, num_kv_heads, head_dim, tokens_per_page, dtype
     );
     mx::array v_cache_pool = mx::random::normal(v_cache_shape, dtype);
@@ -148,7 +148,7 @@ static void BM_PAL_DecodeBatchLatencyVsHistoryLength(benchmark::State& state) {
 
     // Main benchmark loop
     for (auto _ : state) {
-        mx::array out = pal::cpp::paged_attention(
+        mx::array out = pal::cpp::paged_attention_decode(
             queries,
             k_cache_pool,
             v_cache_pool,

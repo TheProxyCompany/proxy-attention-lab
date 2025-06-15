@@ -23,7 +23,7 @@ import logging
 import mlx.core as mx
 import pytest
 
-from proxy_attention_lab import get_k_cache_shape, get_k_cache_stripe_size, get_v_cache_shape, paged_attention
+from proxy_attention_lab import get_k_cache_shape, get_k_cache_stripe_size, get_v_cache_shape, paged_attention_decode
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +105,7 @@ def test_v_aggregation_decode_single_sequence(head_dim, dtype) -> None:
     mx.eval(py_context_lens)
 
     # --- Run paged attention decode ---
-    output_arr = paged_attention(py_queries, py_k_cache_pool, py_v_cache_pool, py_page_table, py_context_lens)
+    output_arr = paged_attention_decode(py_queries, py_k_cache_pool, py_v_cache_pool, py_page_table, py_context_lens)
     mx.eval(output_arr)
 
     logger.info("  Attention Output:")
@@ -218,7 +218,7 @@ def test_decode_multi_token_context(dtype) -> None:
 
     mx.eval(py_queries, py_k_cache_pool, py_v_cache_pool, py_page_table, py_context_lens)
     # Run paged attention
-    output_arr = paged_attention(
+    output_arr = paged_attention_decode(
         py_queries,
         py_k_cache_pool,
         py_v_cache_pool,

@@ -26,7 +26,7 @@
 #include <mlx/mlx.h>
 
 #include "pal_core/ops.hpp"
-#include "pal_core/paged_attention_primitive.hpp"
+#include "pal_core/paged_attention_decode_primitive.hpp"
 
 namespace nb = nanobind;
 using namespace nb::literals;
@@ -49,7 +49,7 @@ NB_MODULE(pal_core, m) {
 
   m.def(
     "get_v_cache_shape",
-    pal::cpp::PagedAttentionPrimitive::get_v_cache_shape,
+    pal::cpp::PagedAttentionDecodePrimitive::get_v_cache_shape,
     nb::sig("def get_v_cache_shape(num_total_pages: int, num_kv_heads: int, head_dim: int, tokens_per_page: int, dtype: mlx.core.Dtype) -> mlx.core.Shape"),
     R"doc(
         Calculates the shape of the V cache.
@@ -57,7 +57,7 @@ NB_MODULE(pal_core, m) {
 
   m.def(
     "get_k_cache_shape",
-    pal::cpp::PagedAttentionPrimitive::get_k_cache_shape,
+    pal::cpp::PagedAttentionDecodePrimitive::get_k_cache_shape,
     nb::sig("def get_k_cache_shape(num_total_pages: int, num_kv_heads: int, head_dim: int, tokens_per_page: int, dtype: mlx.core.Dtype) -> mlx.core.Shape"),
     R"doc(
         Calculates the shape of the K cache.
@@ -65,20 +65,20 @@ NB_MODULE(pal_core, m) {
 
   m.def(
     "get_optimal_page_size",
-    pal::cpp::PagedAttentionPrimitive::get_optimal_page_size,
+    pal::cpp::PagedAttentionDecodePrimitive::get_optimal_page_size,
     nb::sig("def get_optimal_page_size() -> int"),
     R"doc(
         Calculates the optimal page size for the paged attention kernel.
     )doc");
   m.def(
-      "paged_attention",
+      "paged_attention_decode",
       [](const mx::array& queries,
          const mx::array& k_cache_pool,
          const mx::array& v_cache_pool,
          const mx::array& page_table,
          const mx::array& sequence_lengths,
          std::optional<mx::StreamOrDevice> stream_or_device) {
-        return pal::cpp::paged_attention(
+        return pal::cpp::paged_attention_decode(
             queries,
             k_cache_pool,
             v_cache_pool,
@@ -94,13 +94,13 @@ NB_MODULE(pal_core, m) {
       "sequence_lengths"_a,
       nb::kw_only(),  // stream is keyword-only argument
       "stream"_a = nb::none(),
-      nb::sig("def paged_attention(queries: mlx.core.array, "
+      nb::sig("def paged_attention_decode(queries: mlx.core.array, "
               "k_cache_pool: mlx.core.array, v_cache_pool: mlx.core.array, "
               "page_table: mlx.core.array, sequence_lengths: mlx.core.array, "
               "*, stream: mlx.core.Stream | mlx.core.Device | None = None) -> "
               "mlx.core.array"),
       R"doc(
-        Performs paged attention using a custom primitive.
+        Performs paged attention decode using a custom primitive.
 
         Args:
             queries (mlx.core.array): Queries array. May be 1D, 2D, or 3D:
@@ -118,7 +118,7 @@ NB_MODULE(pal_core, m) {
             stream (mlx.core.Stream | mlx.core.Device | None, optional): Stream or device
                                                                         for the operation.
         Returns:
-            mlx.core.array: The result of the paged attention operation:
+            mlx.core.array: The result of the paged attention decode operation:
                 - If queries are 3D [NumTokens, NumQHeads, HeadDim], output is [NumTokens*NumQHeads, HeadDim]
                 - If queries are 2D [NumItems, HeadDim], output is [NumItems, HeadDim]
                 - If queries are 1D [NumItems], output is [NumItems, HeadDim]

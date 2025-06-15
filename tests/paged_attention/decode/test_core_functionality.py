@@ -23,7 +23,7 @@ import logging
 import mlx.core as mx
 import pytest
 
-from proxy_attention_lab import get_k_cache_shape, get_k_cache_stripe_size, get_v_cache_shape, paged_attention
+from proxy_attention_lab import get_k_cache_shape, get_k_cache_stripe_size, get_v_cache_shape, paged_attention_decode
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +109,7 @@ def test_fetch_k_vector_element_for_first_token_of_sequence(head_dim, dtype) -> 
     mx.eval(py_sequence_lengths)
 
     # Run paged attention
-    output_arr = paged_attention(
+    output_arr = paged_attention_decode(
         py_queries,
         py_k_cache_pool,
         py_v_cache_pool,
@@ -250,7 +250,7 @@ def test_fetch_entire_k_vector_for_specific_token_slot(head_dim, dtype) -> None:
     py_sequence_lengths = mx.array([1, 1], dtype=mx.int32)  # Each sequence has 1 token
 
     # Run paged attention
-    output_arr = paged_attention(
+    output_arr = paged_attention_decode(
         py_queries,
         py_k_cache_pool,
         py_v_cache_pool,

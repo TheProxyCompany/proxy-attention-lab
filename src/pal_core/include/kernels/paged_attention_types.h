@@ -37,13 +37,13 @@ constexpr int MEMORY_ALIGNMENT_BYTES = 16;
 #endif
 
 /**
- * @brief Shared parameter structure for paged attention operations.
+ * @brief Shared parameter structure for paged attention decode operations.
  *
  * This structure is shared between CPU (C++) and GPU (Metal) code to ensure
  * consistent parameter passing. The structure is explicitly aligned to 16 bytes
  * to match Metal's buffer requirements for optimal performance.
  */
-struct alignas(16) PagedAttentionParams {
+struct alignas(16) PagedAttentionDecodeParams {
   uint32_t num_q_heads;                   // Number of query heads
   uint32_t num_kv_heads;                  // Number of key/value heads
   uint32_t tokens_per_page;               // Number of tokens stored in each page
@@ -57,16 +57,16 @@ struct alignas(16) PagedAttentionParams {
 // --- Assertions ---
 #ifndef __METAL_VERSION__ // C++ side
 
-static_assert(std::is_standard_layout_v<PagedAttentionParams>,
-              "PagedAttentionParams must be a standard-layout type.");
-static_assert(alignof(PagedAttentionParams) == 16,
-              "PagedAttentionParams must have 16-byte alignment.");
+static_assert(std::is_standard_layout_v<PagedAttentionDecodeParams>,
+              "PagedAttentionDecodeParams must be a standard-layout type.");
+static_assert(alignof(PagedAttentionDecodeParams) == 16,
+              "PagedAttentionDecodeParams must have 16-byte alignment.");
 // 6 uint32_t (24 bytes) + 2 float (8 bytes) = 32 data bytes.
 // alignas(16) means total size is 32 bytes (rounded up to multiple of 16).
-static_assert(sizeof(PagedAttentionParams) == 32, "C++ sizeof(PagedAttentionParams) expected to be 32 bytes.");
+static_assert(sizeof(PagedAttentionDecodeParams) == 32, "C++ sizeof(PagedAttentionDecodeParams) expected to be 32 bytes.");
 
 #else // __METAL_VERSION__ (Metal side)
-static_assert(sizeof(PagedAttentionParams) == 32, "Metal sizeof(PagedAttentionParams) expected to be 32 bytes.");
+static_assert(sizeof(PagedAttentionDecodeParams) == 32, "Metal sizeof(PagedAttentionDecodeParams) expected to be 32 bytes.");
 #endif
 
 /**

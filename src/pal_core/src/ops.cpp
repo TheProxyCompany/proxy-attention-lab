@@ -26,13 +26,13 @@
 
 #include "pal_core/metal/metal_loader.hpp"
 #include "pal_core/fill_kv_pages_primitive.hpp"
-#include "pal_core/paged_attention_primitive.hpp"
+#include "pal_core/paged_attention_decode_primitive.hpp"
 
 #include <spdlog/spdlog.h>
 
 namespace pal::cpp {
 
-mx::array paged_attention(
+mx::array paged_attention_decode(
     const mx::array& queries,
     const mx::array& k_cache_pool,
     const mx::array& v_cache_pool,
@@ -70,7 +70,7 @@ mx::array paged_attention(
       num_q_heads, num_kv_heads, head_dim, tokens_per_page);
 
   // Create the primitive instance with the extracted parameters
-  auto primitive = std::make_shared<PagedAttentionPrimitive>(
+  auto primitive = std::make_shared<PagedAttentionDecodePrimitive>(
       stream_or_device,
       num_q_heads,
       num_kv_heads,

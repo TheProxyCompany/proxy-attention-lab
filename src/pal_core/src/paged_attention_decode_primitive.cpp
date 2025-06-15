@@ -1,6 +1,6 @@
-// paged_attention_primitive.cpp
-// Implementation of the PagedAttentionPrimitive class that provides GPU-accelerated
-// paged attention operations for transformer models.
+// paged_attention_decode_primitive.cpp
+// Implementation of the PagedAttentionDecodePrimitive class that provides GPU-accelerated
+// paged attention decode operations for transformer models.
 //
 // Copyright 2025 The Proxy Company. All Rights Reserved.
 //
@@ -17,7 +17,7 @@
 // limitations under the License.
 // ============================================================================
 
-#include "pal_core/paged_attention_primitive.hpp"
+#include "pal_core/paged_attention_decode_primitive.hpp"
 #include "pal_core/metal/dispatch.hpp"
 #include "kernels/paged_attention_types.h"
 
@@ -48,7 +48,7 @@ namespace mx = mlx::core;
 
 namespace pal::cpp {
 
-PagedAttentionPrimitive::PagedAttentionPrimitive(
+PagedAttentionDecodePrimitive::PagedAttentionDecodePrimitive(
     mx::StreamOrDevice stream_or_device,
     int num_q_heads,
     int num_kv_heads,
@@ -60,7 +60,7 @@ PagedAttentionPrimitive::PagedAttentionPrimitive(
       head_dim_(head_dim),
       tokens_per_page_(tokens_per_page) { }
 
-void PagedAttentionPrimitive::eval_cpu(const std::vector<mx::array>& inputs, mx::array& out) {
+void PagedAttentionDecodePrimitive::eval_cpu(const std::vector<mx::array>& inputs, mx::array& out) {
     std::ostringstream oss;
     this->print(oss);
     spdlog::error("[PAL Primitive] CPU evaluation is not supported for {}.", oss.str());
@@ -68,7 +68,7 @@ void PagedAttentionPrimitive::eval_cpu(const std::vector<mx::array>& inputs, mx:
         "[PagedAttentionPrimitive] CPU evaluation is not supported for " + oss.str());
 }
 
-void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx::array& out) {
+void PagedAttentionDecodePrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx::array& out) {
     // 1. Allocate output buffer
     size_t bytes = out.nbytes();
     out.set_data(mx::allocator::malloc(bytes));
@@ -85,7 +85,7 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx:
     const auto& context_lens = inputs[4];
 
     // 3. Populate parameters directly from input shapes
-    PagedAttentionParams params;
+    PagedAttentionDecodeParams params;
     params.num_q_heads = num_q_heads_;
     params.num_physical_pages_in_pool = v_cache_pool.shape(0);
     params.num_kv_heads = v_cache_pool.shape(1);
@@ -177,7 +177,7 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx:
         compute_encoder.set_output_array(max_logits, 6);
         compute_encoder.set_output_array(exp_sums, 7);
         compute_encoder.set_output_array(tmp_out, 8);
-        compute_encoder.set_bytes(&params, sizeof(PagedAttentionParams), 9);
+        compute_encoder.set_bytes(&params, sizeof(PagedAttentionDecodeParams), 9);
         compute_encoder.set_threadgroup_memory_length(tg_memory_bytes, 0);
 
         // Dispatch with chunks in z-dimension
@@ -214,7 +214,7 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx:
         compute_encoder.set_input_array(exp_sums, 2);
         compute_encoder.set_input_array(tmp_out, 3);
         compute_encoder.set_input_array(context_lens, 4);
-        compute_encoder.set_bytes(&params, sizeof(PagedAttentionParams), 5);
+        compute_encoder.set_bytes(&params, sizeof(PagedAttentionDecodeParams), 5);
         compute_encoder.set_threadgroup_memory_length(tg_memory_bytes_pass2, 0);
 
         metal::DispatchGrid dispatch_grid_pass2;
@@ -238,7 +238,7 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx:
         compute_encoder.set_input_array(context_lens, 4);
         compute_encoder.set_output_array(out, 5);
         // Skip buffers 6, 7, 8 (not used in single-pass)
-        compute_encoder.set_bytes(&params, sizeof(PagedAttentionParams), 9);
+        compute_encoder.set_bytes(&params, sizeof(PagedAttentionDecodeParams), 9);
         compute_encoder.set_threadgroup_memory_length(tg_memory_bytes, 0);
 
         metal::DispatchGrid dispatch_grid;
@@ -255,7 +255,7 @@ void PagedAttentionPrimitive::eval_gpu(const std::vector<mx::array>& inputs, mx:
     }
 }
 
-std::vector<mx::array> PagedAttentionPrimitive::vjp(
+std::vector<mx::array> PagedAttentionDecodePrimitive::vjp(
     const std::vector<mx::array>& primals,
     const std::vector<mx::array>& cotangents,
     const std::vector<int>& argnums,
@@ -263,7 +263,7 @@ std::vector<mx::array> PagedAttentionPrimitive::vjp(
     throw std::runtime_error("[PagedAttentionPrimitive] VJP not implemented.");
 }
 
-std::vector<mx::array> PagedAttentionPrimitive::jvp(
+std::vector<mx::array> PagedAttentionDecodePrimitive::jvp(
     const std::vector<mx::array>& primals,
     const std::vector<mx::array>& tangents,
     const std::vector<int>& argnums) {
@@ -271,12 +271,12 @@ std::vector<mx::array> PagedAttentionPrimitive::jvp(
 }
 
 std::pair<std::vector<mx::array>, std::vector<int>>
-PagedAttentionPrimitive::vmap(const std::vector<mx::array>& inputs,
+PagedAttentionDecodePrimitive::vmap(const std::vector<mx::array>& inputs,
                               const std::vector<int>& axes) {
     throw std::runtime_error("[PagedAttentionPrimitive] Vmap not implemented.");
 }
 
-std::vector<mx::Shape> PagedAttentionPrimitive::output_shapes(
+std::vector<mx::Shape> PagedAttentionDecodePrimitive::output_shapes(
     const std::vector<mx::array>& inputs) {
     if (inputs.empty()) {
         throw std::invalid_argument(
@@ -302,7 +302,7 @@ std::vector<mx::Shape> PagedAttentionPrimitive::output_shapes(
     }
 }
 
-void PagedAttentionPrimitive::print(std::ostream& os) {
+void PagedAttentionDecodePrimitive::print(std::ostream& os) {
     os << "PagedAttentionPrimitive(num_q_heads=" << num_q_heads_
        << ", num_kv_heads=" << num_kv_heads_
        << ", head_dim=" << head_dim_
@@ -311,14 +311,14 @@ void PagedAttentionPrimitive::print(std::ostream& os) {
 }
 
 // todo make this dynamic
-size_t PagedAttentionPrimitive::get_optimal_page_size() {
+size_t PagedAttentionDecodePrimitive::get_optimal_page_size() {
     size_t page_size = 16;
     return page_size;
   }
 
 
-size_t PagedAttentionPrimitive::calculate_attention_memory_layout(
-    const PagedAttentionParams& params,
+size_t PagedAttentionDecodePrimitive::calculate_attention_memory_layout(
+    const PagedAttentionDecodeParams& params,
     size_t threads_per_group,
     size_t simd_width,
     mx::Dtype kv_cache_dtype,
@@ -352,8 +352,8 @@ size_t PagedAttentionPrimitive::calculate_attention_memory_layout(
     return total_bytes;
 }
 
-size_t PagedAttentionPrimitive::calculate_reduce_memory_layout(
-    const PagedAttentionParams& params,
+size_t PagedAttentionDecodePrimitive::calculate_reduce_memory_layout(
+    const PagedAttentionDecodeParams& params,
     size_t threads_per_group,
     size_t simd_width
 ) {
@@ -380,7 +380,7 @@ size_t PagedAttentionPrimitive::calculate_reduce_memory_layout(
 }
 
 // v shape is 4D: [num_total_pages, num_kv_heads, head_dim, tokens_per_page]
-mx::Shape PagedAttentionPrimitive::get_v_cache_shape(
+mx::Shape PagedAttentionDecodePrimitive::get_v_cache_shape(
     int num_total_pages,
     int num_kv_heads,
     int head_dim,
@@ -391,7 +391,7 @@ mx::Shape PagedAttentionPrimitive::get_v_cache_shape(
 }
 
 // k shape is 5D: [num_total_pages, num_kv_heads, head_dim / elements_per_thread, tokens_per_page, elements_per_thread]
-mx::Shape PagedAttentionPrimitive::get_k_cache_shape(
+mx::Shape PagedAttentionDecodePrimitive::get_k_cache_shape(
     int num_total_pages,
     int num_kv_heads,
     int head_dim,

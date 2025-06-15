@@ -18,7 +18,7 @@ import logging
 import mlx.core as mx
 import pytest
 
-from proxy_attention_lab import get_k_cache_shape, get_optimal_page_size, get_v_cache_shape, paged_attention
+from proxy_attention_lab import get_k_cache_shape, get_optimal_page_size, get_v_cache_shape, paged_attention_decode
 
 logger = logging.getLogger(__name__)
 
@@ -164,7 +164,7 @@ def test_pal_decode_latency_vs_history_len(benchmark, history_len_val, dtype):
     # Define benchmark function that evaluates the result
     def operation_to_benchmark():
         mx.clear_cache()
-        out = paged_attention(queries, k_hist, v_hist, pt, slens_hist)
+        out = paged_attention_decode(queries, k_hist, v_hist, pt, slens_hist)
         mx.eval(out)
         return out
 
