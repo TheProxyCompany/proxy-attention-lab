@@ -85,13 +85,14 @@ void PagedAttentionDecodePrimitive::eval_gpu(const std::vector<mx::array>& input
     const auto& context_lens = inputs[4];
 
     // 3. Populate parameters directly from input shapes
-    PagedAttentionDecodeParams params;
+    PagedAttentionParams params;
     params.num_q_heads = num_q_heads_;
     params.num_physical_pages_in_pool = v_cache_pool.shape(0);
     params.num_kv_heads = v_cache_pool.shape(1);
     params.tokens_per_page = v_cache_pool.shape(3);
     params.max_logical_pages_per_seq = page_table.shape(1);
     params.num_sequences_in_batch = page_table.shape(0);
+    params.num_prompt_tokens = 1; // decode only supports 1 prompt token
     // parameters that are not directly from input shapes
     params.log_exp_min_clamp = -88.0f; // tune
     params.inv_sqrt_head_dim = 1.0f / std::sqrt(static_cast<float>(head_dim_));
@@ -100,14 +101,9 @@ void PagedAttentionDecodePrimitive::eval_gpu(const std::vector<mx::array>& input
     const int num_chunks = (max_tokens + CHUNK_SIZE - 1) / CHUNK_SIZE;
     const bool use_two_pass = max_tokens > CHUNK_SIZE;
 
-    // 3.5. Get device info before 'naming' templated kernels (needed for simd_width)
-    const std::string library_name = "pal";
-    const std::string kernel_name = "get_device_info";
-    auto kernel_state = d.get_kernel(kernel_name, library_name);
-    if (!kernel_state) {
-        throw std::runtime_error("[PAL Primitive] Failed to load kernel: " + kernel_name);
-    }
-    const size_t simd_width = kernel_state->threadExecutionWidth();
+    // need to get simd_width from device info
+    // hardcode it to 32 for now
+    const size_t simd_width = 32;
 
     // 4. Define dispatch grid
     metal::DispatchGrid dispatch_grid;
@@ -117,12 +113,12 @@ void PagedAttentionDecodePrimitive::eval_gpu(const std::vector<mx::array>& input
 
     // 5. Get the pass 1 kernel
     const std::string dtype_suffix = mx::type_to_name(inputs[0].dtype());
-    const std::string attention_kernel_name = "pal_paged_attention_"
+    const std::string attention_kernel_name = "pal_paged_attention_decode_"
         + dtype_suffix + "_" + std::to_string(head_dim_)
         + "_" + std::to_string(params.tokens_per_page) + "_" + std::to_string(simd_width);
 
     const std::string kernel_hash = use_two_pass ? "two_pass" : "single_pass";
-    kernel_state = d.get_kernel(
+    auto kernel_state = d.get_kernel(
         attention_kernel_name,
         "pal",
         attention_kernel_name + "_" + kernel_hash,
@@ -133,7 +129,7 @@ void PagedAttentionDecodePrimitive::eval_gpu(const std::vector<mx::array>& input
     }
 
     // 6. Determine threadgroup configuration
-    const size_t threads_per_group = 512; // 1024 is max on apple silicon
+    const size_t threads_per_group = 256; // 1024 is max on apple silicon
     const size_t tg_memory_bytes = calculate_attention_memory_layout(
         params,
         threads_per_group,
@@ -177,7 +173,7 @@ void PagedAttentionDecodePrimitive::eval_gpu(const std::vector<mx::array>& input
         compute_encoder.set_output_array(max_logits, 6);
         compute_encoder.set_output_array(exp_sums, 7);
         compute_encoder.set_output_array(tmp_out, 8);
-        compute_encoder.set_bytes(&params, sizeof(PagedAttentionDecodeParams), 9);
+        compute_encoder.set_bytes(&params, sizeof(PagedAttentionParams), 9);
         compute_encoder.set_threadgroup_memory_length(tg_memory_bytes, 0);
 
         // Dispatch with chunks in z-dimension
@@ -194,7 +190,7 @@ void PagedAttentionDecodePrimitive::eval_gpu(const std::vector<mx::array>& input
         );
 
         // Pass 2: Reduce across chunks
-        const std::string reduce_kernel_name = "pal_paged_reduce_" + dtype_suffix + "_"
+        const std::string reduce_kernel_name = "pal_paged_reduce_decode_" + dtype_suffix + "_"
                                                 + std::to_string(head_dim_)
                                                 + "_" + std::to_string(simd_width);
         kernel_state = d.get_kernel(reduce_kernel_name, "pal");
@@ -214,7 +210,7 @@ void PagedAttentionDecodePrimitive::eval_gpu(const std::vector<mx::array>& input
         compute_encoder.set_input_array(exp_sums, 2);
         compute_encoder.set_input_array(tmp_out, 3);
         compute_encoder.set_input_array(context_lens, 4);
-        compute_encoder.set_bytes(&params, sizeof(PagedAttentionDecodeParams), 5);
+        compute_encoder.set_bytes(&params, sizeof(PagedAttentionParams), 5);
         compute_encoder.set_threadgroup_memory_length(tg_memory_bytes_pass2, 0);
 
         metal::DispatchGrid dispatch_grid_pass2;
@@ -238,7 +234,7 @@ void PagedAttentionDecodePrimitive::eval_gpu(const std::vector<mx::array>& input
         compute_encoder.set_input_array(context_lens, 4);
         compute_encoder.set_output_array(out, 5);
         // Skip buffers 6, 7, 8 (not used in single-pass)
-        compute_encoder.set_bytes(&params, sizeof(PagedAttentionDecodeParams), 9);
+        compute_encoder.set_bytes(&params, sizeof(PagedAttentionParams), 9);
         compute_encoder.set_threadgroup_memory_length(tg_memory_bytes, 0);
 
         metal::DispatchGrid dispatch_grid;
@@ -318,7 +314,7 @@ size_t PagedAttentionDecodePrimitive::get_optimal_page_size() {
 
 
 size_t PagedAttentionDecodePrimitive::calculate_attention_memory_layout(
-    const PagedAttentionDecodeParams& params,
+    const PagedAttentionParams& params,
     size_t threads_per_group,
     size_t simd_width,
     mx::Dtype kv_cache_dtype,
@@ -353,7 +349,7 @@ size_t PagedAttentionDecodePrimitive::calculate_attention_memory_layout(
 }
 
 size_t PagedAttentionDecodePrimitive::calculate_reduce_memory_layout(
-    const PagedAttentionDecodeParams& params,
+    const PagedAttentionParams& params,
     size_t threads_per_group,
     size_t simd_width
 ) {

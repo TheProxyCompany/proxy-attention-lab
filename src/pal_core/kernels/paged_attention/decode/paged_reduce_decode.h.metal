@@ -25,14 +25,14 @@
 using namespace metal;
 
 template <typename T, int head_dim, int SIMD_WIDTH>
-[[kernel]] void pal_paged_reduce(
+[[kernel]] void pal_paged_reduce_decode(
     device T*            output_buffer          [[buffer(0)]],
     device const float*  max_logits_in          [[buffer(1)]],
     device const float*  exp_sums_in            [[buffer(2)]],
     device const T*      tmp_in                 [[buffer(3)]],
     device const int*    context_lens_in        [[buffer(4)]],
 
-    constant const PagedAttentionDecodeParams& params [[buffer(5)]],
+    constant const PagedAttentionParams& params [[buffer(5)]],
     threadgroup uchar*   tg_mem                 [[threadgroup(0)]],
     uint3                threads_per_threadgroup [[threads_per_threadgroup]],
     uint3                tg_pos_in_grid         [[threadgroup_position_in_grid]],

@@ -210,7 +210,7 @@ class PagedAttentionDecodePrimitive : public mx::UnaryPrimitive {
    * @return The memory layout for the attention kernel
    */
   size_t calculate_attention_memory_layout(
-    const PagedAttentionDecodeParams& params,
+    const PagedAttentionParams& params,
     size_t threads_per_group,
     size_t simd_width,
     mx::Dtype kv_cache_dtype,
@@ -225,7 +225,7 @@ class PagedAttentionDecodePrimitive : public mx::UnaryPrimitive {
    * @return The memory layout for the reduce kernel
    */
   size_t calculate_reduce_memory_layout(
-    const PagedAttentionDecodeParams& params,
+    const PagedAttentionParams& params,
     size_t threads_per_group,
     size_t simd_width
   );

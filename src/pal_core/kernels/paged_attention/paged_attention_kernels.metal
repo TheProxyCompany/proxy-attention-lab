@@ -20,14 +20,6 @@
 #include "decode/paged_attention_decode.h.metal"
 #include "decode/paged_reduce_decode.h.metal"
 
-
-[[kernel]] void get_device_info() {
-    // used for fetching a metal compute pipeline state
-    // for the current device to get the max threads per group
-    // and simd group size
-}
-
-
 // --- Instantiation Macro for fill_kv_pages ---
 #define INSTANTIATE_FILL_KV_PAGES(TYPE, SUFFIX)                                                                                 \
     template [[host_name("fill_kv_pages_kernel_" #SUFFIX)]] [[kernel]] void                                                     \
@@ -50,8 +42,8 @@ INSTANTIATE_FILL_KV_PAGES(bfloat16_t,  bfloat16);
 
 // --- Instantiation Macro for pal_paged_attention ---
 #define INSTANTIATE_PAL_PAGED_ATTENTION(TYPE, HEAD_DIM, TOKENS_PER_PAGE, SIMD_WIDTH, SUFFIX)                                                             \
-    template [[host_name("pal_paged_attention_" #SUFFIX "_" #HEAD_DIM "_" #TOKENS_PER_PAGE "_" #SIMD_WIDTH)]] [[kernel]] void                                        \
-    pal_paged_attention<TYPE, HEAD_DIM, TOKENS_PER_PAGE, SIMD_WIDTH>(                                                                                        \
+    template [[host_name("pal_paged_attention_decode_" #SUFFIX "_" #HEAD_DIM "_" #TOKENS_PER_PAGE "_" #SIMD_WIDTH)]] [[kernel]] void                                        \
+    pal_paged_attention_decode<TYPE, HEAD_DIM, TOKENS_PER_PAGE, SIMD_WIDTH>(                                                                                        \
         device const TYPE*  queries_in               [[buffer(0)]],                                                             \
         device const TYPE*  k_cache_pool_in          [[buffer(1)]],                                                             \
         device const TYPE*  v_cache_pool_in          [[buffer(2)]],                                                             \
@@ -61,7 +53,7 @@ INSTANTIATE_FILL_KV_PAGES(bfloat16_t,  bfloat16);
         device float*       max_logits_out           [[buffer(6), function_constant(USE_TWO_PASS)]],                            \
         device float*       exp_sums_out             [[buffer(7), function_constant(USE_TWO_PASS)]],                            \
         device TYPE*        tmp_out                  [[buffer(8), function_constant(USE_TWO_PASS)]],                            \
-        constant const PagedAttentionDecodeParams& params  [[buffer(9)]],                                                             \
+        constant const PagedAttentionParams& params  [[buffer(9)]],                                                             \
         threadgroup uchar*  tg_mem                   [[threadgroup(0)]],                                                        \
         uint3               tg_dim                   [[threads_per_threadgroup]],                                                \
         uint3               tg_pos_in_grid           [[threadgroup_position_in_grid]],                                          \
@@ -70,14 +62,14 @@ INSTANTIATE_FILL_KV_PAGES(bfloat16_t,  bfloat16);
 
 // --- Instantiation Macro for pal_paged_reduce ---
 #define INSTANTIATE_PAL_PAGED_REDUCE(TYPE, HEAD_DIM, SIMD_WIDTH, SUFFIX)                                                                   \
-    template [[host_name("pal_paged_reduce_" #SUFFIX "_" #HEAD_DIM "_" #SIMD_WIDTH)]] [[kernel]] void                                           \
-    pal_paged_reduce<TYPE, HEAD_DIM, SIMD_WIDTH>(                                                                                            \
+    template [[host_name("pal_paged_reduce_decode_" #SUFFIX "_" #HEAD_DIM "_" #SIMD_WIDTH)]] [[kernel]] void                                           \
+    pal_paged_reduce_decode<TYPE, HEAD_DIM, SIMD_WIDTH>(                                                                                            \
         device TYPE*        output_buffer            [[buffer(0)]],                                                             \
         device const float* max_logits_in            [[buffer(1)]],                                                             \
         device const float* exp_sums_in              [[buffer(2)]],                                                             \
         device const TYPE*  tmp_in                   [[buffer(3)]],                                                             \
         device const int*   context_lens_in          [[buffer(4)]],                                                             \
-        constant const PagedAttentionDecodeParams& params  [[buffer(5)]],                                                             \
+        constant const PagedAttentionParams& params  [[buffer(5)]],                                                             \
         threadgroup uchar*  tg_mem                   [[threadgroup(0)]],                                                        \
         uint3               threads_per_threadgroup  [[threads_per_threadgroup]],                                                \
         uint3               tg_pos_in_grid           [[threadgroup_position_in_grid]],                                          \

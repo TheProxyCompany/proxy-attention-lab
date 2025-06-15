@@ -27,7 +27,7 @@ using namespace metal;
 constant bool USE_TWO_PASS [[function_constant(0)]];
 
 template <typename T, int HEAD_DIM, int TOKENS_PER_PAGE, int SIMD_WIDTH>
-[[kernel]] void pal_paged_attention(
+[[kernel]] void pal_paged_attention_decode(
     device const T*      queries_in             [[buffer(0)]],
     device const T*      k_cache_pool_in        [[buffer(1)]],
     device const T*      v_cache_pool_in        [[buffer(2)]],
@@ -40,7 +40,7 @@ template <typename T, int HEAD_DIM, int TOKENS_PER_PAGE, int SIMD_WIDTH>
     device float*        exp_sums_out           [[buffer(7), function_constant(USE_TWO_PASS)]],
     device T*            tmp_out                [[buffer(8), function_constant(USE_TWO_PASS)]],
 
-    constant const PagedAttentionDecodeParams& params [[buffer(9)]],
+    constant const PagedAttentionParams& params [[buffer(9)]],
     threadgroup uchar*   tg_mem                 [[threadgroup(0)]],
     uint3                tg_dim                 [[threads_per_threadgroup]],
     uint3                tg_pos_in_grid         [[threadgroup_position_in_grid]],

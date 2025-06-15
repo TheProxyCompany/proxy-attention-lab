@@ -54,6 +54,41 @@ mx::array paged_attention_decode(
 );
 
 /**
+ * @brief Performs paged attention prefill operation using cached key-value pairs.
+ *
+ * This function implements paged attention prefill, allowing transformer models to
+ * efficiently access key-value pairs stored in a memory pool organized as pages.
+ * It supports Multi-head Attention (MHA), Grouped Query Attention (GQA), and
+ * Multi-query Attention (MQA) patterns.
+ *
+ * @param q_prompt Prompt query vectors to compute attention against cached keys.
+ *                Shape can be 1D, 2D [tokens, head_dim], or 3D [tokens, heads, head_dim]
+ * @param k_prompt Prompt key vectors to compute attention against cached keys.
+ *                Shape can be 1D, 2D [tokens, head_dim], or 3D [tokens, heads, head_dim]
+ * @param v_prompt Prompt value vectors to compute attention against cached keys.
+ *                Shape can be 1D, 2D [tokens, head_dim], or 3D [tokens, heads, head_dim]
+ * @param k_cache_paged Global key cache pool with shape
+ *                    [num_pages, tokens_per_page, kv_heads, head_dim]
+ * @param v_cache_paged Global value cache pool with shape
+ *                    [num_pages, tokens_per_page, kv_heads, head_dim]
+ * @param page_table Page table mapping logical blocks to physical page IDs.
+ *                  Shape [num_sequences, max_blocks_per_seq]
+ * @param context_len_arr Actual length of each sequence in the batch
+ * @param stream Optional stream or device for the operation.
+ * @return mx::array Output of shape [num_queries, head_dim] containing the attention results
+ */
+mx::array paged_attention_prefill(
+    const mx::array& q_prompt,
+    const mx::array& k_prompt,
+    const mx::array& v_prompt,
+    const mx::array& k_cache_paged,
+    const mx::array& v_cache_paged,
+    const mx::array& page_table,
+    const mx::array& context_len_arr,
+    mx::StreamOrDevice stream = {}
+);
+
+/**
  * @brief Fills the KV cache pages with the new keys and values.
  *
  * This function fills the KV cache pages with the new keys and values.

@@ -70,6 +70,58 @@ NB_MODULE(pal_core, m) {
     R"doc(
         Calculates the optimal page size for the paged attention kernel.
     )doc");
+
+  m.def(
+    "paged_attention_prefill",
+    [](const mx::array& q_prompt,
+       const mx::array& k_prompt,
+       const mx::array& v_prompt,
+       const mx::array& k_cache_paged,
+       const mx::array& v_cache_paged,
+       const mx::array& page_table,
+       const mx::array& context_len_arr,
+       std::optional<mx::StreamOrDevice> stream_or_device) {
+        return pal::cpp::paged_attention_prefill(
+            q_prompt,
+            k_prompt,
+            v_prompt,
+            k_cache_paged,
+            v_cache_paged,
+            page_table,
+            context_len_arr,
+            stream_or_device.value_or(mx::StreamOrDevice{}));
+      },
+      "q_prompt"_a,
+      "k_prompt"_a,
+      "v_prompt"_a,
+      "k_cache_paged"_a,
+      "v_cache_paged"_a,
+      "page_table"_a,
+      "context_len_arr"_a,
+      nb::kw_only(),
+      "stream"_a = nb::none(),
+      nb::sig("def paged_attention_prefill(q_prompt: mlx.core.array, k_prompt: mlx.core.array, v_prompt: mlx.core.array, k_cache_paged: mlx.core.array, v_cache_paged: mlx.core.array, page_table: mlx.core.array, context_len_arr: mlx.core.array, *, stream: mlx.core.Stream | mlx.core.Device | None = None) -> mlx.core.array"),
+      R"doc(
+        Performs paged attention prefill using a custom primitive.
+
+        Args:
+            q_prompt (mlx.core.array): Prompt query vectors to compute attention against cached keys.
+            k_prompt (mlx.core.array): Prompt key vectors to compute attention against cached keys.
+            v_prompt (mlx.core.array): Prompt value vectors to compute attention against cached keys.
+            k_cache_paged (mlx.core.array): Global key cache pool with shape [num_pages, tokens_per_page, kv_heads, head_dim].
+            v_cache_paged (mlx.core.array): Global value cache pool with shape [num_pages, tokens_per_page, kv_heads, head_dim].
+            page_table (mlx.core.array): Page table array mapping logical blocks to physical page IDs.
+            context_len_arr (mlx.core.array): Array of actual lengths for each sequence in the batch.
+            stream (mlx.core.Stream | mlx.core.Device | None, optional): Stream or device for the operation.
+        Returns:
+            mlx.core.array: The result of the paged attention prefill operation:
+                - If queries are 3D [NumTokens, NumQHeads, HeadDim], output is [NumTokens*NumQHeads, HeadDim]
+                - If queries are 2D [NumItems, HeadDim], output is [NumItems, HeadDim]
+                - If queries are 1D [NumItems], output is [NumItems, HeadDim]
+
+        Note:
+            The output HeadDim is always taken from the KV cache head dimension, regardless of query dimensions.
+      )doc");
   m.def(
       "paged_attention_decode",
       [](const mx::array& queries,

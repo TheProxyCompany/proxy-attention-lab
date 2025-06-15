@@ -25,6 +25,9 @@ from proxy_attention_lab.pal_core import (
 from proxy_attention_lab.pal_core import (
     paged_attention_decode as cpp_paged_attention_decode_kernel,
 )
+from proxy_attention_lab.pal_core import (
+    paged_attention_prefill as cpp_paged_attention_prefill_kernel,
+)
 
 
 def get_k_cache_stripe_size(dtype: mx.Dtype) -> int:
@@ -77,6 +80,52 @@ def paged_attention_decode(
         v_cache_pool,
         page_table,
         sequence_lengths,
+        stream=stream,
+    )
+
+
+def paged_attention_prefill(
+    q_prompt: mx.array,
+    k_prompt: mx.array,
+    v_prompt: mx.array,
+    k_cache_paged: mx.array,
+    v_cache_paged: mx.array,
+    page_table: mx.array,
+    context_len_arr: mx.array,
+    stream: mx.Stream | mx.Device | None = None,
+) -> mx.array:
+    """Performs paged attention prefill using the custom C++ primitive and Metal kernel.
+
+    Args:
+        q_prompt: Prompt query vectors to compute attention against cached keys.
+        k_prompt: Prompt key vectors to compute attention against cached keys.
+        v_prompt: Prompt value vectors to compute attention against cached keys.
+        k_cache_paged: Global key cache pool with shape [num_pages, tokens_per_page, kv_heads, head_dim].
+        v_cache_paged: Global value cache pool with shape [num_pages, tokens_per_page, kv_heads, head_dim].
+        page_table: Page table mapping logical blocks for each sequence
+            to physical page IDs in the k_cache_pool/v_cache_pool.
+            Shape: [NumSequencesInBatch, MaxLogicalBlocksPerSequence]
+        context_len_arr: Array of actual lengths for each sequence in the batch.
+            Shape: [NumSequencesInBatch]
+        stream: Optional stream or device for the operation.
+
+    Returns:
+        mx.array: The result of the paged attention prefill operation:
+            - If queries are 3D [NumTokens, NumQHeads, HeadDim], output is [NumTokens*NumQHeads, HeadDim]
+            - If queries are 2D [NumItems, HeadDim], output is [NumItems, HeadDim]
+            - If queries are 1D [NumItems], output is [NumItems, HeadDim]
+
+    Note:
+        The output HeadDim is always taken from the KV cache head dimension, regardless of query dimensions.
+    """
+    return cpp_paged_attention_prefill_kernel(
+        q_prompt,
+        k_prompt,
+        v_prompt,
+        k_cache_paged,
+        v_cache_paged,
+        page_table,
+        context_len_arr,
         stream=stream,
     )
 
