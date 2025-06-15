@@ -38,7 +38,7 @@ namespace pal::cpp {
 namespace {
 
 int calculate_q_tile_size(int head_dim, size_t max_threadgroup_mem, mx::Dtype dtype);
-size_t calculate_prefill_threadgroup_memory(int head_dim, int q_tile_size, size_t num_threads, mx::Dtype dtype);
+size_t calculate_prefill_threadgroup_memory(int head_dim, int q_tile_size, int simd_width, mx::Dtype dtype);
 
 } // namespace
 
@@ -79,12 +79,15 @@ void PagedAttentionPrefillPrimitive::eval_gpu(const std::vector<mx::array>& inpu
     const auto& context_len_arr = inputs[6];
 
     // 2. --- Dynamic Tile Size Calculation ---
-    size_t max_threadgroup_memory = d.mtl_device()->maxThreadgroupMemoryLength();
-    int q_tile_size = calculate_q_tile_size(head_dim_, max_threadgroup_memory, q_prompt.dtype());
+    const size_t simd_width = 32;
+    const size_t max_threadgroup_memory = d.mtl_device()->maxThreadgroupMemoryLength();
+    const int q_tile_size = calculate_q_tile_size(head_dim_, max_threadgroup_memory, q_prompt.dtype());
     if (q_tile_size == 0) {
         throw std::runtime_error("Calculated Q_TILE_SIZE is 0. Check head_dim and memory budget.");
     }
     spdlog::info("[PagedPrefillPrimitive] Using calculated Q_TILE_SIZE = {}", q_tile_size);
+    // Each SIMD Group processes one query from a tile.
+    const size_t threads_per_group = q_tile_size * simd_width;
 
     // 3. --- Kernel Selection ---
     const std::string attention_kernel_name = "pal_paged_attention_prefill_";
@@ -123,11 +126,10 @@ void PagedAttentionPrefillPrimitive::eval_gpu(const std::vector<mx::array>& inpu
     grid.depth = num_q_heads_;
 
     // 5. --- Dispatch Kernel ---
-    const size_t threads_per_group = 512;
     size_t tg_memory_bytes = calculate_prefill_threadgroup_memory(
         head_dim_,
         q_tile_size,
-        threads_per_group,
+        simd_width,
         q_prompt.dtype()
     );
     if (tg_memory_bytes > d.mtl_device()->maxThreadgroupMemoryLength()) {
@@ -203,21 +205,21 @@ int calculate_q_tile_size(int head_dim, size_t max_threadgroup_mem, mx::Dtype dt
 size_t calculate_prefill_threadgroup_memory(
     int head_dim,
     int q_tile_size,
-    size_t num_threads,
+    int simd_width,
     mx::Dtype dtype
 ) {
-    // Memory for Q_tile (bfloat16)
+    // Memory for Q_tile
     size_t q_tile_mem = q_tile_size * head_dim * mx::size_of(dtype);
     // Memory for Output Accumulator (float32)
     size_t out_acc_mem = q_tile_size * head_dim * sizeof(float);
     // Memory for Softmax stats (2 floats per query)
     size_t stats_mem = q_tile_size * (2 * sizeof(float));
+    // Memory for the reduction scratchpads (one pad per SIMD group, one float per thread)
+    size_t reduction_mem =  q_tile_size * simd_width * sizeof(float);
     // Memory for Scale Factor Broadcast (1 float)
-    size_t scale_factor_mem = sizeof(float);
-    // Memory for Reduction Scratchpad (1 float per thread)
-    size_t reduction_scratchpad_mem = num_threads * sizeof(float);
+    size_t scale_mem = sizeof(float);
 
-    return q_tile_mem + out_acc_mem + stats_mem + scale_factor_mem + reduction_scratchpad_mem;
+    return q_tile_mem + out_acc_mem + stats_mem + scale_mem + reduction_mem;
 }
 
 } // namespace

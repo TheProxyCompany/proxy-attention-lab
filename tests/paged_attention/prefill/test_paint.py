@@ -123,8 +123,9 @@ def test_prompt_on_prompt_logic(dtype):
     # Reshape kernel output to match expected [tokens, heads, dim]
     out_reshaped = out_unnormalized.reshape(num_prompt_tokens, num_q_heads, head_dim)
 
-    logger.info(f"Expected (first vec): {expected_mx[1].tolist()}")
-    logger.info(f"Actual (first vec):   {out_reshaped[1].astype(mx.float32).tolist()}")
+    for i in range(num_prompt_tokens):
+        logger.info(f"First 3 elements of Expected ({i} vec): {expected_mx[i].tolist()[0][:3]}")
+        logger.info(f"First 3 elements of Actual ({i} vec):   {out_reshaped[i].astype(mx.float32).tolist()[0][:3]}")
 
     assert mx.allclose(out_reshaped.astype(mx.float32), expected_mx, atol=1e-2), (
         "Kernel output does not match manual calculation."

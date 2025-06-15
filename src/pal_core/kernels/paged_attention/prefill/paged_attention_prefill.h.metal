@@ -132,12 +132,10 @@ template <typename T, int HEAD_DIM, int Q_TILE_SIZE>
 
     // --- Part A: Attend to Prompt History (Causal) ---
     for (int kv_idx_prompt = 0; kv_idx_prompt < params.num_prompt_tokens; ++kv_idx_prompt) {
-        // --- Step 3a: Load one K and one V vector from the prompt buffer ---
-        // temporary registers for K and V
         T k_vec_reg[HEAD_DIM];
         T v_vec_reg[HEAD_DIM];
 
-        // Calculate source pointers for this K/V vector
+        // --- Step 3a: Load one K and one V vector from the prompt buffer ---
         device const T* k_src = k_prompt_in +
                             (ulong)kv_idx_prompt * params.num_kv_heads * HEAD_DIM +
                             (ulong)kv_head_idx * HEAD_DIM;
@@ -151,14 +149,6 @@ template <typename T, int HEAD_DIM, int Q_TILE_SIZE>
             k_vec_reg[i] = k_src[i];
             v_vec_reg[i] = v_src[i];
         }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-
-        if (local_idx_in_tg == 0) {
-            output_buffer[0] = (T)k_vec_reg[0];
-            output_buffer[1] = (T)v_vec_reg[0];
-            output_buffer[2] = (T)k_vec_reg[1];
-        }
-        return;
 
         // --- Step 3b & 3c: Compute Scores, Mask, and Update Accumulators ---
         // Loop through each of the queries in our tile.
@@ -198,7 +188,6 @@ template <typename T, int HEAD_DIM, int Q_TILE_SIZE>
             );
         } // end of query loop
     } // end of new prompt token loop
-    return;
 
     // ========================================================================
     // --- TEMPORARY DEBUG: Write the unnormalized accumulator to the output ---
@@ -207,22 +196,22 @@ template <typename T, int HEAD_DIM, int Q_TILE_SIZE>
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
     // Calculate the base address for this threadgroup's output
-device T* out_ptr_base = output_buffer +
-                       (ulong)start_q_idx_global * params.num_q_heads * HEAD_DIM +
-                       (ulong)head_idx * HEAD_DIM;
+    device T* out_ptr_base = output_buffer +
+                        (ulong)start_q_idx_global * params.num_q_heads * HEAD_DIM +
+                        (ulong)head_idx * HEAD_DIM;
 
-// Each thread writes its portion of the accumulator tile
-for (int q_idx_in_tile = 0; q_idx_in_tile < num_queries_in_tile; ++q_idx_in_tile) {
+    // Each thread writes its portion of the accumulator tile
+    for (int q_idx_in_tile = 0; q_idx_in_tile < num_queries_in_tile; ++q_idx_in_tile) {
 
-    device T* out_q_ptr = out_ptr_base + (ulong)q_idx_in_tile * params.num_q_heads * HEAD_DIM;
-    threadgroup float* acc_q_ptr = output_accumulator + q_idx_in_tile * HEAD_DIM;
+        device T* out_q_ptr = out_ptr_base + (ulong)q_idx_in_tile * params.num_q_heads * HEAD_DIM;
+        threadgroup float* acc_q_ptr = output_accumulator + q_idx_in_tile * HEAD_DIM;
 
-    for (int i = local_idx_in_tg; i < HEAD_DIM; i += tg_dim.x) {
-        out_q_ptr[i] = (T)acc_q_ptr[i];
+        for (int i = local_idx_in_tg; i < HEAD_DIM; i += tg_dim.x) {
+            out_q_ptr[i] = (T)acc_q_ptr[i];
+        }
     }
-}
 
-return; // Stop here for the test
+    return; // Stop here for the test
 
 
     // ========================================================================

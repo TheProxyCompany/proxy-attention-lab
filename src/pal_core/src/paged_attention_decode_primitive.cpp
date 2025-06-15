@@ -105,6 +105,18 @@ void PagedAttentionDecodePrimitive::eval_gpu(const std::vector<mx::array>& input
     // hardcode it to 32 for now
     const size_t simd_width = 32;
 
+    // --- Dynamic thread count calculation ---
+    // Calculate total threadgroups for occupancy consideration
+    const int total_threadgroups = params.num_sequences_in_batch * params.num_q_heads *
+                                   (use_two_pass ? num_chunks : 1);
+
+    // Pass 1: Scale threads based on occupancy
+    size_t threads_per_group = (total_threadgroups > 64) ? 128 :
+                               (total_threadgroups > 32) ? 256 : 512;
+    // Ensure it's a multiple of tokens_per_page for efficient token processing
+    threads_per_group = std::max(threads_per_group, (size_t)params.tokens_per_page);
+    threads_per_group = ((threads_per_group + simd_width - 1) / simd_width) * simd_width;
+
     // 4. Define dispatch grid
     metal::DispatchGrid dispatch_grid;
     dispatch_grid.width = params.num_sequences_in_batch;
@@ -129,7 +141,6 @@ void PagedAttentionDecodePrimitive::eval_gpu(const std::vector<mx::array>& input
     }
 
     // 6. Determine threadgroup configuration
-    size_t threads_per_group = 512;
     const size_t tg_memory_bytes = calculate_attention_memory_layout(
         params,
         threads_per_group,
@@ -198,7 +209,8 @@ void PagedAttentionDecodePrimitive::eval_gpu(const std::vector<mx::array>& input
             throw std::runtime_error("[PAL] Failed to load reduce kernel: " + reduce_kernel_name);
         }
 
-        const size_t threads_per_group_pass2 = 128;
+        const int reduce_threadgroups = params.num_sequences_in_batch * params.num_q_heads;
+        const size_t threads_per_group_pass2 = (reduce_threadgroups > 64) ? 128 : 256;
         const size_t tg_memory_bytes_pass2 = calculate_reduce_memory_layout(
             params,
             threads_per_group_pass2,
