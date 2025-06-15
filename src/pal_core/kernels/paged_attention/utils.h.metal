@@ -116,3 +116,122 @@ inline float page_max(
     // Broadcast result to all threads
     return simd_broadcast(local_max, 0);
 }
+
+
+/**
+ * @brief Computes the dot product between a vector in threadgroup memory
+ *        and a vector in thread-private registers.
+ *
+ * This is the core computation for the prefill kernel. Each thread calculates
+ * a partial sum, and then a fast, parallel reduction sums these partials
+ * into a single final score.
+ *
+ * @param q_vector Pointer to the start of the Q vector in threadgroup memory.
+ * @param k_vector   The K vector, held in per-thread private registers.
+ * @param scratchpad  A pointer to a block of threadgroup memory of size
+ *                    `tg_dim.x` for the reduction.
+ * @return The final, single float value of the dot product.
+ */
+template <typename T, int HEAD_DIM>
+inline float dot_product_shmem_reg(
+    threadgroup const T* q_vector,
+    thread const T* k_vector,
+    threadgroup float* scratchpad,
+    uint local_idx_in_tg,
+    uint tg_dim_x
+) {
+    // 1. Parallel Partial Summation
+    float partial_score = 0.0f;
+    #pragma unroll
+    for (int i = local_idx_in_tg; i < HEAD_DIM; i += tg_dim_x) {
+        partial_score += (float)q_vector[i] * (float)k_vector[i];
+    }
+
+    // 2. Parallel Reduction
+    scratchpad[local_idx_in_tg] = partial_score;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    // THREADGROUP BARRIER REASON: Ensure all threads have the updated partial_score before the next step.
+
+    // Iteratively reduce the sums in parallel.
+    for (uint s = tg_dim_x / 2; s > 0; s >>= 1) {
+        if (local_idx_in_tg < s) {
+            scratchpad[local_idx_in_tg] += scratchpad[local_idx_in_tg + s];
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        // THREADGROUP BARRIER REASON: Ensure all threads have the updated partial_score before the next step.
+    }
+
+    // The final result is in scratchpad[0]. All threads return this value.
+    return scratchpad[0];
+}
+
+
+/**
+ * @brief Updates the online softmax statistics and the output accumulator
+ *        for a single query within a tile.
+ *
+ * This function encapsulates the core logic of the "flash" attention mechanism.
+ * It's called by every thread, but a `local_idx_in_tg == 0` check ensures
+ * the statistics are only updated once. The subsequent V-aggregation is parallel.
+ *
+ * @param score The newly computed attention score for this (Q, K) pair.
+ * @param v_vector The V vector for the current key, held in registers.
+ * @param softmax_stats Pointer to the start of the [max_score, sum_exp] pair
+ *                  for this query in threadgroup memory.
+ * @param accumulator_ptr Pointer to the start of the output accumulator vector
+ *                        for this query in threadgroup memory.
+ */
+template <typename T, int HEAD_DIM>
+inline void update_attention_tile(
+    float score,
+    thread const T* v_vector,
+    threadgroup float* softmax_stats,
+    threadgroup float* accumulator,
+    threadgroup float* scale_factor_broadcast,
+    uint local_idx_in_tg,
+    uint tg_dim_x,
+    float log_exp_min_clamp
+) {
+    float new_max_score = -INFINITY;
+    if (local_idx_in_tg == 0) {
+        float old_max_score = softmax_stats[0];
+        new_max_score = max(old_max_score, score);
+        float scale_factor = 1.0f;
+
+        // If the max score changed, calculate a rescaling factor.
+        if (new_max_score > old_max_score) {
+            scale_factor = exp(max(old_max_score - new_max_score, log_exp_min_clamp));
+            softmax_stats[1] *= scale_factor; // Rescale sum_exp
+        }
+        softmax_stats[0] = new_max_score;
+        *scale_factor_broadcast = scale_factor; // Use scratchpad to broadcast scale factor
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    // THREADGROUP BARRIER REASON: Ensure all threads have the updated stats before the next step.
+
+    // All threads read the broadcasted scale factor and updated max_score
+    float scale = *scale_factor_broadcast;
+    new_max_score = softmax_stats[0];
+
+    if (scale != 1.0f) {
+        #pragma unroll
+        for (int i = local_idx_in_tg; i < HEAD_DIM; i += tg_dim_x) {
+            accumulator[i] *= scale;
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    // THREADGROUP BARRIER REASON: Ensure all threads have the updated accumulator before the next step.
+
+    // V-Aggregation
+    float prob = exp(max(score - new_max_score, log_exp_min_clamp));
+    #pragma unroll
+    for (int i = local_idx_in_tg; i < HEAD_DIM; i += tg_dim_x) {
+        accumulator[i] += prob * (float)v_vector[i];
+    }
+
+    if (local_idx_in_tg == 0) {
+        softmax_stats[1] += prob;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    // THREADGROUP BARRIER REASON: Ensure all threads have the updated accumulator before the next step.
+}

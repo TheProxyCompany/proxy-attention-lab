@@ -38,7 +38,7 @@ namespace pal::cpp {
 namespace {
 
 int calculate_q_tile_size(int head_dim, size_t max_threadgroup_mem, mx::Dtype dtype);
-size_t calculate_prefill_threadgroup_memory(int head_dim, int q_tile_size, mx::Dtype dtype);
+size_t calculate_prefill_threadgroup_memory(int head_dim, int q_tile_size, size_t num_threads, mx::Dtype dtype);
 
 } // namespace
 
@@ -87,9 +87,11 @@ void PagedAttentionPrefillPrimitive::eval_gpu(const std::vector<mx::array>& inpu
     spdlog::info("[PagedPrefillPrimitive] Using calculated Q_TILE_SIZE = {}", q_tile_size);
 
     // 3. --- Kernel Selection ---
-    // Construct the kernel name based on runtime parameters to load the correct template specialization.
+    const std::string attention_kernel_name = "pal_paged_attention_prefill_";
     const std::string dtype_suffix = mx::type_to_name(q_prompt.dtype());
-    const std::string kernel_name = "paged_prefill_" + dtype_suffix + "_" + std::to_string(head_dim_) + "_" + std::to_string(q_tile_size);
+    const std::string kernel_name = attention_kernel_name + dtype_suffix
+                                    + "_" + std::to_string(head_dim_)
+                                    + "_" + std::to_string(q_tile_size);
 
     auto kernel_state = d.get_kernel(kernel_name, "pal");
     if (!kernel_state) {
@@ -104,7 +106,6 @@ void PagedAttentionPrefillPrimitive::eval_gpu(const std::vector<mx::array>& inpu
     const int num_sequences = page_table.shape(0);
 
     // Populate the parameter struct to pass to the kernel.
-    // NOTE: You will need to add num_prompt_tokens to the PagedAttentionParams struct in paged_attention_types.h
     PagedAttentionParams params;
     params.num_q_heads = num_q_heads_;
     params.num_kv_heads = num_kv_heads_;
@@ -122,8 +123,13 @@ void PagedAttentionPrefillPrimitive::eval_gpu(const std::vector<mx::array>& inpu
     grid.depth = num_q_heads_;
 
     // 5. --- Dispatch Kernel ---
-    size_t threads_per_group = kernel_state->maxTotalThreadsPerThreadgroup();
-    size_t tg_memory_bytes = calculate_prefill_threadgroup_memory(head_dim_, q_tile_size, q_prompt.dtype());
+    const size_t threads_per_group = 512;
+    size_t tg_memory_bytes = calculate_prefill_threadgroup_memory(
+        head_dim_,
+        q_tile_size,
+        threads_per_group,
+        q_prompt.dtype()
+    );
     if (tg_memory_bytes > d.mtl_device()->maxThreadgroupMemoryLength()) {
         throw std::runtime_error("[PagedPrefillPrimitive] Calculated threadgroup memory (" + std::to_string(tg_memory_bytes) + ") exceeds device limits.");
     }
@@ -143,7 +149,12 @@ void PagedAttentionPrefillPrimitive::eval_gpu(const std::vector<mx::array>& inpu
     compute_encoder.set_output_array(out, 8);
     compute_encoder.set_threadgroup_memory_length(tg_memory_bytes, 0);
 
-    metal::MetalDispatcher::dispatch_kernel(compute_encoder, grid, threads_per_group, tg_memory_bytes);
+    metal::MetalDispatcher::dispatch_kernel(
+        compute_encoder,
+        grid,
+        threads_per_group,
+        tg_memory_bytes
+    );
 }
 
 void PagedAttentionPrefillPrimitive::print(std::ostream& os) {
@@ -189,15 +200,24 @@ int calculate_q_tile_size(int head_dim, size_t max_threadgroup_mem, mx::Dtype dt
     return std::min(32, static_cast<int>(rounded_down_power_of_two));
 }
 
-size_t calculate_prefill_threadgroup_memory(int head_dim, int q_tile_size, mx::Dtype dtype) {
+size_t calculate_prefill_threadgroup_memory(
+    int head_dim,
+    int q_tile_size,
+    size_t num_threads,
+    mx::Dtype dtype
+) {
     // Memory for Q_tile (bfloat16)
     size_t q_tile_mem = q_tile_size * head_dim * mx::size_of(dtype);
     // Memory for Output Accumulator (float32)
     size_t out_acc_mem = q_tile_size * head_dim * sizeof(float);
     // Memory for Softmax stats (2 floats per query)
     size_t stats_mem = q_tile_size * (2 * sizeof(float));
+    // Memory for Scale Factor Broadcast (1 float)
+    size_t scale_factor_mem = sizeof(float);
+    // Memory for Reduction Scratchpad (1 float per thread)
+    size_t reduction_scratchpad_mem = num_threads * sizeof(float);
 
-    return q_tile_mem + out_acc_mem + stats_mem;
+    return q_tile_mem + out_acc_mem + stats_mem + scale_factor_mem + reduction_scratchpad_mem;
 }
 
 } // namespace

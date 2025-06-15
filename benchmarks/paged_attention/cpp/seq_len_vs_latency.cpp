@@ -215,7 +215,8 @@ BENCHMARK(BM_PAL_DecodeLatencyVsHistoryLen)
    ->Arg(2048)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
    ->Arg(4096)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
    ->Arg(8192)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-   ->Arg(16384)->Iterations(ITERATIONS)->Repetitions(REPETITIONS);
+   ->Arg(16384)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+   ->Arg(32768)->Iterations(ITERATIONS)->Repetitions(REPETITIONS);
 
 BENCHMARK(BM_MLX_SDPA_DecodeLatencyVsHistoryLen)
    ->Arg(64)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
@@ -225,6 +226,7 @@ BENCHMARK(BM_MLX_SDPA_DecodeLatencyVsHistoryLen)
    ->Arg(2048)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
    ->Arg(4096)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
    ->Arg(8192)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-   ->Arg(16384)->Iterations(ITERATIONS)->Repetitions(REPETITIONS);
+   ->Arg(16384)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
+   ->Arg(32768)->Iterations(ITERATIONS)->Repetitions(REPETITIONS);
 
 BENCHMARK_MAIN();

@@ -129,7 +129,7 @@ void PagedAttentionDecodePrimitive::eval_gpu(const std::vector<mx::array>& input
     }
 
     // 6. Determine threadgroup configuration
-    const size_t threads_per_group = 256; // 1024 is max on apple silicon
+    size_t threads_per_group = 512;
     const size_t tg_memory_bytes = calculate_attention_memory_layout(
         params,
         threads_per_group,
@@ -198,9 +198,10 @@ void PagedAttentionDecodePrimitive::eval_gpu(const std::vector<mx::array>& input
             throw std::runtime_error("[PAL] Failed to load reduce kernel: " + reduce_kernel_name);
         }
 
+        const size_t threads_per_group_pass2 = 128;
         const size_t tg_memory_bytes_pass2 = calculate_reduce_memory_layout(
             params,
-            threads_per_group,
+            threads_per_group_pass2,
             simd_width
         );
 
@@ -221,7 +222,7 @@ void PagedAttentionDecodePrimitive::eval_gpu(const std::vector<mx::array>& input
         metal::MetalDispatcher::dispatch_kernel(
             compute_encoder,
             dispatch_grid_pass2,
-            threads_per_group,
+            threads_per_group_pass2,
             tg_memory_bytes_pass2
         );
     } else {

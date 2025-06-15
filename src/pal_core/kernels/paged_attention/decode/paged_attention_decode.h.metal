@@ -1,4 +1,4 @@
-// paged_attention.h.metal
+// paged_attention_decode.h.metal
 // Optimized Paged Attention kernel for Metal.
 //
 // Copyright 2025 The Proxy Company. All Rights Reserved.

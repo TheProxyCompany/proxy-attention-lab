@@ -1,4 +1,4 @@
-// paged_reduce.h.metal
+// paged_reduce_decode.h.metal
 // Second-pass reduction kernel for partitioned paged attention.
 //
 // Copyright 2025 The Proxy Company. All Rights Reserved.
