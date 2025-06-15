@@ -17,8 +17,8 @@
 // ============================================================================
 
 #include "fill_kv_pages.h.metal"
-#include "paged_attention.h.metal"
-#include "paged_reduce.h.metal"
+#include "decode/paged_attention_decode.h.metal"
+#include "decode/paged_reduce_decode.h.metal"
 
 
 [[kernel]] void get_device_info() {
@@ -61,7 +61,7 @@ INSTANTIATE_FILL_KV_PAGES(bfloat16_t,  bfloat16);
         device float*       max_logits_out           [[buffer(6), function_constant(USE_TWO_PASS)]],                            \
         device float*       exp_sums_out             [[buffer(7), function_constant(USE_TWO_PASS)]],                            \
         device TYPE*        tmp_out                  [[buffer(8), function_constant(USE_TWO_PASS)]],                            \
-        constant const PagedAttentionParams& params  [[buffer(9)]],                                                             \
+        constant const PagedAttentionDecodeParams& params  [[buffer(9)]],                                                             \
         threadgroup uchar*  tg_mem                   [[threadgroup(0)]],                                                        \
         uint3               tg_dim                   [[threads_per_threadgroup]],                                                \
         uint3               tg_pos_in_grid           [[threadgroup_position_in_grid]],                                          \
@@ -77,7 +77,7 @@ INSTANTIATE_FILL_KV_PAGES(bfloat16_t,  bfloat16);
         device const float* exp_sums_in              [[buffer(2)]],                                                             \
         device const TYPE*  tmp_in                   [[buffer(3)]],                                                             \
         device const int*   context_lens_in          [[buffer(4)]],                                                             \
-        constant const PagedAttentionParams& params  [[buffer(5)]],                                                             \
+        constant const PagedAttentionDecodeParams& params  [[buffer(5)]],                                                             \
         threadgroup uchar*  tg_mem                   [[threadgroup(0)]],                                                        \
         uint3               threads_per_threadgroup  [[threads_per_threadgroup]],                                                \
         uint3               tg_pos_in_grid           [[threadgroup_position_in_grid]],                                          \

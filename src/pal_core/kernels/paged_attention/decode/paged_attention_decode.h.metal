@@ -20,7 +20,7 @@
 
 #include <metal_stdlib>
 #include "paged_attention_types.h"
-#include "utils.h.metal"
+#include "../utils.h.metal"
 
 using namespace metal;
 
@@ -40,7 +40,7 @@ template <typename T, int HEAD_DIM, int TOKENS_PER_PAGE, int SIMD_WIDTH>
     device float*        exp_sums_out           [[buffer(7), function_constant(USE_TWO_PASS)]],
     device T*            tmp_out                [[buffer(8), function_constant(USE_TWO_PASS)]],
 
-    constant const PagedAttentionParams& params [[buffer(9)]],
+    constant const PagedAttentionDecodeParams& params [[buffer(9)]],
     threadgroup uchar*   tg_mem                 [[threadgroup(0)]],
     uint3                tg_dim                 [[threads_per_threadgroup]],
     uint3                tg_pos_in_grid         [[threadgroup_position_in_grid]],

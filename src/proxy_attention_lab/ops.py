@@ -23,7 +23,7 @@ from proxy_attention_lab.pal_core import (
     get_k_cache_stripe_size as cpp_get_k_cache_stripe_size,
 )
 from proxy_attention_lab.pal_core import (
-    paged_attention as cpp_paged_attention_kernel,
+    paged_attention_decode as cpp_paged_attention_decode_kernel,
 )
 
 
@@ -36,7 +36,7 @@ def get_k_cache_stripe_size(dtype: mx.Dtype) -> int:
     return cpp_get_k_cache_stripe_size(dtype)
 
 
-def paged_attention(
+def paged_attention_decode(
     queries: mx.array,
     k_cache_pool: mx.array,
     v_cache_pool: mx.array,
@@ -71,7 +71,7 @@ def paged_attention(
     Note:
         The output HeadDim is always taken from the KV cache head dimension, regardless of query dimensions.
     """
-    return cpp_paged_attention_kernel(
+    return cpp_paged_attention_decode_kernel(
         queries,
         k_cache_pool,
         v_cache_pool,

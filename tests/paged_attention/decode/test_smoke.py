@@ -19,7 +19,7 @@ import logging
 import mlx.core as mx
 import pytest
 
-from proxy_attention_lab.pal_core import get_k_cache_shape, get_v_cache_shape, paged_attention
+from proxy_attention_lab.pal_core import get_k_cache_shape, get_v_cache_shape, paged_attention_decode
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +92,7 @@ def test_paged_attention_smoke(dtype) -> None:
 
     try:
         # Run the paged attention operation
-        out = paged_attention(
+        out = paged_attention_decode(
             mock_queries, mock_k_cache_pool, mock_v_cache_pool, mock_page_table, mock_sequence_lengths
         )
         mx.eval(out)

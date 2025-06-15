@@ -25,9 +25,9 @@ namespace mx = mlx::core;
 namespace pal::cpp {
 
 /**
- * @brief Performs paged attention operation using cached key-value pairs.
+ * @brief Performs paged attention decode operation using cached key-value pairs.
  *
- * This function implements paged attention, allowing transformer models to
+ * This function implements paged attention decode, allowing transformer models to
  * efficiently access key-value pairs stored in a memory pool organized as pages.
  * It supports Multi-head Attention (MHA), Grouped Query Attention (GQA), and
  * Multi-query Attention (MQA) patterns.
@@ -44,7 +44,7 @@ namespace pal::cpp {
  * @param stream MLX stream or device for the operation
  * @return mx::array Output of shape [num_queries, head_dim] containing the attention results
  */
-mx::array paged_attention(
+mx::array paged_attention_decode(
     const mx::array& queries,
     const mx::array& k_cache_pool,
     const mx::array& v_cache_pool,

@@ -14,7 +14,7 @@
 # ==============================================================================
 """Proxy Attention Lab (PAL): A laboratory for experimenting with attention primitives in MLX."""
 
-from proxy_attention_lab.ops import fill_kv_pages, get_k_cache_stripe_size, paged_attention
+from proxy_attention_lab.ops import fill_kv_pages, get_k_cache_stripe_size, paged_attention_decode
 from proxy_attention_lab.pal_core import (
     get_k_cache_shape,
     get_optimal_page_size,
@@ -27,5 +27,5 @@ __all__ = [
     "get_k_cache_stripe_size",
     "get_optimal_page_size",
     "get_v_cache_shape",
-    "paged_attention",
+    "paged_attention_decode",
 ]
