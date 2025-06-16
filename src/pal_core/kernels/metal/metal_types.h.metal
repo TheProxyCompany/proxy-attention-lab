@@ -27,7 +27,7 @@
 
 using namespace metal;
 
-
+// need compile time max and min, so we can't use std::max and std::min
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define ALIGN16(ptr) (((uintptr_t)(ptr) + 15) & ~15);

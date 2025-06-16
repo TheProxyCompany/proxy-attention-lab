@@ -85,7 +85,13 @@ void PagedAttentionPrefillPrimitive::eval_gpu(const std::vector<mx::array>& inpu
     if (q_tile_size == 0) {
         throw std::runtime_error("Calculated Q_TILE_SIZE is 0. Check head_dim and memory budget.");
     }
+
     spdlog::info("[PagedPrefillPrimitive] Using calculated Q_TILE_SIZE = {}", q_tile_size);
+
+    if (head_dim_ % simd_width != 0) {
+        throw std::runtime_error("[PagedPrefillPrimitive] head_dim_ must be divisible by SIMD_WIDTH");
+    }
+
     // Each SIMD Group processes one query from a tile.
     const size_t threads_per_group = q_tile_size * simd_width;
 
