@@ -51,17 +51,19 @@ template <typename T, int HEAD_DIM, int Q_TILE_SIZE, int SIMD_WIDTH>
     // --- Phase 1: Initialization & Threadgroup Memory Partitioning ---
     // ========================================================================
     // One SIMD-group (32 Threads) processes one query vector (HEAD_DIM) from a tile.
-    const uint query_index = simdgroup_idx;
+    const uint query_index_in_tile = simdgroup_idx;
     // what thread in the SIMD group is this?
     const uint query_lane_index = local_idx_in_tg % SIMD_WIDTH;
-
-    // Calculate the global index of the query this SIMD group is processing.
-    const int global_query_start_index = tg_pos_in_grid.x * Q_TILE_SIZE;
-    const int global_query_index = global_query_start_index + query_index;
 
     // Unpack other identifiers
     const uint sequence_index = tg_pos_in_grid.y;
     const uint head_index = tg_pos_in_grid.z;
+
+    // Query index relative to the start of its own sequence's prompt
+    const int query_index_in_sequence = tg_pos_in_grid.x * Q_TILE_SIZE + query_index_in_tile;
+
+    // True global index into the flattened (batch * prompt_len) buffer
+    const int global_query_index = (int)sequence_index * params.num_prompt_tokens + query_index_in_sequence;
     // swizzle_size = MEMORY_ALIGNMENT_BYTES / sizeof(T);
     constexpr int ELEMS_PER_SWIZZLE = MEMORY_ALIGNMENT_BYTES / sizeof(T);
     const int elements_per_thread = HEAD_DIM / SIMD_WIDTH;
@@ -92,8 +94,8 @@ template <typename T, int HEAD_DIM, int Q_TILE_SIZE, int SIMD_WIDTH>
 
     // Each SIMD group only initializes the memory for its assigned query.
     // Calculate offsets to this query's specific memory regions.
-    threadgroup float* query_accumulator = output_accumulator + query_index * HEAD_DIM;
-    threadgroup float* query_softmax_stats = softmax_stats + query_index * 2;
+    threadgroup float* query_accumulator = output_accumulator + query_index_in_tile * HEAD_DIM;
+    threadgroup float* query_softmax_stats = softmax_stats + query_index_in_tile * 2;
 
     // Initialize accumulators and stats to zero/negative infinity.
     // Each thread initializes a portion of the memory.
@@ -116,16 +118,16 @@ template <typename T, int HEAD_DIM, int Q_TILE_SIZE, int SIMD_WIDTH>
     for (uint i = local_idx_in_tg; i < (Q_TILE_SIZE * HEAD_DIM); i += tg_size) {
         int query_index_in_tile = i / HEAD_DIM;
         int head_index_in_tile = i % HEAD_DIM;
-        int global_query_index_in_tile = global_query_start_index + query_index_in_tile;
-        query_tile[i] = (global_query_index_in_tile < params.num_prompt_tokens) ?
-            q_prompt_in[q_sequence_offset + global_query_index_in_tile * params.num_q_heads * HEAD_DIM + head_index * HEAD_DIM + head_index_in_tile]
+        int query_index_in_tile_for_load = tg_pos_in_grid.x * Q_TILE_SIZE + query_index_in_tile;
+        query_tile[i] = (query_index_in_tile_for_load < params.num_prompt_tokens) ?
+            q_prompt_in[q_sequence_offset + query_index_in_tile_for_load * params.num_q_heads * HEAD_DIM + head_index * HEAD_DIM + head_index_in_tile]
             : 0;
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
     // THREADGROUP BARRIER REASON: Ensure the full Q-vector is in shared memory before use.
 
-    // Early exit if this SIMD group's assigned query is beyond the prompt length.
-    if (global_query_index >= params.num_prompt_tokens) return;
+    // exit if this SIMD group's assigned query is beyond the prompt length.
+    if (query_index_in_sequence >= params.num_prompt_tokens) return;
 
     // ========================================================================
     // --- Phase 3: Main Attention Loop (Streaming K/V) ---
@@ -160,11 +162,11 @@ template <typename T, int HEAD_DIM, int Q_TILE_SIZE, int SIMD_WIDTH>
 
         // --- 2. Apply Causal Mask ---
         // If this K pair is "in the future" for this SIMD group's query, skip it.
-        if (kv_idx_prompt > global_query_index) continue;
+        if (kv_idx_prompt > query_index_in_sequence) continue;
 
         // --- 3. Compute Dot Product ---
         // Get a pointer to this SIMD group's query in threadgroup memory.
-        threadgroup const T* current_query_vector = query_tile + query_index * HEAD_DIM;
+        threadgroup const T* current_query_vector = query_tile + query_index_in_tile * HEAD_DIM;
 
         // Each thread computes its partial score.
         float partial_score = 0.0f;
@@ -194,8 +196,8 @@ template <typename T, int HEAD_DIM, int Q_TILE_SIZE, int SIMD_WIDTH>
             stats[1] = stats[1] * scale + probability;
 
             // Broadcast the scale factor to the other 31 threads using the scratchpad.
-            reduction_scratchpad[query_index] = scale;
-            reduction_scratchpad[query_index + Q_TILE_SIZE] = probability;
+            reduction_scratchpad[query_index_in_tile] = scale;
+            reduction_scratchpad[query_index_in_tile + Q_TILE_SIZE] = probability;
         }
         // All threads wait for the leader to finish the softmax update
         simdgroup_barrier(mem_flags::mem_threadgroup);
@@ -216,8 +218,8 @@ template <typename T, int HEAD_DIM, int Q_TILE_SIZE, int SIMD_WIDTH>
 
         // --- 6. V-Aggregation ---
         // All 32 threads read the scale factor broadcast by their leader.
-        float final_scale = reduction_scratchpad[query_index];
-        float final_probability = reduction_scratchpad[query_index + Q_TILE_SIZE];
+        float final_scale = reduction_scratchpad[query_index_in_tile];
+        float final_probability = reduction_scratchpad[query_index_in_tile + Q_TILE_SIZE];
 
         // Barrier to ensure all threads have pulled the broadcast values
         simdgroup_barrier(mem_flags::mem_none);
@@ -290,7 +292,7 @@ template <typename T, int HEAD_DIM, int Q_TILE_SIZE, int SIMD_WIDTH>
             }
 
             // --- 4a. Compute Score ---
-            threadgroup const T* current_query_vector = query_tile + query_index * HEAD_DIM;
+            threadgroup const T* current_query_vector = query_tile + query_index_in_tile * HEAD_DIM;
             float partial_score = 0.0f;
             #pragma unroll
             for (int i = 0; i < elements_per_thread; ++i) {
@@ -318,8 +320,8 @@ template <typename T, int HEAD_DIM, int Q_TILE_SIZE, int SIMD_WIDTH>
                 stats[1] = stats[1] * scale + probability;
 
                 // Broadcast the scale and probability using the scratchpad
-                reduction_scratchpad[query_index] = scale;
-                reduction_scratchpad[query_index + Q_TILE_SIZE] = probability;
+                reduction_scratchpad[query_index_in_tile] = scale;
+                reduction_scratchpad[query_index_in_tile + Q_TILE_SIZE] = probability;
             }
             // All threads wait for the leader
             simdgroup_barrier(mem_flags::mem_threadgroup);
@@ -340,8 +342,8 @@ template <typename T, int HEAD_DIM, int Q_TILE_SIZE, int SIMD_WIDTH>
 
             // --- 6. V-Aggregation for History Token ---
             // All threads in SIMD group read the scale and probability factors broadcast by their leader.
-            float final_scale = reduction_scratchpad[query_index];
-            float final_probability = reduction_scratchpad[query_index + Q_TILE_SIZE];
+            float final_scale = reduction_scratchpad[query_index_in_tile];
+            float final_probability = reduction_scratchpad[query_index_in_tile + Q_TILE_SIZE];
 
             // Barrier to ensure all threads have pulled the broadcast values
             simdgroup_barrier(mem_flags::mem_none);

@@ -158,22 +158,23 @@ def test_pal_prefill_vs_sdpa_equivalency(batch_size, history_len, prompt_len, nu
     logger.info(f"    Max absolute difference: {max_diff:.6f}")
 
     if not mx.allclose(pal_output_reshaped, sdpa_output_for_prompt, atol=1e-2, rtol=1e-2):
-        for idx in range(pal_output_reshaped.shape[-1]):
-            pal_vec = pal_output_reshaped[0, 0, idx]
-            sdpa_vec = sdpa_output_for_prompt[0, 0, idx]
-            if not mx.allclose(pal_vec, sdpa_vec, atol=1e-2, rtol=1e-2):
-                logger.error(f"    PAL vec (idx={idx}): {pal_vec.tolist()[:10]}")
-                logger.error(f"    SDPA vec (idx={idx}): {sdpa_vec.tolist()[:10]}")
-                logger.error(
-                    f"Vector mismatch at last axis index {idx}: max abs diff "
-                    + f"{mx.max(mx.abs(pal_vec - sdpa_vec)).item():.6f}"
-                )
-                break
-            else:
-                logger.info(f"    PAL vec (idx={idx}): {pal_vec.tolist()[:10]}")
-                logger.info(f"    SDPA vec (idx={idx}): {sdpa_vec.tolist()[:10]}")
-                logger.info(
-                    f"Vector {idx} matches within tolerance: {mx.allclose(pal_vec, sdpa_vec, atol=1e-2, rtol=1e-2)}"
-                )
+        for batch_idx in range(pal_output_reshaped.shape[0]):
+            for idx in range(pal_output_reshaped.shape[2]):
+                pal_vec = pal_output_reshaped[batch_idx, 0, idx, :]
+                sdpa_vec = sdpa_output_for_prompt[batch_idx, 0, idx, :]
+                if not mx.allclose(pal_vec, sdpa_vec, atol=1e-2, rtol=1e-2):
+                    logger.error(f"    PAL vec (idx={idx}, batch={batch_idx}): {pal_vec.tolist()[:10]}")
+                    logger.error(f"    SDPA vec (idx={idx}, batch={batch_idx}): {sdpa_vec.tolist()[:10]}")
+                    logger.error(
+                        f"Vector mismatch at axis index {idx} for batch {batch_idx}: max abs diff "
+                        + f"{mx.max(mx.abs(pal_vec - sdpa_vec)).item():.6f}"
+                    )
+                    break
+                else:
+                    logger.info(f"    PAL vec (idx={idx}, batch={batch_idx}): {pal_vec.tolist()[:10]}")
+                    logger.info(f"    SDPA vec (idx={idx}, batch={batch_idx}): {sdpa_vec.tolist()[:10]}")
+                    logger.info(
+                        f"Vector {idx} matches within tolerance for batch {batch_idx}: {mx.allclose(pal_vec, sdpa_vec, atol=1e-2, rtol=1e-2)}"
+                    )
 
     assert mx.allclose(pal_output_reshaped, sdpa_output_for_prompt, atol=1e-2, rtol=1e-2)
