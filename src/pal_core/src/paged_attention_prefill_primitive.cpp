@@ -119,7 +119,7 @@ void PagedAttentionPrefillPrimitive::eval_gpu(const std::vector<mx::array>& inpu
     params.num_sequences_in_batch = num_sequences;
     params.num_prompt_tokens = num_prompt_tokens;
     params.inv_sqrt_head_dim = 1.0f / std::sqrt(static_cast<float>(head_dim_));
-
+    params.log_exp_min_clamp = -88.0f;
     // Calculate grid dimensions based on tiling strategy.
     metal::DispatchGrid grid;
     grid.width = (num_prompt_tokens + q_tile_size - 1) / q_tile_size; // num_q_blocks

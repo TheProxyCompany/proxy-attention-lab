@@ -115,12 +115,9 @@ template <typename T, int HEAD_DIM, int Q_TILE_SIZE, int SIMD_WIDTH>
         int query_index_in_tile = i / HEAD_DIM;
         int head_index_in_tile = i % HEAD_DIM;
         int global_query_index_in_tile = global_query_start_index + query_index_in_tile;
-
-        device const T* src = q_prompt_in +
-                             (ulong)global_query_index_in_tile * params.num_q_heads * HEAD_DIM +
-                             (ulong)head_index * HEAD_DIM + head_index_in_tile;
-
-        query_tile[i] = *src;
+        query_tile[i] = (global_query_index_in_tile < params.num_prompt_tokens) ?
+            q_prompt_in[global_query_index_in_tile * params.num_q_heads * HEAD_DIM + head_index * HEAD_DIM + head_index_in_tile]
+            : 0;
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
     // THREADGROUP BARRIER REASON: Ensure the full Q-vector is in shared memory before use.
