@@ -103,12 +103,11 @@ def test_pal_prefill_vs_sdpa_equivalency(batch_size, history_len, prompt_len, nu
                 continue
 
             # Populate K cache (swizzled)
-            k_slice = (
-                k_history[b, :, start:end, :]
-                .transpose(0, 2, 1)
-                .reshape(num_kv_heads, count, -1, get_k_cache_stripe_size(dtype))
-                .transpose(0, 2, 1, 3)
+            k_slice_unswizzled = k_history[b, :, start:end, :].transpose(0, 2, 1)  # (kv_heads, head_dim, count)
+            k_slice_reshaped = k_slice_unswizzled.reshape(
+                num_kv_heads, head_dim // get_k_cache_stripe_size(dtype), get_k_cache_stripe_size(dtype), count
             )
+            k_slice = k_slice_reshaped.transpose(0, 1, 3, 2)  # (kv_heads, head_dim/stripe, count, stripe)
             k_cache_paged[p_page_idx, :, :, :count, :] = k_slice
 
             # Populate V cache (strided)
@@ -166,14 +165,15 @@ def test_pal_prefill_vs_sdpa_equivalency(batch_size, history_len, prompt_len, nu
                 logger.error(f"    PAL vec (idx={idx}): {pal_vec.tolist()[:10]}")
                 logger.error(f"    SDPA vec (idx={idx}): {sdpa_vec.tolist()[:10]}")
                 logger.error(
-                    f"Vector mismatch at last axis index {idx}: max abs diff " +
-                    f"{mx.max(mx.abs(pal_vec - sdpa_vec)).item():.6f}"
+                    f"Vector mismatch at last axis index {idx}: max abs diff "
+                    + f"{mx.max(mx.abs(pal_vec - sdpa_vec)).item():.6f}"
                 )
                 break
             else:
                 logger.info(f"    PAL vec (idx={idx}): {pal_vec.tolist()[:10]}")
                 logger.info(f"    SDPA vec (idx={idx}): {sdpa_vec.tolist()[:10]}")
-                logger.info(f"Vector {idx} matches within tolerance: {mx.allclose(pal_vec, sdpa_vec, atol=1e-2, rtol=1e-2)}")
-
+                logger.info(
+                    f"Vector {idx} matches within tolerance: {mx.allclose(pal_vec, sdpa_vec, atol=1e-2, rtol=1e-2)}"
+                )
 
     assert mx.allclose(pal_output_reshaped, sdpa_output_for_prompt, atol=1e-2, rtol=1e-2)
