@@ -53,7 +53,7 @@ logger = logging.getLogger(__name__)
         (2, 64, (32, 16), 128),  # Gemma 3 27b
         (3, 128, (32, 16), 128),  # Gemma 3 27b
         (16, 64, (4, 4), 32),  # Batched Example
-        # (1, 1024, (32, 16), 128),  # Gemma 3 27b
+        (1, 1024, (32, 16), 128),  # Gemma 3 27b
         # (1, 4096, (32, 16), 128),  # Long history, Gemma 3 27b // should use pass 2
         # (1, 8192, (32, 16), 128),  # Long history, Gemma 3 27b // should use pass 2
     ],
