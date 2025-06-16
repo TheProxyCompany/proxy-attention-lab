@@ -23,7 +23,11 @@ import logging
 import mlx.core as mx
 import pytest
 
-from proxy_attention_lab import get_k_cache_shape, get_v_cache_shape, paged_attention_decode
+from proxy_attention_lab.pal_core import (
+    get_k_cache_shape,
+    get_v_cache_shape,
+    paged_attention_decode,
+)
 
 logger = logging.getLogger(__name__)
 
