@@ -67,6 +67,7 @@ template <typename T, int HEAD_DIM, int Q_TILE_SIZE, int SIMD_WIDTH>
     const uint head_index = tg_pos_in_grid.z;
     // swizzle_size = MEMORY_ALIGNMENT_BYTES / sizeof(T);
     constexpr int ELEMS_PER_SWIZZLE = MEMORY_ALIGNMENT_BYTES / sizeof(T);
+    const int elements_per_thread = HEAD_DIM / SIMD_WIDTH;
 
     // Partition the single threadgroup memory buffer into logical sections.
     threadgroup uchar* current_mem_ptr = tg_mem;
@@ -95,8 +96,9 @@ template <typename T, int HEAD_DIM, int Q_TILE_SIZE, int SIMD_WIDTH>
     // Initialize accumulators and stats to zero/negative infinity.
     // Each thread initializes a portion of the memory.
     #pragma unroll
-    for (int i = local_idx_in_tg; i < HEAD_DIM; i += tg_dim.x) {
-        query_accumulator[i] = 0.0f;
+    for (int i = 0; i < elements_per_thread; ++i) {
+        int idx = query_lane_index + i * SIMD_WIDTH;
+        query_accumulator[idx] = 0.0f;
     }
     // The first thread in the SIMD group initializes the max_score and sum_exp.
     if (query_lane_index == 0) {
@@ -133,7 +135,6 @@ template <typename T, int HEAD_DIM, int Q_TILE_SIZE, int SIMD_WIDTH>
     // Determine the correct KV head index for GQA
     const int num_q_per_kv = params.num_q_heads / params.num_kv_heads;
     const int kv_head_idx = head_index / num_q_per_kv;
-    const int elements_per_thread = HEAD_DIM / SIMD_WIDTH;
 
     //////////////////////////////////////////////////////////////////////////////
     // --- Part A: Attend to Prompt History (Causal) ---
@@ -170,7 +171,7 @@ template <typename T, int HEAD_DIM, int Q_TILE_SIZE, int SIMD_WIDTH>
             partial_score += (float)current_query_vector[idx] * (float)key_vector_registers[i];
         }
         // Reduce the partial scores across the 32 threads in this SIMD group.
-        float score = simd_sum(partial_score);
+        float score = simd_sum(partial_score) * params.inv_sqrt_head_dim;
 
         // --- 4. Update Accumulator ---
         // Only the first thread in the SIMD group performs the scalar updates.
@@ -289,7 +290,7 @@ template <typename T, int HEAD_DIM, int Q_TILE_SIZE, int SIMD_WIDTH>
                 int idx = query_lane_index + i * SIMD_WIDTH;
                 partial_score += (float)current_query_vector[idx] * (float)key_vector_registers[i];
             }
-            float score = simd_sum(partial_score);
+            float score = simd_sum(partial_score) * params.inv_sqrt_head_dim;
 
             // --- 4b. Update Softmax Statistics ---
             // Only the first thread in the SIMD group performs the updates.

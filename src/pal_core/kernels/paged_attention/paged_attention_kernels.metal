@@ -104,7 +104,7 @@ INSTANTIATE_FILL_KV_PAGES(bfloat16_t,  bfloat16);
 // Instantiations are organized by:
 //   - Data type: half, bfloat16_t
 //   - Head dimension: 32, 64, 80, 96, 128, 256
-//   - Q tile size: 16, 32
+//   - Q tile size: 8, 16, 32
 //   - SIMD width: 16, 32
 //
 // For each (head_dim, q_tile_size), instantiate both SIMD widths.
@@ -116,11 +116,14 @@ INSTANTIATE_FILL_KV_PAGES(bfloat16_t,  bfloat16);
     INSTANTIATE_PAL_PAGED_PREFILL(TYPE, 128, Q_TILE_SIZE, SIMD_WIDTH, SUFFIX) \
     INSTANTIATE_PAL_PAGED_PREFILL(TYPE, 256, Q_TILE_SIZE, SIMD_WIDTH, SUFFIX)
 
-
+INSTANTIATE_PAL_PAGED_PREFILL_ALL_HEAD_DIM(half,        8, 16, float16)
+INSTANTIATE_PAL_PAGED_PREFILL_ALL_HEAD_DIM(bfloat16_t,  8, 16, bfloat16)
 INSTANTIATE_PAL_PAGED_PREFILL_ALL_HEAD_DIM(half,        16, 16, float16)
 INSTANTIATE_PAL_PAGED_PREFILL_ALL_HEAD_DIM(bfloat16_t,  16, 16, bfloat16)
 INSTANTIATE_PAL_PAGED_PREFILL_ALL_HEAD_DIM(half,        32, 16, float16)
 INSTANTIATE_PAL_PAGED_PREFILL_ALL_HEAD_DIM(bfloat16_t,  32, 16, bfloat16)
+INSTANTIATE_PAL_PAGED_PREFILL_ALL_HEAD_DIM(half,        8, 32, float16)
+INSTANTIATE_PAL_PAGED_PREFILL_ALL_HEAD_DIM(bfloat16_t,  8, 32, bfloat16)
 INSTANTIATE_PAL_PAGED_PREFILL_ALL_HEAD_DIM(half,        16, 32, float16)
 INSTANTIATE_PAL_PAGED_PREFILL_ALL_HEAD_DIM(bfloat16_t,  16, 32, bfloat16)
 INSTANTIATE_PAL_PAGED_PREFILL_ALL_HEAD_DIM(half,        32, 32, float16)

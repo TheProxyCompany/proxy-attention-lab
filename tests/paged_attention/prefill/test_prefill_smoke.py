@@ -123,9 +123,6 @@ def test_paged_attention_prefill_smoke(dtype) -> None:
         logger.info(f"    Dtype: {out.dtype}")
         logger.info(f"    Contains finite values: {mx.isfinite(out).all()}")
 
-        print(f"\nOutput: {out.tolist()[0][:3]}")
-        print(f"Q prompt: {q_prompt.tolist()[0][0][:3]}")
-
         # Verify output properties
         assert out.shape == expected_output_shape, (
             f"Output shape {out.shape} does not match expected shape {expected_output_shape}"
