@@ -72,13 +72,16 @@ def test_pal_prefill_vs_sdpa_equivalency(batch_size, history_len, prompt_len, nu
 
     # --- 2. Prepare Inputs for PAL's paged_attention_prefill ---
     # Separate the Q/K/V tensors into history and prompt parts.
-    q_for_prefill = queries[:, :, -prompt_len:, :].transpose(0, 2, 1, 3)
-    k_for_prefill = keys[:, :, -prompt_len:, :].transpose(0, 2, 1, 3)
-    v_for_prefill = values[:, :, -prompt_len:, :].transpose(0, 2, 1, 3)
+    # The kernel expects batch-contiguous layout: [batch0_tokens..., batch1_tokens...]
+    q_for_prefill = queries[:, :, -prompt_len:, :]  # (batch, heads, prompt_len, head_dim)
+    k_for_prefill = keys[:, :, -prompt_len:, :]
+    v_for_prefill = values[:, :, -prompt_len:, :]
 
-    q_prompt = q_for_prefill.reshape(batch_size * prompt_len, num_q_heads, head_dim)
-    k_prompt = k_for_prefill.reshape(batch_size * prompt_len, num_kv_heads, head_dim)
-    v_prompt = v_for_prefill.reshape(batch_size * prompt_len, num_kv_heads, head_dim)
+    # Reshape to batch-contiguous layout
+    # First reshape to (batch, prompt_len, heads, head_dim), then flatten batch and prompt_len
+    q_prompt = q_for_prefill.transpose(0, 2, 1, 3).reshape(batch_size * prompt_len, num_q_heads, head_dim)
+    k_prompt = k_for_prefill.transpose(0, 2, 1, 3).reshape(batch_size * prompt_len, num_kv_heads, head_dim)
+    v_prompt = v_for_prefill.transpose(0, 2, 1, 3).reshape(batch_size * prompt_len, num_kv_heads, head_dim)
 
     k_history = keys[:, :, :history_len, :]
     v_history = values[:, :, :history_len, :]
@@ -92,7 +95,6 @@ def test_pal_prefill_vs_sdpa_equivalency(batch_size, history_len, prompt_len, nu
     k_cache_paged = mx.zeros(k_cache_shape, dtype=dtype)
     v_cache_paged = mx.zeros(v_cache_shape, dtype=dtype)
 
-    # This cache filling logic is identical to the decode test.
     for b in range(batch_size):
         for page_idx in range(num_logical_pages):
             p_page_idx = b * num_logical_pages + page_idx

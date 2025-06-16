@@ -112,8 +112,8 @@ void PagedAttentionPrefillPrimitive::eval_gpu(const std::vector<mx::array>& inpu
     // Allocate the output buffer on the device.
     out.set_data(mx::allocator::malloc(out.nbytes()));
 
-    const int num_prompt_tokens = q_prompt.shape(0);
     const int num_sequences = page_table.shape(0);
+    const int num_prompt_tokens = q_prompt.shape(0) / num_sequences;
 
     // Populate the parameter struct to pass to the kernel.
     PagedAttentionParams params;
