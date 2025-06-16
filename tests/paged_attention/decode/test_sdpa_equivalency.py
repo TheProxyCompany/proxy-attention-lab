@@ -25,7 +25,7 @@ import logging
 import mlx.core as mx
 import pytest
 
-from proxy_attention_lab import paged_attention
+from proxy_attention_lab import paged_attention_decode
 from proxy_attention_lab.pal_core import (
     get_k_cache_shape,
     get_k_cache_stripe_size,
@@ -211,7 +211,9 @@ def test_pal_decode_vs_sdpa_equivalency(batch_size, history_len, num_heads, head
     # --- 4. Run PAL paged_attention in decode mode ---
     logger.info("  Running PAL paged_attention (decode mode):")
 
-    pal_output = paged_attention(pal_queries, pal_k_cache_pool, pal_v_cache_pool, pal_page_table, pal_sequence_lengths)
+    pal_output = paged_attention_decode(
+        pal_queries, pal_k_cache_pool, pal_v_cache_pool, pal_page_table, pal_sequence_lengths
+    )
     mx.eval(pal_output)
     logger.info(f"    PAL output shape: {pal_output.shape}")
 

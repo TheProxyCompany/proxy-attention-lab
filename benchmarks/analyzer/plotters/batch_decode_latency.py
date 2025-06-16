@@ -89,6 +89,9 @@ class DecodeBatchLatencyPlotter(BasePlotter):
             # Group by implementation (PAL vs MLX)
             for group_name, group_data in vs_history.groupby("group"):
                 # Extract implementation from simplified group names (e.g., "cpp_pal", "cpp_mlx")
+                is_cpp = "cpp" in str(group_name).lower()
+                is_python = "python" in str(group_name).lower()
+                
                 if "_pal" in str(group_name):
                     impl_name = "pal"
                 elif "_mlx" in str(group_name):
@@ -96,7 +99,21 @@ class DecodeBatchLatencyPlotter(BasePlotter):
                 else:
                     logger.warning(f"Unknown group name: {group_name}")
                     continue
-                impl_style = impl_styles[impl_name]
+                impl_style = impl_styles[impl_name].copy()
+                
+                # Apply language-specific marker and label
+                if is_cpp:
+                    impl_style["marker"] = styles["CPP_MARKER"]
+                    impl_style["markersize"] = styles["CPP_MARKERSIZE"]
+                    lang_suffix = " (C++)"
+                elif is_python:
+                    impl_style["marker"] = styles["PYTHON_MARKER"]
+                    impl_style["markersize"] = styles["PYTHON_MARKERSIZE"]
+                    lang_suffix = " (Python)"
+                else:
+                    lang_suffix = ""
+                
+                impl_style["label"] = impl_style["label"] + lang_suffix
 
                 for idx, num_seq in enumerate(num_sequences):
                     subset = group_data[group_data["num_sequences"] == num_seq]
@@ -113,7 +130,7 @@ class DecodeBatchLatencyPlotter(BasePlotter):
                         marker=impl_style["marker"],
                         linewidth=impl_style["linewidth"],
                         linestyle=linestyle,
-                        markersize=8,
+                        markersize=impl_style.get("markersize", 6),
                         color=impl_style["color"],
                         label=f"{impl_style['label']} (N={num_seq})",
                     )
@@ -139,7 +156,7 @@ class DecodeBatchLatencyPlotter(BasePlotter):
                         marker=impl_style["marker"],
                         linewidth=impl_style["linewidth"],
                         linestyle=linestyle,
-                        markersize=8,
+                        markersize=impl_style.get("markersize", 6),
                         color=impl_style["color"],
                         label=f"{impl_style['label']} (N={num_seq})",
                     )

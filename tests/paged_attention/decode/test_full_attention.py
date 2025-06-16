@@ -23,7 +23,7 @@ import logging
 import mlx.core as mx
 import pytest
 
-from proxy_attention_lab import get_k_cache_shape, get_k_cache_stripe_size, get_v_cache_shape, paged_attention
+from proxy_attention_lab import get_k_cache_shape, get_k_cache_stripe_size, get_v_cache_shape, paged_attention_decode
 
 logger = logging.getLogger(__name__)
 
@@ -157,7 +157,9 @@ def test_full_attention_in_one_block(head_dim, dtype) -> None:
     logger.info(f"  Old k cache point: {old_k_cache_point[:5]}, {old_k_cache_point[-5:]}")
 
     # --- Run paged attention ---
-    output_arr = paged_attention(py_queries, py_k_cache_pool, py_v_cache_pool, py_page_table, py_sequence_lengths)
+    output_arr = paged_attention_decode(
+        py_queries, py_k_cache_pool, py_v_cache_pool, py_page_table, py_sequence_lengths
+    )
     mx.eval(output_arr)
 
     logger.info("  Attention Output:")

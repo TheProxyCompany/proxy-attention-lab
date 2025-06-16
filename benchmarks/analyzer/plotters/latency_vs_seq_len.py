@@ -182,12 +182,31 @@ class LatencyVsSeqLenPlotter(BasePlotter):
             for src, group_data in two_pass_df.groupby("group"):
                 sorted_group = group_data.sort_values(by="sequence_length")  # type: ignore[arg-type]
 
+                # Determine implementation and source language
+                is_cpp = "cpp" in str(src).lower()
+                is_python = "python" in str(src).lower()
+                
                 if "pal" in str(src).lower():
-                    source_style = source_styles["pal"]
+                    source_style = source_styles["pal"].copy()
                 elif "mlx" in str(src).lower():
-                    source_style = source_styles["mlx"]
+                    source_style = source_styles["mlx"].copy()
                 else:
-                    source_style = source_styles["default"]
+                    source_style = source_styles["default"].copy()
+                
+                # Apply language-specific marker
+                if is_cpp:
+                    source_style["marker"] = styles["CPP_MARKER"]
+                    source_style["markersize"] = styles["CPP_MARKERSIZE"]
+                    lang_suffix = " (C++)"
+                elif is_python:
+                    source_style["marker"] = styles["PYTHON_MARKER"]
+                    source_style["markersize"] = styles["PYTHON_MARKERSIZE"]
+                    lang_suffix = " (Python)"
+                else:
+                    lang_suffix = ""
+                
+                # Update label with language suffix
+                source_style["label"] = source_style["label"] + lang_suffix
 
                 # Plot with or without error bars
                 if "std_latency" in sorted_group.columns and sorted_group["std_latency"].notna().any():
@@ -201,6 +220,7 @@ class LatencyVsSeqLenPlotter(BasePlotter):
                         linestyle=source_style["linestyle"],
                         linewidth=source_style["linewidth"],
                         marker=source_style["marker"],
+                        markersize=source_style.get("markersize", 6),
                         label=source_style["label"],
                         capsize=ERROR_BAR_CAPSIZE,
                         capthick=ERROR_BAR_CAPTHICK,
@@ -215,6 +235,7 @@ class LatencyVsSeqLenPlotter(BasePlotter):
                         linestyle=source_style["linestyle"],
                         linewidth=source_style["linewidth"],
                         marker=source_style["marker"],
+                        markersize=source_style.get("markersize", 6),
                         label=source_style["label"],
                     )
 
@@ -278,6 +299,11 @@ class LatencyVsSeqLenPlotter(BasePlotter):
         if has_fused and ax_fused is not None:
             for src, group_data in fused_df.groupby("group"):
                 src_label = str(src)
+                
+                # Determine implementation and source language
+                is_cpp = "cpp" in str(src).lower()
+                is_python = "python" in str(src).lower()
+                
                 if "pal" in src_label.lower():
                     src_label = "PAL"
                     source_style = source_styles["pal"].copy()
@@ -286,6 +312,21 @@ class LatencyVsSeqLenPlotter(BasePlotter):
                     source_style = source_styles["mlx"].copy()
                 else:
                     source_style = source_styles["default"].copy()
+                
+                # Apply language-specific marker
+                if is_cpp:
+                    source_style["marker"] = styles["CPP_MARKER"]
+                    source_style["markersize"] = styles["CPP_MARKERSIZE"]
+                    lang_suffix = " (C++)"
+                elif is_python:
+                    source_style["marker"] = styles["PYTHON_MARKER"]
+                    source_style["markersize"] = styles["PYTHON_MARKERSIZE"]
+                    lang_suffix = " (Python)"
+                else:
+                    lang_suffix = ""
+                
+                # Update label with language suffix
+                source_style["label"] = source_style["label"] + lang_suffix
 
                 sorted_group = group_data.sort_values(by="sequence_length")  # type: ignore[arg-type]
 
@@ -301,6 +342,7 @@ class LatencyVsSeqLenPlotter(BasePlotter):
                         linestyle=source_style["linestyle"],
                         linewidth=source_style["linewidth"],
                         marker=source_style["marker"],
+                        markersize=source_style.get("markersize", 6),
                         label=source_style["label"],
                         capsize=ERROR_BAR_CAPSIZE,
                         capthick=ERROR_BAR_CAPTHICK,
@@ -315,6 +357,7 @@ class LatencyVsSeqLenPlotter(BasePlotter):
                         linestyle=source_style["linestyle"],
                         linewidth=source_style["linewidth"],
                         marker=source_style["marker"],
+                        markersize=source_style.get("markersize", 6),
                         label=source_style["label"],
                     )
 

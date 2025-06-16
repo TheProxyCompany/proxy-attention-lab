@@ -17,16 +17,9 @@
 // ============================================================================
 
 #include "fill_kv_pages.h.metal"
-#include "paged_attention.h.metal"
-#include "paged_reduce.h.metal"
-
-
-[[kernel]] void get_device_info() {
-    // used for fetching a metal compute pipeline state
-    // for the current device to get the max threads per group
-    // and simd group size
-}
-
+#include "decode/paged_attention_decode.h.metal"
+#include "decode/paged_reduce_decode.h.metal"
+#include "prefill/paged_attention_prefill.h.metal"
 
 // --- Instantiation Macro for fill_kv_pages ---
 #define INSTANTIATE_FILL_KV_PAGES(TYPE, SUFFIX)                                                                                 \
@@ -50,8 +43,8 @@ INSTANTIATE_FILL_KV_PAGES(bfloat16_t,  bfloat16);
 
 // --- Instantiation Macro for pal_paged_attention ---
 #define INSTANTIATE_PAL_PAGED_ATTENTION(TYPE, HEAD_DIM, TOKENS_PER_PAGE, SIMD_WIDTH, SUFFIX)                                                             \
-    template [[host_name("pal_paged_attention_" #SUFFIX "_" #HEAD_DIM "_" #TOKENS_PER_PAGE "_" #SIMD_WIDTH)]] [[kernel]] void                                        \
-    pal_paged_attention<TYPE, HEAD_DIM, TOKENS_PER_PAGE, SIMD_WIDTH>(                                                                                        \
+    template [[host_name("pal_paged_attention_decode_" #SUFFIX "_" #HEAD_DIM "_" #TOKENS_PER_PAGE "_" #SIMD_WIDTH)]] [[kernel]] void                                        \
+    pal_paged_attention_decode<TYPE, HEAD_DIM, TOKENS_PER_PAGE, SIMD_WIDTH>(                                                                                        \
         device const TYPE*  queries_in               [[buffer(0)]],                                                             \
         device const TYPE*  k_cache_pool_in          [[buffer(1)]],                                                             \
         device const TYPE*  v_cache_pool_in          [[buffer(2)]],                                                             \
@@ -65,13 +58,14 @@ INSTANTIATE_FILL_KV_PAGES(bfloat16_t,  bfloat16);
         threadgroup uchar*  tg_mem                   [[threadgroup(0)]],                                                        \
         uint3               tg_dim                   [[threads_per_threadgroup]],                                                \
         uint3               tg_pos_in_grid           [[threadgroup_position_in_grid]],                                          \
+        uint                simdgroup_idx            [[simdgroup_index_in_threadgroup]],                                        \
         uint                local_idx_in_tg          [[thread_index_in_threadgroup]]                                            \
     );
 
 // --- Instantiation Macro for pal_paged_reduce ---
 #define INSTANTIATE_PAL_PAGED_REDUCE(TYPE, HEAD_DIM, SIMD_WIDTH, SUFFIX)                                                                   \
-    template [[host_name("pal_paged_reduce_" #SUFFIX "_" #HEAD_DIM "_" #SIMD_WIDTH)]] [[kernel]] void                                           \
-    pal_paged_reduce<TYPE, HEAD_DIM, SIMD_WIDTH>(                                                                                            \
+    template [[host_name("pal_paged_reduce_decode_" #SUFFIX "_" #HEAD_DIM "_" #SIMD_WIDTH)]] [[kernel]] void                                           \
+    pal_paged_reduce_decode<TYPE, HEAD_DIM, SIMD_WIDTH>(                                                                                            \
         device TYPE*        output_buffer            [[buffer(0)]],                                                             \
         device const float* max_logits_in            [[buffer(1)]],                                                             \
         device const float* exp_sums_in              [[buffer(2)]],                                                             \
@@ -86,7 +80,56 @@ INSTANTIATE_FILL_KV_PAGES(bfloat16_t,  bfloat16);
         uint                lane_idx                 [[thread_index_in_simdgroup]]                                              \
     );
 
-// --- PAL Paged Attention/Reduce Kernel Instantiations ---
+#define INSTANTIATE_PAL_PAGED_PREFILL(TYPE, HEAD_DIM, Q_TILE_SIZE, SIMD_WIDTH, SUFFIX)                                                                   \
+    template [[host_name("pal_paged_attention_prefill_" #SUFFIX "_" #HEAD_DIM "_" #Q_TILE_SIZE "_" #SIMD_WIDTH)]] [[kernel]] void                                           \
+    pal_paged_attention_prefill<TYPE, HEAD_DIM, Q_TILE_SIZE, SIMD_WIDTH>(                                                                                            \
+        device const TYPE*  q_prompt_in               [[buffer(0)]],                                                             \
+        device const TYPE*  k_prompt_in               [[buffer(1)]],                                                             \
+        device const TYPE*  v_prompt_in               [[buffer(2)]],                                                             \
+        device const TYPE*  k_cache_paged_in          [[buffer(3)]],                                                             \
+        device const TYPE*  v_cache_paged_in          [[buffer(4)]],                                                             \
+        device const uint*  page_table_in             [[buffer(5)]],                                                             \
+        device const int*   context_lens_in           [[buffer(6)]],                                                             \
+        constant const PagedAttentionParams& params   [[buffer(7)]],                                                             \
+        device TYPE*        output_buffer             [[buffer(8)]],                                                             \
+        threadgroup uchar*  tg_mem                    [[threadgroup(0)]],                                                        \
+        uint3               tg_dim                    [[threads_per_threadgroup]],                                                \
+        uint3               tg_pos_in_grid            [[threadgroup_position_in_grid]],                                          \
+        uint                simdgroup_idx             [[simdgroup_index_in_threadgroup]],                                        \
+        uint                local_idx_in_tg           [[thread_index_in_threadgroup]]                                            \
+    );
+
+// --- PAL Paged Prefill Kernel Instantiations ---
+//
+// Instantiations are organized by:
+//   - Data type: half, bfloat16_t
+//   - Head dimension: 32, 64, 80, 96, 128, 256
+//   - Q tile size: 8, 16, 32
+//   - SIMD width: 16, 32
+//
+// For each (head_dim, q_tile_size), instantiate both SIMD widths.
+#define INSTANTIATE_PAL_PAGED_PREFILL_ALL_HEAD_DIM(TYPE, Q_TILE_SIZE, SIMD_WIDTH, SUFFIX) \
+    INSTANTIATE_PAL_PAGED_PREFILL(TYPE, 32, Q_TILE_SIZE, SIMD_WIDTH, SUFFIX) \
+    INSTANTIATE_PAL_PAGED_PREFILL(TYPE, 64, Q_TILE_SIZE, SIMD_WIDTH, SUFFIX) \
+    INSTANTIATE_PAL_PAGED_PREFILL(TYPE, 80, Q_TILE_SIZE, SIMD_WIDTH, SUFFIX) \
+    INSTANTIATE_PAL_PAGED_PREFILL(TYPE, 96, Q_TILE_SIZE, SIMD_WIDTH, SUFFIX) \
+    INSTANTIATE_PAL_PAGED_PREFILL(TYPE, 128, Q_TILE_SIZE, SIMD_WIDTH, SUFFIX) \
+    INSTANTIATE_PAL_PAGED_PREFILL(TYPE, 256, Q_TILE_SIZE, SIMD_WIDTH, SUFFIX)
+
+INSTANTIATE_PAL_PAGED_PREFILL_ALL_HEAD_DIM(half,        8, 16, float16)
+INSTANTIATE_PAL_PAGED_PREFILL_ALL_HEAD_DIM(bfloat16_t,  8, 16, bfloat16)
+INSTANTIATE_PAL_PAGED_PREFILL_ALL_HEAD_DIM(half,        16, 16, float16)
+INSTANTIATE_PAL_PAGED_PREFILL_ALL_HEAD_DIM(bfloat16_t,  16, 16, bfloat16)
+INSTANTIATE_PAL_PAGED_PREFILL_ALL_HEAD_DIM(half,        32, 16, float16)
+INSTANTIATE_PAL_PAGED_PREFILL_ALL_HEAD_DIM(bfloat16_t,  32, 16, bfloat16)
+INSTANTIATE_PAL_PAGED_PREFILL_ALL_HEAD_DIM(half,        8, 32, float16)
+INSTANTIATE_PAL_PAGED_PREFILL_ALL_HEAD_DIM(bfloat16_t,  8, 32, bfloat16)
+INSTANTIATE_PAL_PAGED_PREFILL_ALL_HEAD_DIM(half,        16, 32, float16)
+INSTANTIATE_PAL_PAGED_PREFILL_ALL_HEAD_DIM(bfloat16_t,  16, 32, bfloat16)
+INSTANTIATE_PAL_PAGED_PREFILL_ALL_HEAD_DIM(half,        32, 32, float16)
+INSTANTIATE_PAL_PAGED_PREFILL_ALL_HEAD_DIM(bfloat16_t,  32, 32, bfloat16)
+
+// --- PAL Paged Decode Kernel Instantiations ---
 //
 // Instantiations are organized by:
 //   - Data type: half, bfloat16_t

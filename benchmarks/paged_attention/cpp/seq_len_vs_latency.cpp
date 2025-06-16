@@ -15,7 +15,7 @@
 //
 // Google Benchmark for PAL C++ Operations
 
-#include "pal_core/paged_attention_primitive.hpp"
+#include "pal_core/paged_attention_decode_primitive.hpp"
 #include <benchmark/benchmark.h>
 #include <cmath>
 #include <vector>
@@ -100,7 +100,7 @@ static void BM_PAL_DecodeLatencyVsHistoryLen(benchmark::State& state) {
     int head_dim = params.head_dim;
     mx::Dtype dtype = params.dtype;
 
-    params.tokens_per_page = pal::cpp::PagedAttentionPrimitive::get_optimal_page_size();
+    params.tokens_per_page = pal::cpp::PagedAttentionDecodePrimitive::get_optimal_page_size();
     int tokens_per_page = params.tokens_per_page;
 
     // Setup input tensors for decode scenario
@@ -117,13 +117,13 @@ static void BM_PAL_DecodeLatencyVsHistoryLen(benchmark::State& state) {
 
     // Use the new helper functions to get correct cache shapes
     // K-cache shape: [num_total_physical_pages, num_kv_heads, head_dim / elements_per_thread, tokens_per_page, elements_per_thread]
-    mx::Shape k_cache_shape = pal::cpp::PagedAttentionPrimitive::get_k_cache_shape(
+    mx::Shape k_cache_shape = pal::cpp::PagedAttentionDecodePrimitive::get_k_cache_shape(
         num_total_physical_pages, num_kv_heads, head_dim, tokens_per_page, dtype
     );
     mx::array k_cache_pool = mx::random::normal(k_cache_shape, dtype);
 
     // V-cache shape: [num_total_physical_pages, num_kv_heads, head_dim, tokens_per_page]
-    mx::Shape v_cache_shape = pal::cpp::PagedAttentionPrimitive::get_v_cache_shape(
+    mx::Shape v_cache_shape = pal::cpp::PagedAttentionDecodePrimitive::get_v_cache_shape(
         num_total_physical_pages, num_kv_heads, head_dim, tokens_per_page, dtype
     );
     mx::array v_cache_pool = mx::random::normal(v_cache_shape, dtype);
@@ -136,7 +136,7 @@ static void BM_PAL_DecodeLatencyVsHistoryLen(benchmark::State& state) {
 
     // Main benchmark loop
     for (auto _ : state) {
-        mx::array out = pal::cpp::paged_attention(
+        mx::array out = pal::cpp::paged_attention_decode(
             queries,
             k_cache_pool,
             v_cache_pool,
@@ -204,27 +204,195 @@ static void BM_MLX_SDPA_DecodeLatencyVsHistoryLen(benchmark::State& state) {
     }
 }
 
-const int REPETITIONS = 10; // magic number
-const int ITERATIONS = 100; // magic number
+const int DECODE_REPETITIONS = 10;
+const int DECODE_ITERATIONS = 10;
 
 BENCHMARK(BM_PAL_DecodeLatencyVsHistoryLen)
-   ->Arg(64)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-   ->Arg(128)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-   ->Arg(256)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-   ->Arg(1024)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-   ->Arg(2048)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-   ->Arg(4096)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-   ->Arg(8192)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-   ->Arg(16384)->Iterations(ITERATIONS)->Repetitions(REPETITIONS);
+   ->Arg(64)->Iterations(DECODE_ITERATIONS)->Repetitions(DECODE_REPETITIONS)
+   ->Arg(128)->Iterations(DECODE_ITERATIONS)->Repetitions(DECODE_REPETITIONS)
+   ->Arg(256)->Iterations(DECODE_ITERATIONS)->Repetitions(DECODE_REPETITIONS)
+   ->Arg(1024)->Iterations(DECODE_ITERATIONS)->Repetitions(DECODE_REPETITIONS)
+   ->Arg(2048)->Iterations(DECODE_ITERATIONS)->Repetitions(DECODE_REPETITIONS)
+   ->Arg(4096)->Iterations(DECODE_ITERATIONS)->Repetitions(DECODE_REPETITIONS)
+   ->Arg(8192)->Iterations(DECODE_ITERATIONS)->Repetitions(DECODE_REPETITIONS)
+   ->Arg(16384)->Iterations(DECODE_ITERATIONS)->Repetitions(DECODE_REPETITIONS)
+   ->Arg(32768)->Iterations(DECODE_ITERATIONS)->Repetitions(DECODE_REPETITIONS)
+   ->Arg(65536)->Iterations(DECODE_ITERATIONS)->Repetitions(DECODE_REPETITIONS)
+   ->Arg(131072)->Iterations(DECODE_ITERATIONS)->Repetitions(DECODE_REPETITIONS)
+   ->Arg(262144)->Iterations(DECODE_ITERATIONS)->Repetitions(DECODE_REPETITIONS)
+   ->Arg(524288)->Iterations(DECODE_ITERATIONS)->Repetitions(DECODE_REPETITIONS);
 
 BENCHMARK(BM_MLX_SDPA_DecodeLatencyVsHistoryLen)
-   ->Arg(64)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-   ->Arg(128)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-   ->Arg(256)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-   ->Arg(1024)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-   ->Arg(2048)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-   ->Arg(4096)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-   ->Arg(8192)->Iterations(ITERATIONS)->Repetitions(REPETITIONS)
-   ->Arg(16384)->Iterations(ITERATIONS)->Repetitions(REPETITIONS);
+   ->Arg(64)->Iterations(DECODE_ITERATIONS)->Repetitions(DECODE_REPETITIONS)
+   ->Arg(128)->Iterations(DECODE_ITERATIONS)->Repetitions(DECODE_REPETITIONS)
+   ->Arg(256)->Iterations(DECODE_ITERATIONS)->Repetitions(DECODE_REPETITIONS)
+   ->Arg(1024)->Iterations(DECODE_ITERATIONS)->Repetitions(DECODE_REPETITIONS)
+   ->Arg(2048)->Iterations(DECODE_ITERATIONS)->Repetitions(DECODE_REPETITIONS)
+   ->Arg(4096)->Iterations(DECODE_ITERATIONS)->Repetitions(DECODE_REPETITIONS)
+   ->Arg(8192)->Iterations(DECODE_ITERATIONS)->Repetitions(DECODE_REPETITIONS)
+   ->Arg(16384)->Iterations(DECODE_ITERATIONS)->Repetitions(DECODE_REPETITIONS)
+   ->Arg(32768)->Iterations(DECODE_ITERATIONS)->Repetitions(DECODE_REPETITIONS)
+   ->Arg(65536)->Iterations(DECODE_ITERATIONS)->Repetitions(DECODE_REPETITIONS)
+   ->Arg(131072)->Iterations(DECODE_ITERATIONS)->Repetitions(DECODE_REPETITIONS)
+   ->Arg(262144)->Iterations(DECODE_ITERATIONS)->Repetitions(DECODE_REPETITIONS)
+   ->Arg(524288)->Iterations(DECODE_ITERATIONS)->Repetitions(DECODE_REPETITIONS);
+
+// C++ PAL Prefill benchmark function
+static void BM_PAL_PrefillLatencyVsSeqLen(benchmark::State& state) {
+    // Create test parameters from baseline with specified sequence length
+    BaselineConfig params;
+    params.seq_len = state.range(0); // Use the sequence length from benchmark args
+
+    // Extract params to local variables for clarity
+    int batch_size = params.batch_size;
+    int seq_len = params.seq_len;
+    int num_q_heads = params.num_q_heads;
+    int num_kv_heads = params.num_kv_heads;
+    int head_dim = params.head_dim;
+    mx::Dtype dtype = params.dtype;
+
+    params.tokens_per_page = pal::cpp::PagedAttentionDecodePrimitive::get_optimal_page_size();
+    int tokens_per_page = params.tokens_per_page;
+
+    // Setup input tensors
+    int num_tokens = batch_size * seq_len;
+    int num_logical_pages_per_seq = (seq_len + tokens_per_page - 1) / tokens_per_page;
+    int num_total_physical_pages = batch_size * num_logical_pages_per_seq;
+
+    // Create query tensor with shape [num_tokens, num_q_heads, head_dim]
+    mx::array q_prompt = mx::random::normal(
+        {num_tokens, num_q_heads, head_dim},
+        dtype
+    );
+
+    // Create prompt key/value tensors
+    mx::array k_prompt = mx::random::normal(
+        {num_tokens, num_kv_heads, head_dim},
+        dtype
+    );
+    mx::array v_prompt = mx::random::normal(
+        {num_tokens, num_kv_heads, head_dim},
+        dtype
+    );
+
+    // K/V cache pools: [num_total_physical_pages, num_kv_heads, head_dim, tokens_per_page]
+    mx::Shape k_cache_paged_shape = pal::cpp::PagedAttentionDecodePrimitive::get_k_cache_shape(
+        num_total_physical_pages, num_kv_heads, head_dim, tokens_per_page, dtype
+    );
+    mx::Shape v_cache_paged_shape = pal::cpp::PagedAttentionDecodePrimitive::get_v_cache_shape(
+        num_total_physical_pages, num_kv_heads, head_dim, tokens_per_page, dtype
+    );
+    mx::array k_cache_paged = mx::random::normal(k_cache_paged_shape, dtype);
+    mx::array v_cache_paged = mx::random::normal(v_cache_paged_shape, dtype);
+
+    // Create page table: [num_sequences_in_batch, num_logical_pages_per_seq]
+    mx::array page_table = create_page_table(batch_size, num_logical_pages_per_seq);
+
+    // Set sequence length for each batch item: [num_sequences_in_batch]
+    mx::array context_len_arr = mx::full({batch_size}, 0, mx::int32);
+
+    // Ensure all arrays are contiguous and evaluated before the benchmark loop.
+    q_prompt = mx::contiguous(q_prompt);
+    k_prompt = mx::contiguous(k_prompt);
+    v_prompt = mx::contiguous(v_prompt);
+    k_cache_paged = mx::contiguous(k_cache_paged);
+    v_cache_paged = mx::contiguous(v_cache_paged);
+    page_table = mx::contiguous(page_table);
+    context_len_arr = mx::contiguous(context_len_arr);
+
+    q_prompt.eval();
+    k_prompt.eval();
+    v_prompt.eval();
+    k_cache_paged.eval();
+    v_cache_paged.eval();
+    page_table.eval();
+    context_len_arr.eval();
+
+    // Main benchmark loop
+    for (auto _ : state) {
+        mx::array out = pal::cpp::paged_attention_prefill(
+            q_prompt,
+            k_prompt,
+            v_prompt,
+            k_cache_paged,
+            v_cache_paged,
+            page_table,
+            context_len_arr
+        );
+        out.eval();
+    }
+}
+
+static void BM_MLX_SDPA_PrefillLatencyVsSeqLen(benchmark::State& state) {
+    // Create parameters with the fixed batch size and specified sequence length
+    BaselineConfig params;
+    params.seq_len = state.range(0); // Use the sequence length from benchmark args
+
+    // Extract params to local variables for clarity
+    int batch_size = params.batch_size;
+    int seq_len = params.seq_len;
+    int num_q_heads = params.num_q_heads;
+    int num_kv_heads = params.num_kv_heads;
+    int head_dim = params.head_dim;
+    mx::Dtype dtype = params.dtype;
+
+    // Setup input tensors (matching Python benchmark)
+    float scale = 1.0f / std::sqrt(static_cast<float>(head_dim));
+
+    // Create input tensors with shapes matching the Python benchmark
+    mx::array queries = mx::random::normal(
+        {batch_size, num_q_heads, seq_len, head_dim}, dtype
+    );
+
+    mx::array keys = mx::random::normal(
+        {batch_size, num_kv_heads, seq_len, head_dim}, dtype
+    );
+
+    mx::array values = mx::random::normal(
+        {batch_size, num_kv_heads, seq_len, head_dim}, dtype
+    );
+
+    // Create causal mask that scales with sequence length
+    mx::array causal_mask = create_causal_mask(seq_len, dtype);
+
+    // Log tensor shapes to verify scaling with seq_len
+    spdlog::info("PREFILL SDPA - seq_len: {}", seq_len);
+    spdlog::info("  queries shape: [{}, {}, {}, {}]", batch_size, num_q_heads, seq_len, head_dim);
+    spdlog::info("  keys shape: [{}, {}, {}, {}]", batch_size, num_kv_heads, seq_len, head_dim);
+    spdlog::info("  values shape: [{}, {}, {}, {}]", batch_size, num_kv_heads, seq_len, head_dim);
+    spdlog::info("  causal_mask shape: [{}, {}]", seq_len, seq_len);
+
+    // Main benchmark loop
+    for (auto _ : state) {
+        mx::array out = mx::fast::scaled_dot_product_attention(
+            queries,
+            keys,
+            values,
+            scale,
+            "array",
+            {causal_mask}
+        );
+        out.eval();
+    }
+}
+
+const int PREFILL_ITERATIONS = 10;
+const int PREFILL_REPETITIONS = 10;
+
+BENCHMARK(BM_PAL_PrefillLatencyVsSeqLen)
+    ->Arg(64)->Iterations(PREFILL_ITERATIONS)->Repetitions(PREFILL_REPETITIONS)
+    ->Arg(128)->Iterations(PREFILL_ITERATIONS)->Repetitions(PREFILL_REPETITIONS)
+    ->Arg(256)->Iterations(PREFILL_ITERATIONS)->Repetitions(PREFILL_REPETITIONS)
+    ->Arg(512)->Iterations(PREFILL_ITERATIONS)->Repetitions(PREFILL_REPETITIONS)
+    ->Arg(768)->Iterations(PREFILL_ITERATIONS)->Repetitions(PREFILL_REPETITIONS)
+    ->Arg(1024)->Iterations(PREFILL_ITERATIONS)->Repetitions(PREFILL_REPETITIONS);
+
+BENCHMARK(BM_MLX_SDPA_PrefillLatencyVsSeqLen)
+    ->Arg(64)->Iterations(PREFILL_ITERATIONS)->Repetitions(PREFILL_REPETITIONS)
+    ->Arg(128)->Iterations(PREFILL_ITERATIONS)->Repetitions(PREFILL_REPETITIONS)
+    ->Arg(256)->Iterations(PREFILL_ITERATIONS)->Repetitions(PREFILL_REPETITIONS)
+    ->Arg(512)->Iterations(PREFILL_ITERATIONS)->Repetitions(PREFILL_REPETITIONS)
+    ->Arg(768)->Iterations(PREFILL_ITERATIONS)->Repetitions(PREFILL_REPETITIONS)
+    ->Arg(1024)->Iterations(PREFILL_ITERATIONS)->Repetitions(PREFILL_REPETITIONS);
 
 BENCHMARK_MAIN();

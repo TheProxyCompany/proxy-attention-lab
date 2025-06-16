@@ -15,7 +15,7 @@
 //
 // Google Benchmark for PAL Batch Operations (Both Fused and Two-Pass)
 
-#include "pal_core/paged_attention_primitive.hpp"
+#include "pal_core/paged_attention_decode_primitive.hpp"
 #include <benchmark/benchmark.h>
 #include <cmath>
 #include <vector>
@@ -86,7 +86,7 @@ static void BM_PAL_DecodeBatchLatencyVsHistoryLength(benchmark::State& state) {
     mx::Dtype dtype = params.dtype;
 
     // Get optimal page size
-    params.tokens_per_page = pal::cpp::PagedAttentionPrimitive::get_optimal_page_size();
+    params.tokens_per_page = pal::cpp::PagedAttentionDecodePrimitive::get_optimal_page_size();
     int tokens_per_page = params.tokens_per_page;
 
     // Setup input tensors for decode scenario
@@ -103,13 +103,13 @@ static void BM_PAL_DecodeBatchLatencyVsHistoryLength(benchmark::State& state) {
 
     // Use the new helper functions to get correct cache shapes
     // K-cache shape: [num_total_physical_pages, num_kv_heads, head_dim / elements_per_thread, tokens_per_page, elements_per_thread]
-    mx::Shape k_cache_shape = pal::cpp::PagedAttentionPrimitive::get_k_cache_shape(
+    mx::Shape k_cache_shape = pal::cpp::PagedAttentionDecodePrimitive::get_k_cache_shape(
         num_total_physical_pages, num_kv_heads, head_dim, tokens_per_page, dtype
     );
     mx::array k_cache_pool = mx::random::normal(k_cache_shape, dtype);
 
     // V-cache shape: [num_total_physical_pages, num_kv_heads, head_dim, tokens_per_page]
-    mx::Shape v_cache_shape = pal::cpp::PagedAttentionPrimitive::get_v_cache_shape(
+    mx::Shape v_cache_shape = pal::cpp::PagedAttentionDecodePrimitive::get_v_cache_shape(
         num_total_physical_pages, num_kv_heads, head_dim, tokens_per_page, dtype
     );
     mx::array v_cache_pool = mx::random::normal(v_cache_shape, dtype);
@@ -130,25 +130,9 @@ static void BM_PAL_DecodeBatchLatencyVsHistoryLength(benchmark::State& state) {
     }
     mx::array query_token_offset = mx::array(offset_data.data(), {num_sequences}, mx::int32);
 
-    // queries = mx::contiguous(queries);
-    // k_cache_pool = mx::contiguous(k_cache_pool);
-    // v_cache_pool = mx::contiguous(v_cache_pool);
-    // page_table = mx::contiguous(page_table);
-    // sequence_lengths = mx::contiguous(sequence_lengths);
-    // query_to_seq_map = mx::contiguous(query_to_seq_map);
-    // query_token_offset = mx::contiguous(query_token_offset);
-
-    // queries.eval();
-    // k_cache_pool.eval();
-    // v_cache_pool.eval();
-    // page_table.eval();
-    // sequence_lengths.eval();
-    // query_to_seq_map.eval();
-    // query_token_offset.eval();
-
     // Main benchmark loop
     for (auto _ : state) {
-        mx::array out = pal::cpp::paged_attention(
+        mx::array out = pal::cpp::paged_attention_decode(
             queries,
             k_cache_pool,
             v_cache_pool,
@@ -268,34 +252,33 @@ static void BM_MLX_SDPA_DecodeBatchLatencyVsHistoryLength(benchmark::State& stat
 }
 
 const int REPETITIONS = 10;
-const int ITERATIONS = 100;
+const int ITERATIONS = 10;
 
 // PAL: Benchmark varying H (history length) for each batch size
 BENCHMARK(BM_PAL_DecodeBatchLatencyVsHistoryLength)
+    ->Args({4, 64})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
     ->Args({4, 128})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
     ->Args({4, 256})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
     ->Args({4, 1024})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
     ->Args({4, 4096})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
+    ->Args({16, 64})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
     ->Args({16, 128})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
     ->Args({16, 256})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
     ->Args({16, 1024})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-    ->Args({16, 4096})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-    ->Args({64, 128})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-    ->Args({64, 256})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-    ->Args({64, 1024})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-    ->Args({64, 4096})->Repetitions(REPETITIONS)->Iterations(ITERATIONS);
+    ->Args({16, 4096})->Repetitions(REPETITIONS)->Iterations(ITERATIONS);
 
 // MLX: Benchmark varying H (history length) for each batch size
 BENCHMARK(BM_MLX_SDPA_DecodeBatchLatencyVsHistoryLength)
+    ->Args({4, 64})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
     ->Args({4, 128})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
     ->Args({4, 256})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
     ->Args({4, 1024})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
     ->Args({4, 4096})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
+    ->Args({16, 64})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
     ->Args({16, 128})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
     ->Args({16, 256})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
     ->Args({16, 1024})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-    ->Args({16, 4096})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-    ->Args({64, 128})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-    ->Args({64, 256})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-    ->Args({64, 1024})->Repetitions(REPETITIONS)->Iterations(ITERATIONS)
-    ->Args({64, 4096})->Repetitions(REPETITIONS)->Iterations(ITERATIONS);
+    ->Args({16, 4096})->Repetitions(REPETITIONS)->Iterations(ITERATIONS);
+
+const int PREFILL_REPETITIONS = 10;
+const int PREFILL_ITERATIONS = 10;

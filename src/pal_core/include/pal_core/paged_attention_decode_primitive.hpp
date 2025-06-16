@@ -1,5 +1,5 @@
 #pragma once
-// paged_attention_primitive.hpp
+// paged_attention_decode_primitive.hpp
 // Defines the PagedAttentionPrimitive class for MLX paged attention operations.
 //
 // Copyright 2025 The Proxy Company. All Rights Reserved.
@@ -39,10 +39,10 @@ namespace pal::cpp {
  * algorithm, handling the lifecycle and execution of the operation within the
  * computational graph.
  */
-class PagedAttentionPrimitive : public mx::UnaryPrimitive {
+class PagedAttentionDecodePrimitive : public mx::UnaryPrimitive {
  public:
   /**
-   * @brief Constructs a PagedAttentionPrimitive with specified parameters.
+   * @brief Constructs a PagedAttentionDecodePrimitive with specified parameters.
    *
    * @param stream The MLX stream or device to execute on
    * @param num_q_heads Number of query heads in the attention mechanism
@@ -50,7 +50,7 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
    * @param head_dim Hidden dimension size per attention head
    * @param tokens_per_page Number of tokens stored in each memory page
    */
-  explicit PagedAttentionPrimitive(
+  explicit PagedAttentionDecodePrimitive(
     mx::StreamOrDevice stream_or_device,
     int num_q_heads,
     int num_kv_heads,
@@ -98,8 +98,8 @@ class PagedAttentionPrimitive : public mx::UnaryPrimitive {
     }
 
     // Cast and compare stored parameters
-    const PagedAttentionPrimitive& other_pa =
-        static_cast<const PagedAttentionPrimitive&>(other);
+    const PagedAttentionDecodePrimitive& other_pa =
+        static_cast<const PagedAttentionDecodePrimitive&>(other);
     return (this->num_q_heads_ == other_pa.num_q_heads_ &&
             this->num_kv_heads_ == other_pa.num_kv_heads_ &&
             this->head_dim_ == other_pa.head_dim_ &&

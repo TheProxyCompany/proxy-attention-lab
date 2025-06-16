@@ -1,4 +1,4 @@
-// paged_reduce.h.metal
+// paged_reduce_decode.h.metal
 // Second-pass reduction kernel for partitioned paged attention.
 //
 // Copyright 2025 The Proxy Company. All Rights Reserved.
@@ -20,12 +20,12 @@
 
 #include <metal_stdlib>
 #include "paged_attention_types.h"
-#include "utils.h.metal"
+#include "../utils.h.metal"
 
 using namespace metal;
 
 template <typename T, int head_dim, int SIMD_WIDTH>
-[[kernel]] void pal_paged_reduce(
+[[kernel]] void pal_paged_reduce_decode(
     device T*            output_buffer          [[buffer(0)]],
     device const float*  max_logits_in          [[buffer(1)]],
     device const float*  exp_sums_in            [[buffer(2)]],

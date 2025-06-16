@@ -20,6 +20,11 @@ def get_plot_styles() -> dict[str, str | float]:
     styles["MLX_LINEWIDTH"] = 1.5
     styles["PAL_MARKER"] = "o"
     styles["MLX_MARKER"] = "o"
+    # Language-specific markers
+    styles["CPP_MARKER"] = "o"  # Circle for C++
+    styles["PYTHON_MARKER"] = "s"  # Square for Python
+    styles["CPP_MARKERSIZE"] = 6
+    styles["PYTHON_MARKERSIZE"] = 5
     styles["REF_LINE_COLOR"] = "red"
     styles["REF_LINE_STYLE"] = "-."
     styles["REF_LINE_WIDTH"] = 1.0

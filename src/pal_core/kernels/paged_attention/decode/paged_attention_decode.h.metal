@@ -1,4 +1,4 @@
-// paged_attention.h.metal
+// paged_attention_decode.h.metal
 // Optimized Paged Attention kernel for Metal.
 //
 // Copyright 2025 The Proxy Company. All Rights Reserved.
@@ -20,14 +20,14 @@
 
 #include <metal_stdlib>
 #include "paged_attention_types.h"
-#include "utils.h.metal"
+#include "../utils.h.metal"
 
 using namespace metal;
 
 constant bool USE_TWO_PASS [[function_constant(0)]];
 
 template <typename T, int HEAD_DIM, int TOKENS_PER_PAGE, int SIMD_WIDTH>
-[[kernel]] void pal_paged_attention(
+[[kernel]] void pal_paged_attention_decode(
     device const T*      queries_in             [[buffer(0)]],
     device const T*      k_cache_pool_in        [[buffer(1)]],
     device const T*      v_cache_pool_in        [[buffer(2)]],
@@ -44,6 +44,7 @@ template <typename T, int HEAD_DIM, int TOKENS_PER_PAGE, int SIMD_WIDTH>
     threadgroup uchar*   tg_mem                 [[threadgroup(0)]],
     uint3                tg_dim                 [[threads_per_threadgroup]],
     uint3                tg_pos_in_grid         [[threadgroup_position_in_grid]],
+    uint                 simdgroup_idx       [[simdgroup_index_in_threadgroup]],
     uint                 local_idx_in_tg        [[thread_index_in_threadgroup]]
 ) {
     // Align our K cache to a MEMORY_ALIGNMENT_BYTES byte boundary for coalesced device memory access
@@ -65,7 +66,6 @@ template <typename T, int HEAD_DIM, int TOKENS_PER_PAGE, int SIMD_WIDTH>
 
     // simd group and lane indices
     const int num_simd_groups = num_threads / SIMD_WIDTH;
-    const int simdgroup_idx = local_idx_in_tg / SIMD_WIDTH;
     const int lane_idx = local_idx_in_tg % SIMD_WIDTH;
 
     // subgroup indices and lane offsets

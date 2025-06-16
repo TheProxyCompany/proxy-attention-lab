@@ -26,13 +26,14 @@
 
 #include "pal_core/metal/metal_loader.hpp"
 #include "pal_core/fill_kv_pages_primitive.hpp"
-#include "pal_core/paged_attention_primitive.hpp"
+#include "pal_core/paged_attention_decode_primitive.hpp"
+#include "pal_core/paged_attention_prefill_primitive.hpp"
 
 #include <spdlog/spdlog.h>
 
 namespace pal::cpp {
 
-mx::array paged_attention(
+mx::array paged_attention_decode(
     const mx::array& queries,
     const mx::array& k_cache_pool,
     const mx::array& v_cache_pool,
@@ -70,7 +71,7 @@ mx::array paged_attention(
       num_q_heads, num_kv_heads, head_dim, tokens_per_page);
 
   // Create the primitive instance with the extracted parameters
-  auto primitive = std::make_shared<PagedAttentionPrimitive>(
+  auto primitive = std::make_shared<PagedAttentionDecodePrimitive>(
       stream_or_device,
       num_q_heads,
       num_kv_heads,
@@ -105,6 +106,84 @@ mx::array paged_attention(
       }
     );
 }
+
+mx::array paged_attention_prefill(
+    const mx::array& q_prompt,
+    const mx::array& k_prompt,
+    const mx::array& v_prompt,
+    const mx::array& k_cache_paged,
+    const mx::array& v_cache_paged,
+    const mx::array& page_table,
+    const mx::array& context_len_arr,
+    mx::StreamOrDevice stream_or_device
+  ) {
+  spdlog::debug("[PAL Ops] pal::cpp::paged_attention_prefill C++ operation called.");
+
+  // Ensure Metal library is loaded and registered
+  pal::cpp::MetalLibRegistrar::ensure_pal_metallib_registered(stream_or_device);
+
+  // Extract key parameters from input arrays to pass to the primitive
+  int num_q_heads = 1;  // Default for 1D/2D queries
+  int head_dim = 0;
+  int tokens_per_page = 0;
+  int num_kv_heads = 0;
+
+  // Extract head_dim and tokens_per_page from K cache pool
+  // v cache pool is 4D: [num_physical_pages, num_kv_heads, head_dim, tokens_per_page]
+  if (v_cache_paged.ndim() == 4) {
+    num_kv_heads = v_cache_paged.shape(1);
+    head_dim = v_cache_paged.shape(2);
+    tokens_per_page = v_cache_paged.shape(3);
+  }
+
+  // For 3D queries, num_q_heads comes from the second dimension
+  if (q_prompt.ndim() == 3) {
+    num_q_heads = q_prompt.shape(1);
+  }
+
+  spdlog::debug(
+      "[PAL Ops] Creating primitive with extracted params: num_q_heads={}, "
+      "num_kv_heads={}, head_dim={}, tokens_per_page={}",
+      num_q_heads, num_kv_heads, head_dim, tokens_per_page);
+
+  // Create the primitive instance with the extracted parameters
+  auto primitive = std::make_shared<PagedAttentionPrefillPrimitive>(
+      stream_or_device,
+      num_q_heads,
+      num_kv_heads,
+      head_dim,
+      tokens_per_page
+    );
+  spdlog::debug("[PAL Ops] PagedAttentionPrefillPrimitive instance created.");
+
+  // Use the primitive's output_shapes method to determine the correct output shape
+  auto output_shapes = primitive->output_shapes(
+      {q_prompt, k_prompt, v_prompt, k_cache_paged, v_cache_paged, page_table, context_len_arr});
+
+  if (output_shapes.empty()) {
+    spdlog::error("[PAL Ops] PagedAttentionPrefillPrimitive returned empty output_shapes");
+    throw std::runtime_error(
+        "[PAL Ops] PagedAttentionPrefillPrimitive returned empty output_shapes");
+  }
+
+  auto out_shape = output_shapes[0];
+  auto out_dtype = q_prompt.dtype();
+
+  // Construct the output MLX array, adding the operation in the graph
+  return mx::array(
+      out_shape, out_dtype, primitive,
+      {
+        q_prompt,
+        k_prompt,
+        v_prompt,
+        k_cache_paged,
+        v_cache_paged,
+        page_table,
+        context_len_arr
+      }
+    );
+}
+
 
 std::tuple<mx::array, mx::array> fill_kv_pages(
     const mx::array& new_keys,
