@@ -4,7 +4,7 @@ build-backend = "py_build_cmake.build"
 
 [project]
 name = "proxy-attention-lab"
-version = "2025.06.3"
+version = "2025.06.4"
 description = "Development and testing lab for PIE Paged Attention Kernels."
 readme = "README.md"
 requires-python = ">=3.11"

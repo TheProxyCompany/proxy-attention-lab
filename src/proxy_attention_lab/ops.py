@@ -55,7 +55,7 @@ def paged_attention_decode(
             - 2D: [NumItems, HeadDim] (NumQHeads implicitly 1)
             - 3D: [NumTokens, NumQHeads, HeadDim]
         k_cache_pool: The entire K cache buffer.
-            Shape: [NumTotalPages, NumKVHeads, NumTokensPerPage, HeadDim]
+            Shape: [NumTotalPages, NumKVHeads, HeadDim / , ]
         v_cache_pool: The entire V cache buffer.
             Shape: [NumTotalPages, NumKVHeads, NumTokensPerPage, HeadDim]
         page_table: Page table mapping logical blocks for each sequence

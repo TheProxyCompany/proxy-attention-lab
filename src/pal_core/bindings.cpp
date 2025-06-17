@@ -108,8 +108,8 @@ NB_MODULE(pal_core, m) {
             q_prompt (mlx.core.array): Prompt query vectors to compute attention against cached keys.
             k_prompt (mlx.core.array): Prompt key vectors to compute attention against cached keys.
             v_prompt (mlx.core.array): Prompt value vectors to compute attention against cached keys.
-            k_cache_paged (mlx.core.array): Global key cache pool with shape [num_pages, tokens_per_page, kv_heads, head_dim].
-            v_cache_paged (mlx.core.array): Global value cache pool with shape [num_pages, tokens_per_page, kv_heads, head_dim].
+            k_cache_paged (mlx.core.array): Global key cache pool with shape [num_pages, num_kv_heads, head_dim // elements_per_thread, tokens_per_page, elements_per_thread].
+            v_cache_paged (mlx.core.array): Global value cache pool with shape [num_pages, num_kv_heads, head_dim, tokens_per_page].
             page_table (mlx.core.array): Page table array mapping logical blocks to physical page IDs.
             context_len_arr (mlx.core.array): Array of actual lengths for each sequence in the batch.
             stream (mlx.core.Stream | mlx.core.Device | None, optional): Stream or device for the operation.
@@ -160,9 +160,9 @@ NB_MODULE(pal_core, m) {
                 - 2D: [NumItems, HeadDim] (NumQHeads implicitly 1)
                 - 3D: [NumTokens, NumQHeads, HeadDim]
             k_cache_pool (mlx.core.array): Global K cache data pool with shape
-                                          [NumTotalPages, NumKVHeads, HeadDim / ElementsPerThread, TokensPerPage, ElementsPerThread].
+                                          [NumTotalPages, NumKVHeads, HeadDim // ElementsPerThread, TokensPerPage, ElementsPerThread].
             v_cache_pool (mlx.core.array): Global V cache data pool with shape
-                                          [NumTotalPages, NumKVHeads, HeadDim / ElementsPerThread, TokensPerPage, ElementsPerThread].
+                                          [NumTotalPages, NumKVHeads, HeadDim, TokensPerPage].
             page_table (mlx.core.array): Page table array mapping logical blocks to physical
                                         page IDs. Shape [NumSequencesInBatch, MaxLogicalBlocksPerSeq].
             sequence_lengths (mlx.core.array): Array of actual lengths for each sequence
@@ -222,5 +222,5 @@ NB_MODULE(pal_core, m) {
       )doc");
 
   // Version information
-  m.attr("__version__") = "0.1.0";
+  m.attr("__version__") = "2025.06.4";
 }
