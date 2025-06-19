@@ -65,7 +65,7 @@ NB_MODULE(pal_core, m) {
 
   m.def(
     "get_optimal_page_size",
-    pal::cpp::PagedAttentionDecodePrimitive::get_optimal_page_size,
+    pal::cpp::get_optimal_page_size,
     nb::sig("def get_optimal_page_size() -> int"),
     R"doc(
         Calculates the optimal page size for the paged attention kernel.

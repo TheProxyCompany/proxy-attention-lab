@@ -26,6 +26,7 @@
 #include <mlx/backend/metal/utils.h>
 #include <vector>
 #include "kernels/paged_attention_types.h"
+#include "pal_core/constants.hpp"
 
 namespace mx = mlx::core;
 
@@ -113,13 +114,6 @@ class PagedAttentionDecodePrimitive : public mx::UnaryPrimitive {
    * @return Vector of output shapes
    */
   std::vector<mx::Shape> output_shapes(const std::vector<mx::array>& inputs) override;
-
-  /**
-   * @brief Calculates the optimal page size for the paged attention kernel.
-   *
-   * @return The optimal page size
-   */
-  static size_t get_optimal_page_size();
 
   /**
    * @brief Calculates the shape of the V cache.

@@ -8,6 +8,8 @@
 #include <mlx/backend/metal/utils.h>
 #include <vector>
 #include "kernels/paged_attention_types.h"
+#include "pal_core/constants.hpp"
+
 
 namespace mx = mlx::core;
 

@@ -86,7 +86,7 @@ static void BM_PAL_DecodeBatchLatencyVsHistoryLength(benchmark::State& state) {
     mx::Dtype dtype = params.dtype;
 
     // Get optimal page size
-    params.tokens_per_page = pal::cpp::PagedAttentionDecodePrimitive::get_optimal_page_size();
+    params.tokens_per_page = pal::cpp::get_optimal_page_size();
     int tokens_per_page = params.tokens_per_page;
 
     // Setup input tensors for decode scenario

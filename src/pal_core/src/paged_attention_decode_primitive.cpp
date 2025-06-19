@@ -154,6 +154,7 @@ void PagedAttentionDecodePrimitive::eval_gpu(const std::vector<mx::array>& input
     }
 
     if (params.num_q_heads % params.num_kv_heads != 0) {
+        spdlog::error("[PAL] num_q_heads {} must be divisible by num_kv_heads {}", params.num_q_heads, params.num_kv_heads);
         throw std::runtime_error("num_q_heads must be divisible by num_kv_heads");
     }
 
@@ -318,13 +319,6 @@ void PagedAttentionDecodePrimitive::print(std::ostream& os) {
        << ", tokens_per_page=" << tokens_per_page_
        << ")";
 }
-
-// todo make this dynamic
-size_t PagedAttentionDecodePrimitive::get_optimal_page_size() {
-    size_t page_size = 16;
-    return page_size;
-  }
-
 
 size_t PagedAttentionDecodePrimitive::calculate_attention_memory_layout(
     const PagedAttentionParams& params,

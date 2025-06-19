@@ -79,8 +79,8 @@ void FillKVPagesPrimitive::eval_gpu(const std::vector<mx::array>& inputs, std::v
     // Extract input arrays
     const auto& new_keys = inputs[0];               // [num_new_tokens, num_kv_heads, head_dim]
     const auto& new_values = inputs[1];              // [num_new_tokens, num_kv_heads, head_dim]
-    const auto& global_k_pool = inputs[2];          // [num_pages, num_kv_heads, tokens_per_page, head_dim]
-    const auto& global_v_pool = inputs[3];          // [num_pages, num_kv_heads, tokens_per_page, head_dim]
+    const auto& global_k_pool = inputs[2];          // [num_pages, num_kv_heads, head_dim / elements_per_head, tokens_per_page, elements_per_head]
+    const auto& global_v_pool = inputs[3];          // [num_pages, num_kv_heads, head_dim, tokens_per_page]
     const auto& page_table = inputs[4];             // [num_sequences, max_logical_blocks]
     const auto& current_token_write_positions = inputs[5]; // [num_sequences]
     const auto& query_to_seq_map = inputs[6];       // [num_new_tokens]
@@ -164,15 +164,12 @@ void FillKVPagesPrimitive::eval_gpu(const std::vector<mx::array>& inputs, std::v
 }
 
 void FillKVPagesPrimitive::print(std::ostream& os) {
-    spdlog::debug("[FillKVPagesPrimitive] print called");
     os << "FillKVPagesPrimitive(num_kv_heads=" << num_kv_heads_
        << ", head_dim=" << head_dim_
        << ", tokens_per_page=" << tokens_per_page_ << ")";
 }
 
 std::vector<mx::Shape> FillKVPagesPrimitive::output_shapes(const std::vector<mx::array>& inputs) {
-    spdlog::debug("[FillKVPagesPrimitive] output_shapes called");
-
     // Validate input count
     if (inputs.size() < 7) {
         throw std::invalid_argument(
