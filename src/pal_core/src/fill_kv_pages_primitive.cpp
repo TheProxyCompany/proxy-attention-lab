@@ -88,14 +88,12 @@ void FillKVPagesPrimitive::eval_gpu(const std::vector<mx::array>& inputs, std::v
 
     // If there are no new tokens, the cache is unchanged.
     // Make the outputs aliases of the inputs and return.
-    if (new_keys.size() == 0) {
-        outputs[0].copy_shared_buffer(global_k_pool);
-        outputs[1].copy_shared_buffer(global_v_pool);
-        return;
-    }
-
     mx::copy_gpu(global_k_pool, outputs[0], mx::CopyType::General, stream());
     mx::copy_gpu(global_v_pool, outputs[1], mx::CopyType::General, stream());
+
+    if (new_keys.size() == 0) {
+        return;
+    }
 
     // Get stream and device
     auto& s = stream();
