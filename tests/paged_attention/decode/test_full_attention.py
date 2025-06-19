@@ -152,7 +152,7 @@ def test_full_attention_in_one_block(head_dim, dtype) -> None:
         v_vec = py_v_cache_pool[0, 0, :, i].astype(mx.float32)
         expected_v += v_vec * prob
 
-    expected_v_reshaped = expected_v.astype(dtype).reshape(1, cfg_head_dim)
+    expected_v_reshaped = expected_v.astype(dtype).reshape(1, 1, cfg_head_dim)
     mx.eval(expected_v_reshaped)
 
     old_v_cache_point = [i for i in py_v_cache_pool[0, 0, :, 1].tolist()]
@@ -191,8 +191,8 @@ def test_full_attention_in_one_block(head_dim, dtype) -> None:
         "Cache point should not change"
     )
 
-    # Output should be [num_q_threads, head_dim] with weighted V-vectors
-    expected_shape = (1, cfg_head_dim)
+    # Output should be [num_sequences, num_q_heads, head_dim] with weighted V-vectors
+    expected_shape = (1, 1, cfg_head_dim)
 
     # Verify results
     assert output_arr.shape == expected_shape, (

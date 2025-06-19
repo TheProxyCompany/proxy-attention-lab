@@ -288,28 +288,15 @@ PagedAttentionDecodePrimitive::vmap(const std::vector<mx::array>& inputs,
 
 std::vector<mx::Shape> PagedAttentionDecodePrimitive::output_shapes(
     const std::vector<mx::array>& inputs) {
-    if (inputs.empty()) {
+    if (inputs.size() < 4) {
         throw std::invalid_argument(
-            "[PagedAttentionPrimitive::output_shapes] Requires at least one input (query).");
+            "[PagedAttentionDecodePrimitive::output_shapes] Requires at least 4 inputs."
+        );
     }
-    if (inputs.size() < 2 || inputs[1].ndim() != 5) {
-        throw std::invalid_argument(
-            "[PagedAttentionPrimitive::output_shapes] K-pool (inputs[1]) is needed "
-            "and must be 5D to determine head_dim for output shape. "
-            "The last dimension must be " + std::to_string(MEMORY_ALIGNMENT_BYTES / mx::size_of(inputs[1].dtype())) + ".");
-    }
+    const auto& page_table = inputs[3];
+    int num_sequences = page_table.shape(0);
 
-    const auto& queries = inputs[0];
-    if (queries.ndim() == 3) {
-        return {{queries.shape(0) * queries.shape(1), static_cast<int>(head_dim_)}};
-    } else if (queries.ndim() == 2) {
-        return {{queries.shape(0), static_cast<int>(head_dim_)}};
-    } else if (queries.ndim() == 1) {
-        return {{queries.shape(0), static_cast<int>(head_dim_)}};
-    } else {
-        throw std::invalid_argument(
-            "[PagedAttentionPrimitive::output_shapes] Query input 'queries' must be 1D, 2D, or 3D.");
-    }
+    return {{num_sequences, num_q_heads_, head_dim_}};
 }
 
 void PagedAttentionDecodePrimitive::print(std::ostream& os) {

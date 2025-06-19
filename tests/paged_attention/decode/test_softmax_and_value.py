@@ -100,8 +100,8 @@ def test_v_aggregation_decode_single_sequence(head_dim, dtype) -> None:
     # Expected output: V * softmax_prob
     # V[0,0,0] = [10, 20, 30, 40, 0, 0, ..., 0]
     # Since softmax_prob = 1.0, output = V[0,0,0]
-    expected_output = mx.zeros((num_seqs * num_q_heads, head_dim), dtype=dtype)
-    expected_output[0, :4] = mx.array([10.0, 20.0, 30.0, 40.0], dtype=dtype)
+    expected_output = mx.zeros((num_seqs, num_q_heads, head_dim), dtype=dtype)
+    expected_output[0, 0, :4] = mx.array([10.0, 20.0, 30.0, 40.0], dtype=dtype)
 
     mx.eval(py_queries)
     mx.eval(py_k_cache_pool)
@@ -116,8 +116,8 @@ def test_v_aggregation_decode_single_sequence(head_dim, dtype) -> None:
     logger.info("  Attention Output:")
     logger.info(f"    Output shape: {output_arr.shape}")
     logger.info(f"    Expected shape: {expected_output.shape}")
-    logger.info(f"    Output values (first 8): {output_arr[0, :8]}")
-    logger.info(f"    Expected values (first 8): {expected_output[0, :8]}")
+    logger.info(f"    Output values (first 8): {output_arr[0, 0, :8]}")
+    logger.info(f"    Expected values (first 8): {expected_output[0, 0, :8]}")
 
     # Verify output shape
     assert output_arr.shape == expected_output.shape, (
@@ -127,7 +127,7 @@ def test_v_aggregation_decode_single_sequence(head_dim, dtype) -> None:
 
     # Verify output values
     assert mx.allclose(output_arr, expected_output, atol=1e-2), (
-        f"Value mismatch. Expected: {expected_output[0, :8]}, Got: {output_arr[0, :8]}"
+        f"Value mismatch. Expected: {expected_output[0, 0, :8]}, Got: {output_arr[0, 0, :8]}"
     )
 
 
@@ -215,11 +215,11 @@ def test_decode_multi_token_context(dtype) -> None:
     probs = mx.softmax(scores)
 
     # Expected output: weighted sum of V vectors
-    expected_output = mx.zeros((num_seqs * num_q_heads, head_dim), dtype=dtype)
+    expected_output = mx.zeros((num_seqs, num_q_heads, head_dim), dtype=dtype)
     for i in range(3):
         v_vec = mx.zeros(head_dim, dtype=dtype)
         v_vec[:4] = py_v_cache_pool[0, 0, :4, i]
-        expected_output[0] += v_vec * probs[i].item()
+        expected_output[0, 0] += v_vec * probs[i].item()
 
     mx.eval(py_queries, py_k_cache_pool, py_v_cache_pool, py_page_table, py_context_lens)
     # Run paged attention
@@ -233,9 +233,9 @@ def test_decode_multi_token_context(dtype) -> None:
     mx.eval(output_arr)
 
     logger.info(f"    Softmax probs: {probs}")
-    logger.info(f"    Output values (first 4): {output_arr[0, :4]}")
-    logger.info(f"    Expected values (first 4): {expected_output[0, :4]}")
+    logger.info(f"    Output values (first 4): {output_arr[0, 0, :4]}")
+    logger.info(f"    Expected values (first 4): {expected_output[0, 0, :4]}")
 
     assert mx.allclose(output_arr, expected_output, atol=1e-2), (
-        f"Multi-token context test failed. Expected: {expected_output[0, :4]}, Got: {output_arr[0, :4]}"
+        f"Multi-token context test failed. Expected: {expected_output[0, 0, :4]}, Got: {output_arr[0, 0, :4]}"
     )

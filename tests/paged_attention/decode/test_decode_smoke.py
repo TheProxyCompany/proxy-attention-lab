@@ -98,9 +98,9 @@ def test_paged_attention_smoke(dtype) -> None:
         mx.eval(out)
 
         # For 3D queries [NumTokens, NumQHeads, HeadDim],
-        # output is [NumTokens * NumQHeads, HeadDim] (2D layout)
-        total_items = num_queries * num_q_heads
-        expected_output_shape = (total_items, head_dim)
+        # output is [NumSequences, NumQHeads, HeadDim]
+        # Since we have 1 sequence with num_queries queries concatenated
+        expected_output_shape = (num_sequences_in_batch, num_q_heads, head_dim)
 
         logger.info("  Output Verification:")
         logger.info(f"    Expected shape: {expected_output_shape}")

@@ -143,12 +143,11 @@ def test_fetch_k_vector_element_for_first_token_of_sequence(head_dim, dtype) -> 
     expected_V_item1 = py_v_cache_pool[1, 0, :, 0].astype(mx.float32)
 
     # Combine and reshape to match kernel output
-    expected_V_output = mx.array([expected_V_item0.astype(dtype), expected_V_item1.astype(dtype)])
+    expected_V_output = mx.array([[expected_V_item0.astype(dtype)], [expected_V_item1.astype(dtype)]])
 
     # For 3D queries [num_sequences, num_q_heads, head_dim],
-    # output shape is [num_sequences * num_q_heads, head_dim]
-    # Since num_q_heads = 1, this gives us [2, head_dim]
-    expected_output_shape = (num_sequences * num_q_heads, cfg_head_dim)
+    # output shape is [num_sequences, num_q_heads, head_dim]
+    expected_output_shape = (num_sequences, num_q_heads, cfg_head_dim)
 
     # Log test details
     logger.info(
@@ -291,12 +290,11 @@ def test_fetch_entire_k_vector_for_specific_token_slot(head_dim, dtype) -> None:
     expected_V_item1 = py_v_cache_pool[1, 0, :, 0].astype(mx.float32)
 
     # Combine and reshape to match kernel output
-    expected_V_output = mx.array([expected_V_item0.astype(dtype), expected_V_item1.astype(dtype)])
+    expected_V_output = mx.array([[expected_V_item0.astype(dtype)], [expected_V_item1.astype(dtype)]])
 
     # For 3D queries [num_sequences, num_q_heads, head_dim],
-    # output shape is [num_sequences * num_q_heads, head_dim]
-    # Since num_q_heads = 1, this gives us [2, head_dim]
-    expected_output_shape = (num_sequences * num_q_heads, cfg_head_dim)
+    # output shape is [num_sequences, num_q_heads, head_dim]
+    expected_output_shape = (num_sequences, num_q_heads, cfg_head_dim)
 
     # Log test details
     logger.info(
