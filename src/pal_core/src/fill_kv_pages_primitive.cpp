@@ -21,6 +21,7 @@
 #include "pal_core/metal/dispatch.hpp"
 #include "pal_core/metal/metal_loader.hpp"
 #include "kernels/paged_attention_types.h"
+#include "mlx/backend/gpu/copy.h"
 
 // Standard library
 #include <cmath>
@@ -79,11 +80,22 @@ void FillKVPagesPrimitive::eval_gpu(const std::vector<mx::array>& inputs, std::v
     // Extract input arrays
     const auto& new_keys = inputs[0];               // [num_new_tokens, num_kv_heads, head_dim]
     const auto& new_values = inputs[1];              // [num_new_tokens, num_kv_heads, head_dim]
-    const auto& global_k_pool = inputs[2];          // [num_pages, num_kv_heads, head_dim / elements_per_head, tokens_per_page, elements_per_head]
-    const auto& global_v_pool = inputs[3];          // [num_pages, num_kv_heads, head_dim, tokens_per_page]
+    auto& global_k_pool = inputs[2];          // [num_pages, num_kv_heads, head_dim / elements_per_head, tokens_per_page, elements_per_head]
+    auto& global_v_pool = inputs[3];          // [num_pages, num_kv_heads, head_dim, tokens_per_page]
     const auto& page_table = inputs[4];             // [num_sequences, max_logical_blocks]
     const auto& current_token_write_positions = inputs[5]; // [num_sequences]
     const auto& query_to_seq_map = inputs[6];       // [num_new_tokens]
+
+    // If there are no new tokens, the cache is unchanged.
+    // Make the outputs aliases of the inputs and return.
+    if (new_keys.size() == 0) {
+        outputs[0].copy_shared_buffer(global_k_pool);
+        outputs[1].copy_shared_buffer(global_v_pool);
+        return;
+    }
+
+    mx::copy_gpu(global_k_pool, outputs[0], mx::CopyType::General, stream());
+    mx::copy_gpu(global_v_pool, outputs[1], mx::CopyType::General, stream());
 
     // Get stream and device
     auto& s = stream();
@@ -91,7 +103,6 @@ void FillKVPagesPrimitive::eval_gpu(const std::vector<mx::array>& inputs, std::v
 
     // Ensure PAL Metal library is registered
     MetalLibRegistrar::ensure_pal_metallib_registered(s);
-
     const std::string dtype_identifier = mx::type_to_name(global_k_pool.dtype());
     // Get Metal kernel
     const std::string library_name = "pal";
@@ -120,7 +131,7 @@ void FillKVPagesPrimitive::eval_gpu(const std::vector<mx::array>& inputs, std::v
     grid.height = 1;
     grid.depth = 1;
 
-        // Populate FillKVPagesParams struct
+    // Populate FillKVPagesParams struct
     FillKVPagesParams params;
     params.num_kv_heads = num_kv_heads_; // From primitive member
     params.head_dim = head_dim_;         // From primitive member
@@ -145,9 +156,6 @@ void FillKVPagesPrimitive::eval_gpu(const std::vector<mx::array>& inputs, std::v
     compute_encoder.set_input_array(current_token_write_positions, 3);
     compute_encoder.set_input_array(query_to_seq_map, 4);
     compute_encoder.set_bytes(&params, sizeof(FillKVPagesParams), 5);
-
-    outputs[0].copy_shared_buffer(global_k_pool);
-    outputs[1].copy_shared_buffer(global_v_pool);
 
     compute_encoder.set_output_array(outputs[0], 6);
     compute_encoder.set_output_array(outputs[1], 7);
