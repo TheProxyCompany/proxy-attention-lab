@@ -235,6 +235,13 @@ target_compile_definitions(
         $<$<CONFIG:Debug>:ENABLE_ASSERTIONS>
 )
 
+set(PAL_METALLIB_FULL_PATH "${CMAKE_CURRENT_BINARY_DIR}/${PAL_METALLIB_FILENAME}")
+target_compile_definitions(${CORE_LIB_NAME}
+  PUBLIC
+  -DPAL_METALLIB_PATH="${PAL_METALLIB_FULL_PATH}"
+)
+
+
 # --- Installation ---
 set(PYTHON_MODULE_INSTALL_DESTINATION "${PROJECT_NAME}")
 

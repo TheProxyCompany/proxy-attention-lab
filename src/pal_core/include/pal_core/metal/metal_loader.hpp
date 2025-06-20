@@ -44,79 +44,59 @@ namespace mx = mlx::core;
 std::string find_own_shared_library_path_for_pal();
 
 namespace pal::cpp {
+// In metal_loader.hpp
 
-/**
- * @brief Handles Metal library registration for PAL kernels
- *
- * This class ensures that the Metal library containing PAL kernels is properly
- * registered with MLX's Metal backend. It performs a thread-safe, one-time
- * registration process.
- */
 class MetalLibRegistrar {
- public:
-  /**
-   * @brief Ensures PAL Metal library is registered with MLX
-   *
-   * This method checks if the Metal library is already registered, and if not,
-   * performs the registration with appropriate thread safety. It locates the
-   * Metal library based on the location of the shared library.
-   *
-   * @param stream_or_device MLX stream or device to register the library with
-   */
-  static void ensure_pal_metallib_registered(
-      const mx::StreamOrDevice& stream_or_device) {
-    static std::atomic<bool> s_registered = false;
-    static std::mutex s_mutex;
+  public:
+    static void ensure_pal_metallib_registered(const mx::StreamOrDevice& stream_or_device) {
 
-    // Fast path - already registered
-    if (s_registered.load(std::memory_order_acquire)) {
-      return;
+      static std::atomic<bool> s_registered = false;
+      static std::mutex s_mutex;
+
+      if (s_registered.load(std::memory_order_acquire)) {
+        return;
+      }
+
+      std::lock_guard<std::mutex> lock(s_mutex);
+      if (s_registered.load(std::memory_order_relaxed)) {
+        return;
+      }
+
+      spdlog::debug("[PAL MetalLoader] Attempting one-time registration...");
+
+  #ifdef PAL_METALLIB_PATH
+      // --- Compile-time path (for C++ executables) ---
+      std::filesystem::path metallib_full_path(PAL_METALLIB_PATH);
+      if (!std::filesystem::exists(metallib_full_path)) {
+          spdlog::error("Compile-time PAL_METALLIB_PATH does not exist: '{}'", PAL_METALLIB_PATH);
+          return;
+      }
+      std::filesystem::path metallib_dir = metallib_full_path.parent_path();
+      spdlog::debug("[PAL MetalLoader] Using compile-time path: '{}'", PAL_METALLIB_PATH);
+  #else
+      // --- Dynamic path (for Python modules) ---
+      std::string own_lib_path_str = find_own_shared_library_path_for_pal();
+      if (own_lib_path_str.empty()) {
+        spdlog::error("Could not determine path of the pal_core shared library. PAL Metal kernels will be unavailable.");
+        return;
+      }
+      spdlog::debug("[PAL MetalLoader] pal_core shared library path: \"{}\"", own_lib_path_str);
+      std::filesystem::path shared_lib_path(own_lib_path_str);
+      std::filesystem::path metallib_dir = shared_lib_path.parent_path();
+  #endif
+
+      const std::string kDesiredMlxAlias = "pal";
+      try {
+        auto& d = mx::metal::device(mx::to_stream(stream_or_device).device);
+        d.register_library(kDesiredMlxAlias, metallib_dir.string());
+        s_registered.store(true, std::memory_order_release);
+        spdlog::debug("[PAL MetalLoader] Registration successful for alias '{}' with path '{}'", kDesiredMlxAlias, metallib_dir.string());
+      } catch (const std::exception& e) {
+        spdlog::error("Exception during metal_device.register_library call: {}", e.what());
+        spdlog::error("  Attempted MLX Alias: \"{}\"", kDesiredMlxAlias);
+        spdlog::error("  Attempted File Path: \"{}\"", metallib_dir.string());
+      }
     }
-
-    // Slow path with locking
-    std::lock_guard<std::mutex> lock(s_mutex);
-    if (s_registered.load(std::memory_order_relaxed)) {
-      return;
-    }
-
-    spdlog::debug("[PAL MetalLoader] Attempting one-time registration...");
-
-    // Find the path to our own shared library
-    std::string own_lib_path_str = find_own_shared_library_path_for_pal();
-    if (own_lib_path_str.empty()) {
-      spdlog::error("Could not determine path of the pal_core shared library. PAL Metal kernels will be unavailable.");
-      return;
-    }
-    spdlog::debug("[PAL MetalLoader] pal_core shared library path: \"{}\"", own_lib_path_str);
-
-    // Set up paths and names
-    std::filesystem::path shared_lib_path(own_lib_path_str);
-    std::filesystem::path metallib_dir = shared_lib_path.parent_path();
-    const std::string kDesiredMlxAlias = "pal";
-
-    try {
-      // Get MLX Metal device
-      auto& d = mx::metal::device(mx::to_stream(stream_or_device).device);
-
-      spdlog::debug("[PAL MetalLoader] Calling metal_device.register_library with:");
-      spdlog::debug("  MLX Alias (arg1 lib_name): \"{}\"", kDesiredMlxAlias);
-
-      // Register the library
-      d.register_library(kDesiredMlxAlias, metallib_dir.string());
-
-      spdlog::debug("[PAL MetalLoader] Call to register_library completed without throwing an exception.");
-      spdlog::debug("  Registered with MLX Alias: \"{}\"", kDesiredMlxAlias);
-      spdlog::debug("  Using File Path: \"{}\"", metallib_dir.string());
-
-      // Mark as registered
-      s_registered.store(true, std::memory_order_release);
-
-    } catch (const std::exception& e) {
-      spdlog::error("Exception during metal_device.register_library call: {}", e.what());
-      spdlog::error("  Attempted MLX Alias: \"{}\"", kDesiredMlxAlias);
-      spdlog::error("  Attempted File Path: \"{}\"", metallib_dir.string());
-    }
-  }
-};
+  };
 
 }  // namespace pal::core::detail
